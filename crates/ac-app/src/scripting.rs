@@ -348,7 +348,7 @@ fn console(app: &mut App, ctx: &egui::Context) {
                 run = Some(Pending::File(PathBuf::from(st.run_path.trim())));
             }
         });
-        ui.label(RichText::new("Scripts call the same commands as the menus (see Commands ▸ Command Reference). A whole run is one undo step.").small().color(Color32::from_gray(150)));
+        ui.label(RichText::new("Scripts call the same commands as the menus (see Commands › Command Reference). A whole run is one undo step.").small().color(Color32::from_gray(150)));
     });
     app.scripting.console_open = open;
     if let Some(p) = run {

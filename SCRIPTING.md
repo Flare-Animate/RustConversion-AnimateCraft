@@ -80,6 +80,22 @@ Conventions: frames and layers are numbered from 1 (as in the timeline);
 colours are `"#RRGGBB"` or `"#RRGGBBAA"`, `null` means none; relative paths
 are relative to the script's folder.
 
+### Transforms, 3D, gradients, bones and the camera
+
+The tools added in M0.3 are scriptable too (coordinates are stage pixels,
+frames are 1-based):
+
+```js
+ac.selection.skew({ h: 20, v: 0 });                    // degrees, about the selection centre
+ac.selection.distort({ corners: [[0,0],[120,10],[110,90],[0,100]] }); // TL, TR, BR, BL (shapes)
+ac.selection.set_3d({ rx: 0, ry: 45, rz: 0, z: 80 });  // 3D rotation + depth
+ac.doc.set({ perspective_angle: 70, vanishing_x: 275, vanishing_y: 200 });
+ac.selection.set_gradient({ kind: "radial", colors: ["#FFFFFF", "#2D8CEB"] }); // or "linear" / "none"
+ac.bone.add({ x1: 100, y1: 100, x2: 180, y2: 100 });   // from the object at (x1,y1) to the one at (x2,y2)
+ac.bone.drag({ x: 260, y: 100, to_x: 220, to_y: 180 }); // pose with inverse kinematics
+ac.camera.set({ x: 275, y: 200, zoom: 1.5, rotation: 10, frame: 24 });
+```
+
 ### Any other language
 
 Python, Node and Ruby use tiny helper libraries, but the protocol is simple

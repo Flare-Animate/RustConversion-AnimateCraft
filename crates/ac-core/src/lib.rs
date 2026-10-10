@@ -1,6 +1,7 @@
 //! AnimateCraft core: document model, timeline evaluation, tweens, editing
 //! commands. No UI or rendering dependencies (portable to wasm).
 
+pub mod deform;
 pub mod demo;
 pub mod editor;
 pub mod frames;
@@ -96,8 +97,8 @@ mod tests {
     fn graphic_symbol_syncs_to_parent() {
         let mut doc = Document::default();
         let mut tl = Timeline::new("blink");
-        tl.layers[0].keyframes.insert(0, Keyframe::with(vec![Element::shape("a", Shape { path: Path::rect(0., 0., 1., 1.), fill: Some(Color::rgb(1, 0, 0)), stroke: None })]));
-        tl.layers[0].keyframes.insert(2, Keyframe::with(vec![Element::shape("b", Shape { path: Path::rect(0., 0., 1., 1.), fill: Some(Color::rgb(0, 0, 1)), stroke: None })]));
+        tl.layers[0].keyframes.insert(0, Keyframe::with(vec![Element::shape("a", Shape { path: Path::rect(0., 0., 1., 1.), fill: Some(Color::rgb(1, 0, 0)), stroke: None, ..Default::default() })]));
+        tl.layers[0].keyframes.insert(2, Keyframe::with(vec![Element::shape("b", Shape { path: Path::rect(0., 0., 1., 1.), fill: Some(Color::rgb(0, 0, 1)), stroke: None, ..Default::default() })]));
         tl.layers[0].end = 4;
         let id = doc.add_symbol("blink", SymbolKind::Graphic, tl);
         doc.scene.layers[0].keyframes.insert(0, Keyframe::with(vec![Element::instance("i", id, Matrix::IDENTITY)]));
@@ -115,7 +116,7 @@ mod tests {
     #[test]
     fn editor_keyframes_tweens_undo() {
         let mut ed = Editor::new(Document::default());
-        ed.add_element(Element::shape("box", Shape { path: Path::rect(0., 0., 10., 10.), fill: Some(Color::rgb(0, 0, 0)), stroke: None }));
+        ed.add_element(Element::shape("box", Shape { path: Path::rect(0., 0., 10., 10.), fill: Some(Color::rgb(0, 0, 0)), stroke: None, ..Default::default() }));
         ed.set_frame(9);
         ed.insert_keyframe();
         assert_eq!(ed.timeline().layers[0].end, 10);
@@ -146,7 +147,7 @@ mod tests {
     #[test]
     fn convert_to_symbol_keeps_visual_position() {
         let mut ed = Editor::new(Document::default());
-        ed.add_element(Element::shape("box", Shape { path: Path::rect(100., 50., 20., 20.), fill: Some(Color::rgb(0, 0, 0)), stroke: None }));
+        ed.add_element(Element::shape("box", Shape { path: Path::rect(100., 50., 20., 20.), fill: Some(Color::rgb(0, 0, 0)), stroke: None, ..Default::default() }));
         let before = ed.selection_bounds().unwrap();
         let id = ed.convert_to_symbol("Box", SymbolKind::Graphic).unwrap();
         let after = ed.selection_bounds().unwrap();
@@ -158,7 +159,7 @@ mod tests {
 
 
     fn boxed(x: f32) -> Element {
-        Element::shape("box", Shape { path: Path::rect(x, 0., 10., 10.), fill: Some(Color::rgb(0, 0, 0)), stroke: None })
+        Element::shape("box", Shape { path: Path::rect(x, 0., 10., 10.), fill: Some(Color::rgb(0, 0, 0)), stroke: None, ..Default::default() })
     }
     fn kfs(ed: &Editor, layer: usize) -> Vec<u32> {
         ed.timeline().layers[layer].keyframes.keys().copied().collect()
@@ -417,6 +418,141 @@ mod tests {
         let doc = demo::demo_document();
         let json = doc.to_json().replace(",\n          \"script\": null", "");
         assert!(Document::from_json(&json).is_ok());
+    }
+
+
+    #[test]
+    fn distort_and_envelope_identity_and_warp() {
+        let p = Path::rect(0.0, 0.0, 100.0, 50.0);
+        let (lo, hi) = (pt(0.0, 0.0), pt(100.0, 50.0));
+        let same = deform::distort(&p, lo, hi, &[pt(0.0, 0.0), pt(100.0, 0.0), pt(100.0, 50.0), pt(0.0, 50.0)]);
+        let (a, b) = same.bounds().unwrap();
+        assert!(close(a.x, 0.0) && close(b.x, 100.0) && close(b.y, 50.0));
+        let skewed = deform::distort(&p, lo, hi, &[pt(20.0, 0.0), pt(120.0, 0.0), pt(100.0, 50.0), pt(0.0, 50.0)]);
+        assert!(close(skewed.bounds().unwrap().1.x, 120.0));
+        let g = deform::envelope_grid(lo, hi);
+        let env = deform::envelope(&p, lo, hi, &g);
+        let (a, b) = env.bounds().unwrap();
+        assert!(close(a.x, 0.0) && close(b.x, 100.0), "identity envelope keeps the shape");
+        let mut g2 = g;
+        g2[1] = pt(50.0, -30.0); // pull the top-middle handle up
+        let bulged = deform::envelope(&p, lo, hi, &g2);
+        let (blo, _) = bulged.bounds().unwrap();
+        assert!(blo.y < -25.0 && blo.y > -35.0, "top edge passes through the handle: {}", blo.y);
+        assert!(bulged.hit(pt(2.0, 1.0), true, 0.5), "corners stay put");
+    }
+
+    #[test]
+    fn variable_width_outline() {
+        let line = Path { segs: vec![Seg::M(pt(0.0, 0.0)), Seg::L(pt(100.0, 0.0))] };
+        let o = deform::variable_stroke(&line, &[(0.0, 2.0), (1.0, 20.0)]);
+        let (lo, hi) = o.bounds().unwrap();
+        assert!(hi.y > 9.0 && lo.y < -9.0, "thick end");
+        assert!(o.hit(pt(5.0, 0.0), true, 0.0) && !o.hit(pt(5.0, 5.0), true, 0.0), "thin start");
+        // a shape with a width profile renders its stroke as a filled outline
+        let mut ed = Editor::new(Document::default());
+        let mut sh = Shape::new(line.clone(), None, Some(Stroke { color: Color::rgb(0, 0, 0), width: 4.0 }));
+        sh.width_profile = Some(vec![(0.0, 0.5), (1.0, 3.0)]);
+        ed.add_element(Element::shape("w", sh));
+        let items = ed.evaluate_current(0);
+        assert!(items.iter().any(|i| i.fill.is_some() && i.stroke.is_none()));
+        // a width point in the middle of a straight segment bulges it there
+        let mid = deform::variable_stroke(&line, &[(0.0, 1.0), (0.5, 30.0), (1.0, 1.0)]);
+        assert!(mid.hit(pt(50.0, 12.0), true, 0.0) && !mid.hit(pt(5.0, 5.0), true, 0.0), "bulge at t=0.5");
+    }
+
+    #[test]
+    fn asset_warp_pins() {
+        let base = Path::rect(0.0, 0.0, 100.0, 20.0);
+        let mut w = deform::Warp::new(&base);
+        w.pins = vec![(pt(0.0, 10.0), pt(0.0, 10.0)), (pt(100.0, 10.0), pt(100.0, 60.0))];
+        let out = w.apply();
+        let (_, hi) = out.bounds().unwrap();
+        assert!(hi.y > 50.0, "pulled end follows its pin");
+        assert!(out.hit(pt(1.0, 10.0), true, 2.0), "pinned end stays");
+        w.pins.truncate(1);
+        w.pins[0].1 = pt(10.0, 10.0);
+        assert!(close(w.apply().bounds().unwrap().0.x, 10.0), "one pin = move");
+    }
+
+    #[test]
+    fn three_d_projection_and_tween() {
+        let mut doc = Document::default();
+        let mut el = Element::shape("card", Shape::new(Path::rect(-50.0, -50.0, 100.0, 100.0), Some(Color::rgb(255, 0, 0)), None));
+        el.matrix = Matrix::translate(275.0, 200.0);
+        let mut flipped = el.clone();
+        flipped.three_d = Some(deform::Transform3D { ry: 60.0, ..Default::default() });
+        doc.scene.layers[0].keyframes.insert(0, Keyframe { tween: Tween::Classic { ease: 0.0, rotate_turns: 0 }, ..Keyframe::with(vec![el]) });
+        doc.scene.layers[0].keyframes.insert(10, Keyframe::with(vec![flipped]));
+        doc.scene.layers[0].end = 11;
+        let w = |f| { let it = &evaluate_scene(&doc, f)[0]; let (lo, hi) = it.path.transformed(&it.matrix).bounds().unwrap(); hi.x - lo.x };
+        assert!(close(w(0), 100.0));
+        assert!(w(10) < 60.0, "60° around Y foreshortens: {}", w(10));
+        assert!(w(5) < w(0) && w(5) > w(10), "tween interpolates the 3D rotation");
+        // farther away = smaller
+        let mut far = evaluate_scene(&doc, 0)[0].clone();
+        let t = deform::Transform3D { z: 500.0, ..Default::default() };
+        far.path = deform::project_path(&far.path, &far.matrix, &t, pt(275.0, 200.0), &doc.perspective());
+        let (lo, hi) = far.path.bounds().unwrap();
+        assert!(hi.x - lo.x < 70.0);
+    }
+
+    #[test]
+    fn bones_fk_and_ik() {
+        let mut ed = Editor::new(Document::default());
+        let seg = |x: f32| Element::shape("seg", Shape::new(Path::rect(x, 0.0, 100.0, 20.0), Some(Color::rgb(0, 0, 0)), None));
+        ed.add_element(seg(0.0));
+        ed.add_element(seg(100.0));
+        ed.add_element(seg(200.0));
+        ed.add_bone(0, 0, 1, pt(5.0, 10.0), pt(100.0, 10.0)).unwrap();
+        ed.add_bone(0, 1, 2, pt(100.0, 10.0), pt(200.0, 10.0)).unwrap();
+        assert!(ed.add_bone(0, 2, 0, pt(250.0, 10.0), pt(5.0, 10.0)).is_err(), "no loops");
+        assert!(ed.add_bone(0, 0, 2, pt(5.0, 10.0), pt(200.0, 10.0)).is_err(), "one parent per object");
+        // pull the tip up: the chain bends, the root stays put, joints stay connected
+        ed.begin_edit("Pose");
+        let tip = ed.element_at(Selection { layer: 0, element: 2 }).unwrap();
+        let grab = tip.matrix.invert().unwrap().apply(pt(295.0, 10.0));
+        ed.ik_drag(0, 2, grab, pt(200.0, 150.0));
+        let els = ed.timeline().layers[0].keyframes[&0].elements.clone();
+        let reach = els[2].matrix.apply(grab);
+        assert!(reach.dist(pt(200.0, 150.0)) < 2.0, "tip reached target: {reach:?}");
+        assert!(els[0].matrix.apply(pt(5.0, 10.0)).dist(pt(5.0, 10.0)) < 0.5, "root joint fixed");
+        let b = ed.bones(0)[1];
+        assert!(els[1].matrix.apply(b.tail_parent).dist(els[2].matrix.apply(b.tail_child)) < 0.01, "joint connected");
+        // deleting a bonded object drops its bones and re-indexes the rest
+        ed.selection = vec![Selection { layer: 0, element: 0 }];
+        ed.delete_selected();
+        assert!(ed.bones(0).iter().all(|b| b.parent < 2 && b.child < 2));
+        assert_eq!(ed.bones(0).len(), 1);
+    }
+
+    #[test]
+    fn camera_layer_pans_and_zooms() {
+        let mut ed = Editor::new(Document::default());
+        ed.add_element(Element::shape("dot", Shape::new(Path::rect(265.0, 190.0, 20.0, 20.0), Some(Color::rgb(0, 0, 0)), None)));
+        ed.add_camera();
+        assert_eq!(ed.doc.scene.layers[0].kind, LayerKind::Camera);
+        let b = |doc: &Document| { let it = &evaluate_scene(doc, 0)[0]; it.path.transformed(&it.matrix).bounds().unwrap() };
+        let (lo, hi) = b(&ed.doc);
+        assert!(close(hi.x - lo.x, 20.0), "default camera = identity");
+        commands::execute(&mut ed, "camera.set", &serde_json::json!({ "zoom": 2.0, "x": 275, "y": 200 })).unwrap();
+        let (lo, hi) = b(&ed.doc);
+        assert!(close(hi.x - lo.x, 40.0) && close((lo.x + hi.x) / 2.0, 275.0), "zoomed around the centre");
+        assert!(!ed.layer_editable(0), "nothing can be drawn on the camera layer");
+    }
+
+    #[test]
+    fn gradients_render_and_tween() {
+        let mut ed = Editor::new(Document::default());
+        ed.add_element(Element::shape("g", Shape::new(Path::rect(0.0, 0.0, 100.0, 100.0), Some(Color::rgb(0, 0, 0)), None)));
+        ed.select_all();
+        commands::execute(&mut ed, "selection.set_gradient", &serde_json::json!({ "kind": "radial", "colors": ["#FFFFFF", "#0000FF"] })).unwrap();
+        let it = &ed.evaluate_current(0)[0];
+        let g = it.gradient.as_ref().unwrap();
+        assert_eq!(g.kind, GradientKind::Radial);
+        assert_eq!(g.stops.len(), 2);
+        let mid = g.lerp(&Gradient { stops: vec![(0.0, Color::rgb(0, 0, 0)), (1.0, Color::rgb(0, 0, 0))], ..g.clone() }, 0.5);
+        assert_eq!(mid.stops[0].1, Color::rgb(128, 128, 128));
     }
 
     #[test]

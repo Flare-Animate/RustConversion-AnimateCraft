@@ -6,7 +6,7 @@ use crate::model::*;
 use std::f32::consts::PI;
 
 fn shape(name: &str, path: Path, fill: Option<Color>, stroke: Option<Stroke>) -> Element {
-    Element::shape(name, Shape { path, fill, stroke })
+    Element::shape(name, Shape { path, fill, stroke, ..Default::default() })
 }
 
 fn kf(els: Vec<Element>, tween: Tween) -> Keyframe {

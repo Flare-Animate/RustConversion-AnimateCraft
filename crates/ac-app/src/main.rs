@@ -11,7 +11,7 @@ mod toolbar;
 use toolbar::Tool;
 
 use ac_core::{demo::demo_document, Color, Document, Editor, ElementKind, Matrix, Pt, SymbolId, SymbolKind};
-use eframe::egui::{self, vec2, Align2, Color32, Key, Modifiers, Rect, Stroke as EStroke, Vec2};
+use eframe::egui::{self, vec2, Align2, Color32, Key, Modifiers, Rect, RichText, Stroke as EStroke, Vec2};
 
 pub(crate) const ACCENT: Color32 = Color32::from_rgb(0x2D, 0x8C, 0xEB);
 
@@ -29,6 +29,7 @@ pub(crate) enum Dialog {
     Symbol { convert: bool, name: String, kind: SymbolKind },
     RenameSymbol { id: SymbolId, name: String },
     DeleteSymbol { id: SymbolId, uses: usize },
+    ScaleRotate { scale: f32, rotate: f32 },
     About,
 }
 
@@ -42,7 +43,7 @@ pub(crate) enum FileAction {
 }
 
 pub struct App {
-    ctx: egui::Context,
+    pub(crate) ctx: egui::Context,
     pub(crate) ed: Editor,
     pub(crate) tool: Tool,
     pub(crate) fill: Color32,
@@ -77,6 +78,13 @@ pub struct App {
     pub(crate) snap_guides: (Option<f32>, Option<f32>),
     pub(crate) props_tab: PropsTab,
     pub(crate) scripting: scripting::ScriptingState,
+    /// View rotation (Rotation tool), radians.
+    pub(crate) view_rot: f32,
+    /// Free Transform's transformation point for a given selection.
+    pub(crate) ft_pivot: Option<(Vec<ac_core::Selection>, Pt)>,
+    pub(crate) transform_open: bool,
+    pub(crate) xf: panels::TransformPanel,
+    pub(crate) lib: panels::LibraryState,
     last_sel: (Vec<ac_core::Selection>, Option<ac_core::FrameSel>),
     screenshot: Option<(String, u32)>,
 }
@@ -135,6 +143,11 @@ impl App {
             snap_guides: (None, None),
             props_tab: PropsTab::Frame,
             scripting: Default::default(),
+            view_rot: 0.0,
+            ft_pivot: None,
+            transform_open: false,
+            xf: Default::default(),
+            lib: Default::default(),
             last_sel: (vec![], None),
             screenshot: None,
         };
@@ -333,6 +346,9 @@ impl App {
         if k(cmd, Key::D) { self.ed.duplicate(); }
         if k(cmd, Key::A) { self.ed.select_all(); }
         if k(cmd, Key::B) { self.ed.break_apart(); }
+        if k(cmd, Key::T) { self.transform_open = !self.transform_open; }
+        if k(cmd, Key::L) { self.lib.open = !self.lib.open; }
+        if k(cmd | Modifiers::ALT, Key::S) { self.open_scale_rotate(); }
         if k(cmd, Key::S) {
             let p = self.file_path.clone().unwrap_or_else(|| "untitled.acx.json".into());
             self.do_file(FileAction::Save, &p);
@@ -398,21 +414,46 @@ impl App {
             if ui.button("Bring to Front").clicked() { self.ed.arrange(true); ui.close_menu(); }
             if ui.button("Send to Back").clicked() { self.ed.arrange(false); ui.close_menu(); }
         });
-        ui.menu_button("Transform", |ui| {
-            if ui.button("Flip Horizontal").clicked() { self.flip(true); ui.close_menu(); }
-            if ui.button("Flip Vertical").clicked() { self.flip(false); ui.close_menu(); }
-            if ui.button("Rotate 90° CW").clicked() { self.rotate_selection(std::f32::consts::FRAC_PI_2); ui.close_menu(); }
-            if ui.button("Rotate 90° CCW").clicked() { self.rotate_selection(-std::f32::consts::FRAC_PI_2); ui.close_menu(); }
-            if ui.button("Remove Transform").clicked() {
-                self.ed.modify_selected("Remove Transform", |e| { let (x, y) = (e.matrix.tx, e.matrix.ty); e.matrix = Matrix::translate(x, y); });
+        ui.menu_button("Transform", |ui| self.transform_menu(ui));
+    }
+
+    /// Modify › Transform (also on the stage context menu).
+    pub(crate) fn transform_menu(&mut self, ui: &mut egui::Ui) {
+        use toolbar::FtMode;
+        let has_sel = !self.ed.selection.is_empty();
+        for (mode, label, key) in [(FtMode::Normal, "Free Transform", "Q"), (FtMode::Distort, "Distort", ""), (FtMode::Envelope, "Envelope", "")] {
+            let on = self.tool == Tool::FreeTransform && self.topts.ft_mode == mode;
+            if ui.add(egui::SelectableLabel::new(on, label)).on_hover_text(if key.is_empty() { "Free Transform mode (shapes only)" } else { "Scale, rotate, skew; drag the white dot to move the transformation point" }).clicked() {
+                self.topts.ft_mode = mode;
+                self.set_tool(Tool::FreeTransform);
                 ui.close_menu();
             }
-        });
+        }
+        ui.separator();
+        if ui.add_enabled(has_sel, egui::Button::new("Scale and Rotate…").shortcut_text("Ctrl+Alt+S")).clicked() { self.open_scale_rotate(); ui.close_menu(); }
+        if ui.add_enabled(has_sel, egui::Button::new("Rotate 90° CW")).clicked() { self.rotate_selection(std::f32::consts::FRAC_PI_2); ui.close_menu(); }
+        if ui.add_enabled(has_sel, egui::Button::new("Rotate 90° CCW")).clicked() { self.rotate_selection(-std::f32::consts::FRAC_PI_2); ui.close_menu(); }
+        ui.separator();
+        if ui.add_enabled(has_sel, egui::Button::new("Flip Horizontal")).clicked() { self.flip(true); ui.close_menu(); }
+        if ui.add_enabled(has_sel, egui::Button::new("Flip Vertical")).clicked() { self.flip(false); ui.close_menu(); }
+        ui.separator();
+        if ui.add_enabled(has_sel, egui::Button::new("Remove Transform")).on_hover_text("Reset scale, rotation, skew and 3D (keeps position)").clicked() {
+            self.ed.modify_selected("Remove Transform", |e| { let (x, y) = (e.matrix.tx, e.matrix.ty); e.matrix = Matrix::translate(x, y); e.three_d = None; });
+            ui.close_menu();
+        }
+        if ui.add(egui::Button::new("Transform Panel").shortcut_text("Ctrl+T")).clicked() { self.transform_open = true; ui.close_menu(); }
+    }
+
+    pub(crate) fn open_scale_rotate(&mut self) {
+        if self.ed.selection.is_empty() {
+            self.status = "Select something first.".into();
+            return;
+        }
+        self.dialog = Dialog::ScaleRotate { scale: 100.0, rotate: 0.0 };
     }
 
     fn selection_center(&self) -> Option<Pt> {
-        let (lo, hi) = self.ed.selection_bounds()?;
-        Some(ac_core::pt((lo.x + hi.x) / 2.0, (lo.y + hi.y) / 2.0))
+        self.pivot()
     }
     pub(crate) fn flip(&mut self, horizontal: bool) {
         let Some(c) = self.selection_center() else { return };
@@ -464,10 +505,20 @@ impl App {
                     if ui.add(egui::Button::new("Zoom Out").shortcut_text("Ctrl+-")).clicked() { self.zoom /= 1.25; ui.close_menu(); }
                     if ui.add(egui::Button::new("100%").shortcut_text("Ctrl+1")).clicked() { self.zoom = 1.0; ui.close_menu(); }
                     if ui.add(egui::Button::new("Fit in Window").shortcut_text("Ctrl+2")).clicked() { self.fit_pending = true; ui.close_menu(); }
+                    if ui.add_enabled(self.view_rot != 0.0, egui::Button::new("Reset View Rotation")).clicked() { let r = self.stage_rect; self.set_view_rot(r, 0.0); ui.close_menu(); }
+                    ui.separator();
+                    ui.checkbox(&mut self.topts.show_bones, "Show Bones");
+                    ui.separator();
+                    ui.label(RichText::new("Library position").small().color(Color32::from_gray(150)));
+                    ui.radio_value(&mut self.lib.left, false, "Right, below Properties");
+                    ui.radio_value(&mut self.lib.left, true, "Own panel on the left");
                 });
                 ui.menu_button("Insert", |ui| {
                     if ui.add(egui::Button::new("New Symbol…").shortcut_text("Ctrl+F8")).clicked() { self.open_symbol_dialog(false); ui.close_menu(); }
                     if ui.button("New Layer").clicked() { self.ed.add_layer(); ui.close_menu(); }
+                    if self.ed.camera_layer().is_none() {
+                        if ui.add_enabled(self.ed.editing.is_none(), egui::Button::new("Camera Layer")).clicked() { self.ed.add_camera(); self.set_tool(Tool::Camera); ui.close_menu(); }
+                    } else if ui.button("Remove Camera Layer").clicked() { self.ed.remove_camera(); ui.close_menu(); }
                     ui.separator();
                     timeline::frame_menu(self, ui);
                 });
@@ -503,6 +554,8 @@ impl App {
                 });
                 ui.menu_button("Window", |ui| {
                     if ui.add(egui::Button::new("Actions").shortcut_text("F9")).clicked() { self.scripting.actions_open = true; ui.close_menu(); }
+                    if ui.add(egui::SelectableLabel::new(self.lib.open, "Library  (Ctrl+L)")).clicked() { self.lib.open = !self.lib.open; ui.close_menu(); }
+                    if ui.add(egui::SelectableLabel::new(self.transform_open, "Transform  (Ctrl+T)")).clicked() { self.transform_open = !self.transform_open; ui.close_menu(); }
                     if ui.add(egui::Button::new("Output").shortcut_text("F2")).clicked() { self.scripting.output_open = true; ui.close_menu(); }
                     if ui.button("Script Console").clicked() { self.scripting.console_open = true; ui.close_menu(); }
                     if ui.button("Command Reference").clicked() { self.scripting.reference_open = true; ui.close_menu(); }
@@ -542,6 +595,7 @@ impl App {
         let mut symbol_ok: Option<(bool, String, SymbolKind)> = None;
         let mut rename_ok: Option<(SymbolId, String)> = None;
         let mut delete_ok: Option<SymbolId> = None;
+        let mut scale_rot: Option<(f32, f32)> = None;
         let enter = ctx.input(|i| i.key_pressed(Key::Enter));
         let esc = ctx.input(|i| i.key_pressed(Key::Escape));
         let win = |t: &str| egui::Window::new(t.to_string()).collapsible(false).resizable(false).anchor(Align2::CENTER_CENTER, [0.0, 0.0]);
@@ -604,6 +658,22 @@ impl App {
                     });
                 });
             }
+            Dialog::ScaleRotate { scale, rotate } => {
+                win("Scale and Rotate").show(ctx, |ui| {
+                    egui::Grid::new("sr").show(ui, |ui| {
+                        ui.label("Scale");
+                        ui.add(egui::DragValue::new(scale).range(1.0..=10000.0).suffix(" %"));
+                        ui.end_row();
+                        ui.label("Rotate");
+                        ui.add(egui::DragValue::new(rotate).range(-360.0..=360.0).suffix("°"));
+                        ui.end_row();
+                    });
+                    ui.horizontal(|ui| {
+                        if ui.button("OK").clicked() || enter { scale_rot = Some((*scale, *rotate)); close = true; }
+                        if ui.button("Cancel").clicked() || esc { close = true; }
+                    });
+                });
+            }
             Dialog::About => {
                 win("About AnimateCraft").show(ctx, |ui| {
                     ui.heading("AnimateCraft 0.2 (demo)");
@@ -631,6 +701,13 @@ impl App {
             }
         }
         if let Some((id, n)) = rename_ok { self.ed.rename_symbol(id, &n); }
+        if let Some((sc, rot)) = scale_rot {
+            if let Some(c) = self.pivot() {
+                let k = sc / 100.0;
+                let m = Matrix::translate(c.x, c.y).concat(&Matrix::rotate(rot.to_radians())).concat(&Matrix::scale(k, k)).concat(&Matrix::translate(-c.x, -c.y));
+                self.ed.modify_selected("Scale and Rotate", |e| e.matrix = m.concat(&e.matrix));
+            }
+        }
         if let Some(id) = delete_ok {
             self.ed.delete_symbol(id);
             self.lib_selected = None;
@@ -650,9 +727,7 @@ impl eframe::App for App {
         if cur != self.last_sel {
             if !cur.0.is_empty() {
                 self.props_tab = PropsTab::Object;
-            } else if cur.1.is_some() {
-                self.props_tab = PropsTab::Frame;
-            } else if self.props_tab == PropsTab::Object {
+            } else if cur.1.is_some() || self.props_tab == PropsTab::Object {
                 self.props_tab = PropsTab::Frame;
             }
             self.last_sel = cur;
@@ -680,11 +755,13 @@ impl eframe::App for App {
         self.status_bar(ctx);
         timeline::panel(self, ctx);
         toolbar::panel(self, ctx);
+        panels::left_library(self, ctx);
         panels::right_panel(self, ctx);
         stage::stage(self, ctx);
         panels::library_drag_ghost(self, ctx);
         self.dialogs(ctx);
         scripting::windows(self, ctx);
+        panels::transform_window(self, ctx);
 
         // Screenshot hook (docs/CI): wait a few frames for layout to settle.
         if let Some((path, n)) = &mut self.screenshot {

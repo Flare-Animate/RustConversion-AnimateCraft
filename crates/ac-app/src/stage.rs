@@ -1,8 +1,9 @@
 //! Stage: rendering, tool input, selection overlays and the stage context menu.
 
-use crate::toolbar::{PencilMode, Tool};
+use crate::toolbar::{FtMode, PencilMode, Tool};
 use crate::{from32, App, ACCENT};
-use ac_core::{pt, Color, Element, ElementKind, Matrix, Path, PointRef, Pt, Seg, Selection, Shape, Stroke};
+use ac_core::deform::{self, Transform3D, Warp};
+use ac_core::{pt, Color, Editor, Element, ElementKind, Gradient, Matrix, Path, PointRef, Pt, Seg, Selection, Shape, Stroke};
 use eframe::egui::{self, pos2, vec2, Color32, CursorIcon, Key, Pos2, Rect, Sense, Stroke as EStroke, Vec2};
 use tiny_skia as sk;
 
@@ -10,19 +11,60 @@ pub enum Drag {
     None,
     Move { last: Pt, moved: bool, raw: Pt, applied: Pt, start: Option<(Pt, Pt)>, targets: (Vec<f32>, Vec<f32>) },
     Transform { mode: TMode, applied: Matrix, started: bool },
+    /// Free Transform › Distort / Envelope: one handle moves, shapes are re-mapped.
+    FtWarp { envelope: bool, handle: usize, lo: Pt, hi: Pt, handles: Vec<Pt>, base: Vec<(Selection, Path)>, started: bool },
+    /// Free Transform: move the transformation point.
+    Pivot,
     Marquee { start: Pt, cur: Pt, add: bool },
     Draw { start: Pt, cur: Pt },
     Freehand { pts: Vec<Pt> },
+    /// Fluid Brush: points with timestamps (speed → width).
+    Fluid { pts: Vec<(Pt, f64)> },
     Erase { mark: usize, removed: usize, last: Pt },
     Point { sel: Selection, r: PointRef, started: bool },
     ZoomBox { start: Pos2, cur: Pos2 },
     Pan { last: Pos2 },
+    Gizmo3D { kind: Grab3D, last: Pos2, center: Pos2, started: bool },
+    Grad { sel: Selection, handle: usize, started: bool },
+    BoneDraw { layer: usize, parent: usize, head: Pt, cur: Pt },
+    Ik { layer: usize, element: usize, grab: Pt, started: bool },
+    WidthPt { sel: Selection, t: f32, started: bool },
+    WarpPin { sel: Selection, pin: usize, started: bool },
+    CameraPan { last: Pos2, rotate: bool, started: bool },
+    RotView { start: f32, base: f32 },
 }
 
 #[derive(Clone, Copy)]
 pub enum TMode {
-    Scale { anchor: Pt, start: Pt },
+    /// Scale about `anchor`; `ax`/`ay` say which axes follow the mouse.
+    Scale { anchor: Pt, start: Pt, ax: bool, ay: bool },
     Rotate { center: Pt, start_angle: f32 },
+    /// Drag an edge: horizontal skew (top/bottom edge) or vertical (left/right).
+    Skew { horizontal: bool, anchor: Pt, start: Pt },
+}
+
+/// What the pointer grabbed on the transform box.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Grab {
+    Pivot,
+    /// Handle index: [TL, TR, BL, BR, T, B, L, R].
+    Scale(usize),
+    /// Edge index: 0 top, 1 bottom, 2 left, 3 right.
+    Skew(usize),
+    Rotate(usize),
+}
+
+/// 3D tool gizmo parts.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Grab3D {
+    X,
+    Y,
+    Z,
+    Free,
+    Center,
+    TX,
+    TY,
+    TZ,
 }
 
 /// Pen tool path in progress: anchors with their outgoing handle offsets.
@@ -40,6 +82,19 @@ pub struct TextEdit {
     pub focus_requested: bool,
 }
 
+const GIZMO_R: f32 = 70.0;
+
+fn handles8(lo: Pt, hi: Pt) -> [Pt; 8] {
+    let (mx, my) = ((lo.x + hi.x) / 2.0, (lo.y + hi.y) / 2.0);
+    [pt(lo.x, lo.y), pt(hi.x, lo.y), pt(lo.x, hi.y), pt(hi.x, hi.y), pt(mx, lo.y), pt(mx, hi.y), pt(lo.x, my), pt(hi.x, my)]
+}
+
+fn seg_dist(p: Pos2, a: Pos2, b: Pos2) -> f32 {
+    let ab = b - a;
+    let t = ((p - a).dot(ab) / ab.length_sq().max(1e-6)).clamp(0.0, 1.0);
+    p.distance(a + ab * t)
+}
+
 impl App {
     fn content_offset(&self) -> Vec2 {
         if self.ed.editing.is_some() {
@@ -48,19 +103,37 @@ impl App {
             Vec2::ZERO
         }
     }
-    pub(crate) fn to_screen(&self, rect: Rect, p: Pt) -> Pos2 {
+    /// Stage coordinates → screen points relative to the stage rect (pan, view rotation, zoom).
+    fn view_base(&self) -> Matrix {
+        Matrix::translate(self.pan.x, self.pan.y).concat(&Matrix::rotate(self.view_rot)).concat(&Matrix::scale(self.zoom, self.zoom))
+    }
+    fn view_content(&self) -> Matrix {
         let o = self.content_offset();
-        rect.min + self.pan + vec2(p.x + o.x, p.y + o.y) * self.zoom
+        self.view_base().concat(&Matrix::translate(o.x, o.y))
+    }
+    pub(crate) fn to_screen(&self, rect: Rect, p: Pt) -> Pos2 {
+        let q = self.view_content().apply(p);
+        rect.min + vec2(q.x, q.y)
     }
     pub(crate) fn to_doc(&self, rect: Rect, s: Pos2) -> Pt {
-        let o = self.content_offset();
-        let v = (s - rect.min - self.pan) / self.zoom - o;
-        pt(v.x, v.y)
+        let v = s - rect.min;
+        self.view_content().invert().map(|m| m.apply(pt(v.x, v.y))).unwrap_or(pt(v.x, v.y))
     }
-    fn fit(&mut self, rect: Rect) {
+    /// A doc-space box as a screen quad (TL, TR, BR, BL) — it is rotated with the view.
+    fn quad(&self, rect: Rect, lo: Pt, hi: Pt) -> Vec<Pos2> {
+        [pt(lo.x, lo.y), pt(hi.x, lo.y), pt(hi.x, hi.y), pt(lo.x, hi.y)].iter().map(|p| self.to_screen(rect, *p)).collect()
+    }
+    pub(crate) fn fit(&mut self, rect: Rect) {
         let d = &self.ed.doc;
-        self.zoom = ((rect.width() - 60.0) / d.width).min((rect.height() - 60.0) / d.height).clamp(0.1, 8.0);
-        self.pan = (rect.size() - vec2(d.width, d.height) * self.zoom) / 2.0;
+        let (w, h) = (d.width, d.height);
+        let (c, s) = (self.view_rot.cos().abs(), self.view_rot.sin().abs());
+        let (bw, bh) = (w * c + h * s, w * s + h * c);
+        self.zoom = ((rect.width() - 60.0) / bw).min((rect.height() - 60.0) / bh).clamp(0.1, 8.0);
+        self.pan = Vec2::ZERO;
+        let o = self.content_offset();
+        let center = pt(w / 2.0 - o.x, h / 2.0 - o.y);
+        let now = self.to_screen(rect, center);
+        self.pan += rect.center() - now;
     }
     pub(crate) fn zoom_at(&mut self, rect: Rect, anchor: Pos2, factor: f32) {
         let new = (self.zoom * factor).clamp(0.05, 32.0);
@@ -68,29 +141,163 @@ impl App {
         self.pan = a - (a - self.pan) * (new / self.zoom);
         self.zoom = new;
     }
+    /// Rotate the view about the centre of the stage area (Rotation tool).
+    pub(crate) fn set_view_rot(&mut self, rect: Rect, rad: f32) {
+        let c = self.to_doc(rect, rect.center());
+        self.view_rot = rad;
+        let now = self.to_screen(rect, c);
+        self.pan += rect.center() - now;
+    }
     fn cur_fill(&self) -> Option<Color> {
         self.fill_on.then(|| from32(self.fill))
     }
     fn cur_stroke(&self) -> Option<Stroke> {
         self.stroke_on.then(|| Stroke { color: from32(self.stroke), width: self.stroke_w })
     }
+    /// A new shape with the current fill type (solid, or a gradient from fill → second colour).
+    pub(crate) fn make_shape(&self, path: Path, fill: Option<Color>, stroke: Option<Stroke>) -> Shape {
+        let mut s = Shape::new(path, fill, stroke);
+        if let (Some(k), Some(f)) = (self.topts.fill_gradient, fill) {
+            if let Some((lo, hi)) = s.path.bounds() {
+                s.gradient = Some(Gradient::fit(k, vec![(0.0, f), (1.0, from32(self.topts.fill2))], lo, hi));
+            }
+        }
+        s
+    }
     fn locked_msg(&mut self) {
         self.status = "The current layer is locked or hidden. Pick another layer in the timeline.".into();
     }
 
-    fn handle_hit(&self, rect: Rect, pos: Pos2, tool: Tool) -> Option<(usize, bool)> {
-        let (lo, hi) = self.ed.selection_bounds()?;
-        let corners = [pt(lo.x, lo.y), pt(hi.x, lo.y), pt(lo.x, hi.y), pt(hi.x, hi.y)];
-        let mut best: Option<(usize, bool, f32)> = None;
-        for (i, c) in corners.iter().enumerate() {
-            let d = self.to_screen(rect, *c).distance(pos);
-            if d < 7.0 && best.map(|b| d < b.2).unwrap_or(true) {
-                best = Some((i, false, d));
-            } else if tool == Tool::FreeTransform && d < 24.0 && best.is_none() {
-                best = Some((i, true, d));
+    /// Free Transform's transformation point (defaults to the selection centre).
+    pub(crate) fn pivot(&self) -> Option<Pt> {
+        if let Some((sel, p)) = &self.ft_pivot {
+            if *sel == self.ed.selection {
+                return Some(*p);
             }
         }
-        best.map(|(i, r, _)| (i, r))
+        let (lo, hi) = self.ed.selection_bounds()?;
+        Some(pt((lo.x + hi.x) / 2.0, (lo.y + hi.y) / 2.0))
+    }
+
+    fn grab_at(&self, rect: Rect, pos: Pos2, tool: Tool) -> Option<Grab> {
+        let (lo, hi) = self.ed.selection_bounds()?;
+        let ft = tool == Tool::FreeTransform;
+        if ft {
+            if let Some(pv) = self.pivot() {
+                if self.to_screen(rect, pv).distance(pos) < 7.0 {
+                    return Some(Grab::Pivot);
+                }
+            }
+        }
+        let hs = handles8(lo, hi);
+        let n = if ft { 8 } else { 4 };
+        let mut best: Option<(usize, f32)> = None;
+        for (i, h) in hs.iter().enumerate().take(n) {
+            let d = self.to_screen(rect, *h).distance(pos);
+            if d < 7.0 && best.map(|b| d < b.1).unwrap_or(true) {
+                best = Some((i, d));
+            }
+        }
+        if let Some((i, _)) = best {
+            return Some(Grab::Scale(i));
+        }
+        if !ft {
+            return None;
+        }
+        let q = self.quad(rect, lo, hi); // TL TR BR BL
+        for (e, (a, b)) in [(q[0], q[1]), (q[3], q[2]), (q[0], q[3]), (q[1], q[2])].into_iter().enumerate() {
+            if seg_dist(pos, a, b) < 5.0 {
+                return Some(Grab::Skew(e));
+            }
+        }
+        let inside = {
+            let p = self.to_doc(rect, pos);
+            p.x >= lo.x && p.x <= hi.x && p.y >= lo.y && p.y <= hi.y
+        };
+        if !inside {
+            for (i, h) in hs.iter().enumerate().take(4) {
+                if self.to_screen(rect, *h).distance(pos) < 24.0 {
+                    return Some(Grab::Rotate(i));
+                }
+            }
+        }
+        None
+    }
+
+    /// Distort/Envelope handles of the current selection.
+    fn warp_handles(&self) -> Option<(Pt, Pt, Vec<Pt>)> {
+        let (lo, hi) = self.ed.selection_bounds()?;
+        let hs = match self.topts.ft_mode {
+            FtMode::Distort => vec![pt(lo.x, lo.y), pt(hi.x, lo.y), pt(hi.x, hi.y), pt(lo.x, hi.y)],
+            FtMode::Envelope => deform::envelope_grid(lo, hi).to_vec(),
+            FtMode::Normal => return None,
+        };
+        Some((lo, hi, hs))
+    }
+
+    /// 3D gizmo centre on screen for the first selected object.
+    fn gizmo_center(&self, rect: Rect) -> Option<Pos2> {
+        let s = *self.ed.selection.first()?;
+        let el = self.ed.element_at(s)?;
+        let c = match el.three_d {
+            Some(t) => {
+                let cw = el.matrix.apply(t.center);
+                deform::project_3d(&t, cw, &self.ed.doc.perspective(), cw)
+            }
+            None => {
+                let (lo, hi) = self.ed.bounds_of(&[s])?;
+                pt((lo.x + hi.x) / 2.0, (lo.y + hi.y) / 2.0)
+            }
+        };
+        Some(self.to_screen(rect, c))
+    }
+
+    fn grab3d_at(&self, rect: Rect, pos: Pos2) -> Option<(Grab3D, Pos2)> {
+        let c = self.gizmo_center(rect)?;
+        let d = pos - c;
+        let dc = d.length();
+        let r = GIZMO_R;
+        let g = if self.tool == Tool::Rotate3D {
+            if dc < 7.0 {
+                Grab3D::Center
+            } else if d.x.abs() < 5.0 && d.y.abs() <= r {
+                Grab3D::X
+            } else if d.y.abs() < 5.0 && d.x.abs() <= r {
+                Grab3D::Y
+            } else if (dc - r).abs() < 6.0 {
+                Grab3D::Z
+            } else if (dc - r - 14.0).abs() < 6.0 {
+                Grab3D::Free
+            } else {
+                return None;
+            }
+        } else if dc < 8.0 {
+            Grab3D::TZ
+        } else if d.x > 0.0 && d.x < r + 10.0 && d.y.abs() < 6.0 {
+            Grab3D::TX
+        } else if d.y < 0.0 && -d.y < r + 10.0 && d.x.abs() < 6.0 {
+            Grab3D::TY
+        } else {
+            return None;
+        };
+        Some((g, c))
+    }
+
+    /// Give every selected object a 3D centre (its local bounds centre) before a 3D edit.
+    pub(crate) fn ensure_3d(&mut self) {
+        let sels = self.ed.selection.clone();
+        for s in &sels {
+            let Some(el) = self.ed.element_at(*s) else { continue };
+            if el.three_d.is_some() {
+                continue;
+            }
+            let Some((lo, hi)) = self.ed.bounds_of(&[*s]) else { continue };
+            let Some(inv) = el.matrix.invert() else { continue };
+            let c = inv.apply(pt((lo.x + hi.x) / 2.0, (lo.y + hi.y) / 2.0));
+            self.ed.selection = vec![*s];
+            self.ed.modify_selected_continuous(|e| e.three_d = Some(Transform3D { center: c, ..Default::default() }));
+        }
+        self.ed.selection = sels;
     }
 
     /// A selected (or clicked) shape and the doc→local transform for point editing.
@@ -120,7 +327,7 @@ impl App {
             }
             _ => {
                 self.ed.select(Some(hit), false);
-                self.status = "Point editing works on shapes. Break apart symbols/text first (Ctrl+B).".into();
+                self.status = "This tool works on shapes. Break apart symbols/text first (Ctrl+B).".into();
                 None
             }
         }
@@ -148,7 +355,8 @@ impl App {
         }
         let fill = if close { self.cur_fill() } else { None };
         let stroke = self.cur_stroke().or(if fill.is_none() { Some(Stroke { color: from32(self.stroke), width: self.stroke_w }) } else { None });
-        if self.ed.add_element(Element::shape("Pen Path", Shape { path: Path { segs }, fill, stroke })).is_none() {
+        let shape = self.make_shape(Path { segs }, fill, stroke);
+        if self.ed.add_element(Element::shape("Pen Path", shape)).is_none() {
             self.locked_msg();
         }
     }
@@ -184,6 +392,24 @@ impl App {
             }
         }
         (xs, ys)
+    }
+
+    /// World-space joints of every bone on visible layers: (layer, bone index, head, tail).
+    pub(crate) fn bone_segments(&self) -> Vec<(usize, usize, Pt, Pt)> {
+        let mut out = Vec::new();
+        let f = self.ed.frame;
+        for (li, l) in self.ed.timeline().layers.iter().enumerate() {
+            if l.bones.is_empty() || !l.visible {
+                continue;
+            }
+            let Some((els, _)) = ac_core::layer_elements_at(l, f) else { continue };
+            for (bi, b) in l.bones.iter().enumerate() {
+                if let Some(pe) = els.get(b.parent) {
+                    out.push((li, bi, pe.matrix.apply(b.head), pe.matrix.apply(b.tail_parent)));
+                }
+            }
+        }
+        out
     }
 }
 
@@ -280,7 +506,68 @@ fn brush_outline(pts: &[Pt], size: f32, smooth: f32) -> Option<Path> {
     Some(Path { segs })
 }
 
+/// Fluid Brush widths: slow strokes are thick, fast strokes thin.
+fn fluid_widths(pts: &[(Pt, f64)], size: f32, sensitivity: f32, zoom: f32) -> Vec<f32> {
+    let n = pts.len();
+    let raw: Vec<f32> = (0..n)
+        .map(|i| {
+            let (a, b) = (pts[i.saturating_sub(1)], pts[(i + 1).min(n - 1)]);
+            let dt = (b.1 - a.1).max(1e-3) as f32;
+            let speed = a.0.dist(b.0) * zoom / dt; // screen px / s
+            let k = (speed / 1800.0).min(1.0) * sensitivity / 100.0;
+            size * (1.0 - 0.85 * k)
+        })
+        .collect();
+    // smooth, then taper the ends a little like a real brush
+    (0..n)
+        .map(|i| {
+            let lo = i.saturating_sub(3);
+            let hi = (i + 3).min(n - 1);
+            let avg = raw[lo..=hi].iter().sum::<f32>() / (hi - lo + 1) as f32;
+            let end = (i.min(n - 1 - i) as f32 / 4.0).min(1.0);
+            avg * (0.45 + 0.55 * end)
+        })
+        .collect()
+}
+
+/// Oval with Animate's options: start/end angle (degrees, clockwise from 3 o'clock) and inner radius (0–99%).
+pub(crate) fn oval_path(cx: f32, cy: f32, rx: f32, ry: f32, start: f32, end: f32, inner: f32) -> Path {
+    let mut sweep = (end - start).rem_euclid(360.0);
+    let full = sweep < 0.01;
+    if full {
+        sweep = 360.0;
+    }
+    let inner = (inner / 100.0).clamp(0.0, 0.99);
+    if full && inner <= 0.0 {
+        return Path::ellipse(cx, cy, rx, ry);
+    }
+    let arc = |k: f32, a0: f32, sweep: f32| -> Vec<Pt> {
+        let n = ((sweep / 4.0).ceil() as usize).max(2);
+        (0..=n).map(|i| { let a = (a0 + sweep * i as f32 / n as f32).to_radians(); pt(cx + rx * k * a.cos(), cy + ry * k * a.sin()) }).collect()
+    };
+    if full {
+        let mut outer = arc(1.0, start, 360.0);
+        outer.pop();
+        let mut inn = arc(inner, start, 360.0);
+        inn.pop();
+        inn.reverse();
+        let mut p = Path::polygon(&outer);
+        p.segs.extend(Path::polygon(&inn).segs);
+        return p;
+    }
+    let mut pts = arc(1.0, start, sweep);
+    if inner > 0.0 {
+        let mut i = arc(inner, start, sweep);
+        i.reverse();
+        pts.extend(i);
+    } else {
+        pts.push(pt(cx, cy));
+    }
+    Path::polygon(&pts)
+}
+
 pub fn stage(app: &mut App, ctx: &egui::Context) {
+    app.ed.camera_view = app.ed.editing.is_none() && (app.playing || app.tool == Tool::Camera) && app.ed.camera_layer().is_some();
     egui::CentralPanel::default().frame(egui::Frame::none().fill(Color32::from_gray(0x3C))).show(ctx, |ui| {
         egui::Frame::none().fill(Color32::from_gray(0x2E)).inner_margin(egui::Margin::symmetric(8.0, 4.0)).show(ui, |ui| {
             ui.set_width(ui.available_width());
@@ -296,11 +583,19 @@ pub fn stage(app: &mut App, ctx: &egui::Context) {
                         app.fit_pending = true;
                     }
                 }
+                if app.ed.camera_view {
+                    ui.label(egui::RichText::new("🎥 Camera view").color(Color32::from_rgb(0xFF, 0xA0, 0x30)));
+                }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if ui.small_button("Fit").clicked() {
                         app.fit_pending = true;
                     }
                     ui.label(format!("{:.0}%", app.zoom * 100.0));
+                    if app.view_rot.abs() > 1e-4
+                        && ui.small_button(format!("⟲ {:.0}°", app.view_rot.to_degrees())).on_hover_text("View rotated (Rotation tool). Click to reset").clicked() {
+                            let r = app.stage_rect;
+                            app.set_view_rot(r, 0.0);
+                        }
                 });
             });
         });
@@ -322,11 +617,22 @@ pub fn stage(app: &mut App, ctx: &egui::Context) {
         }
         if resp.hovered() {
             let space = ui.input(|i| i.key_down(Key::Space));
+            let hover = resp.hover_pos();
+            let grab_tool = app.tool == Tool::Select || (app.tool == Tool::FreeTransform && app.topts.ft_mode == FtMode::Normal);
+            let grab = hover.filter(|_| grab_tool).and_then(|h| app.grab_at(rect, h, app.tool));
             let icon = match if space { Tool::Hand } else { app.tool } {
-                Tool::Hand => if resp.dragged() { CursorIcon::Grabbing } else { CursorIcon::Grab },
+                Tool::Hand | Tool::Camera => if resp.dragged() { CursorIcon::Grabbing } else { CursorIcon::Grab },
                 Tool::Zoom => if ui.input(|i| i.modifiers.alt) { CursorIcon::ZoomOut } else { CursorIcon::ZoomIn },
                 Tool::Text => CursorIcon::Text,
-                Tool::Select | Tool::FreeTransform => CursorIcon::Default,
+                Tool::Select | Tool::FreeTransform => match grab {
+                    Some(Grab::Scale(i)) => match i { 0 | 3 => CursorIcon::ResizeNwSe, 1 | 2 => CursorIcon::ResizeNeSw, 4 | 5 => CursorIcon::ResizeVertical, _ => CursorIcon::ResizeHorizontal },
+                    Some(Grab::Skew(e)) => if e < 2 { CursorIcon::ResizeColumn } else { CursorIcon::ResizeRow },
+                    Some(Grab::Rotate(_)) => CursorIcon::Alias,
+                    Some(Grab::Pivot) => CursorIcon::Move,
+                    None => CursorIcon::Default,
+                },
+                Tool::Rotate3D | Tool::Translate3D | Tool::GradientTransform | Tool::RotateView => CursorIcon::Default,
+                Tool::Bone | Tool::AssetWarp | Tool::Width => CursorIcon::PointingHand,
                 t if !t.usable() => CursorIcon::NotAllowed,
                 _ => CursorIcon::Crosshair,
             };
@@ -344,7 +650,17 @@ fn stage_input(app: &mut App, ui: &egui::Ui, rect: Rect, resp: &egui::Response) 
     if let Some(hover) = resp.hover_pos() {
         let scroll = ui.input(|i| i.raw_scroll_delta.y);
         if scroll != 0.0 {
-            app.zoom_at(rect, hover, if scroll > 0.0 { 1.1 } else { 1.0 / 1.1 });
+            if app.tool == Tool::Camera && app.ed.camera_layer().is_some() && !app.playing {
+                // Camera tool: scroll zooms the camera, not the view.
+                let cam = app.ed.camera_at(app.ed.frame).unwrap_or_else(|| ac_core::default_camera(&app.ed.doc).matrix);
+                let (c, rot, z) = Editor::camera_params(&cam);
+                let nz = (z * if scroll > 0.0 { 1.1 } else { 1.0 / 1.1 }).clamp(0.05, 50.0);
+                app.ed.begin_edit("Camera Zoom");
+                app.ed.set_camera(Editor::camera_from(c, rot, nz));
+                app.status = format!("Camera zoom {:.0}%", nz * 100.0);
+            } else {
+                app.zoom_at(rect, hover, if scroll > 0.0 { 1.1 } else { 1.0 / 1.1 });
+            }
         }
     }
     let (space, shift, alt) = ui.input(|i| (i.key_down(Key::Space), i.modifiers.shift, i.modifiers.alt));
@@ -404,11 +720,15 @@ fn stage_input(app: &mut App, ui: &egui::Ui, rect: Rect, resp: &egui::Response) 
                 lasso_select(app, &poly, shift);
                 return;
             }
+            Tool::RotateView => {
+                app.set_view_rot(rect, 0.0);
+                return;
+            }
             _ => {}
         }
     }
 
-    let pressed = resp.drag_started() || (resp.clicked() && matches!(app.drag, crate::stage::Drag::None));
+    let pressed = resp.drag_started() || (resp.clicked() && matches!(app.drag, Drag::None));
     if pressed {
         app.playing = false;
         app.ed.frame_sel = None;
@@ -416,368 +736,893 @@ fn stage_input(app: &mut App, ui: &egui::Ui, rect: Rect, resp: &egui::Response) 
             app.status = format!("{} is planned: {}", tool.info().name, tool.info().planned.unwrap_or(""));
             return;
         }
-        match tool {
-            Tool::Hand => app.drag = Drag::Pan { last: origin },
-            Tool::Zoom => app.drag = Drag::ZoomBox { start: origin, cur: origin },
-            Tool::Select | Tool::FreeTransform => {
-                if let Some((corner, rotate)) = app.handle_hit(rect, origin, tool) {
-                    let (lo, hi) = app.ed.selection_bounds().unwrap();
-                    app.drag = if rotate {
-                        let c = pt((lo.x + hi.x) / 2.0, (lo.y + hi.y) / 2.0);
-                        Drag::Transform { mode: TMode::Rotate { center: c, start_angle: (p0.y - c.y).atan2(p0.x - c.x) }, applied: Matrix::IDENTITY, started: false }
-                    } else {
-                        let opposite = [pt(hi.x, hi.y), pt(lo.x, hi.y), pt(hi.x, lo.y), pt(lo.x, lo.y)][corner];
-                        Drag::Transform { mode: TMode::Scale { anchor: opposite, start: p0 }, applied: Matrix::IDENTITY, started: false }
-                    };
-                } else if let Some(hit) = app.ed.hit_test(p0) {
-                    if shift {
-                        app.ed.select(Some(hit), true);
-                    } else if !app.ed.is_selected(hit) {
-                        app.ed.select(Some(hit), false);
-                    }
-                    if app.ed.is_selected(hit) {
-                        let targets = if app.topts.snap { app.snap_targets() } else { (vec![], vec![]) };
-                        app.drag = Drag::Move { last: p0, moved: false, raw: pt(0.0, 0.0), applied: pt(0.0, 0.0), start: app.ed.selection_bounds(), targets };
-                    }
-                } else {
-                    if !shift {
-                        app.ed.select(None, false);
-                    }
-                    app.drag = Drag::Marquee { start: p0, cur: p0, add: shift };
-                }
-            }
-            Tool::Subselect => {
-                if let Some((s, inv, path)) = app.shape_for_points(p0, true) {
-                    let scale = app.ed.element_at(s).map(|e| e.matrix.decompose().scale_x.abs().max(0.01)).unwrap_or(1.0);
-                    if let Some(r) = path.pick_point(inv.apply(p0), 8.0 / app.zoom / scale, true) {
-                        app.drag = Drag::Point { sel: s, r, started: false };
-                    } else {
-                        let targets = (vec![], vec![]);
-                        app.drag = Drag::Move { last: p0, moved: false, raw: pt(0.0, 0.0), applied: pt(0.0, 0.0), start: None, targets };
-                    }
-                } else if app.ed.hit_test(p0).is_none() {
-                    app.ed.select(None, false);
-                }
-            }
-            Tool::AddAnchor | Tool::DeleteAnchor | Tool::ConvertAnchor => {
-                if let Some((s, inv, path)) = app.shape_for_points(p0, true) {
-                    let scale = app.ed.element_at(s).map(|e| e.matrix.decompose().scale_x.abs().max(0.01)).unwrap_or(1.0);
-                    let lp = inv.apply(p0);
-                    let tol = 8.0 / app.zoom / scale;
-                    let mut path2 = path.clone();
-                    let changed = match tool {
-                        Tool::AddAnchor => path2.insert_anchor(lp, tol).is_some(),
-                        Tool::DeleteAnchor => match path.pick_point(lp, tol, false) {
-                            Some(PointRef::Anchor(i)) => path2.delete_anchor(i),
-                            _ => false,
-                        },
-                        _ => match path.pick_point(lp, tol, false) {
-                            Some(PointRef::Anchor(i)) => {
-                                path2.convert_anchor(i);
-                                true
-                            }
-                            _ => false,
-                        },
-                    };
-                    if changed {
-                        app.ed.selection = vec![s];
-                        let label = tool.info().name;
-                        app.ed.modify_selected(label, move |e| {
-                            if let ElementKind::Shape(sh) = &mut e.kind {
-                                sh.path = path2.clone();
-                            }
-                        });
-                    } else {
-                        app.status = match tool {
-                            Tool::AddAnchor => "Click on the shape's outline to add a point.".into(),
-                            _ => "Click on an anchor point.".into(),
-                        };
-                    }
-                }
-            }
-            Tool::Pen => {
-                if !app.ed.layer_editable(app.ed.layer) {
-                    app.locked_msg();
-                    return;
-                }
-                let first = app.pen.as_ref().and_then(|pn| pn.pts.first().map(|f| f.0));
-                let n = app.pen.as_ref().map(|pn| pn.pts.len()).unwrap_or(0);
-                if let Some(f) = first {
-                    if n >= 2 && app.to_screen(rect, f).distance(origin) < 8.0 {
-                        app.finish_pen(true);
-                        return;
-                    }
-                }
-                let pen = app.pen.get_or_insert_with(Default::default);
-                pen.pts.push((p0, pt(0.0, 0.0)));
-                pen.dragging = true;
-            }
-            Tool::Lasso => app.drag = Drag::Freehand { pts: vec![p0] },
-            Tool::PolyLasso => {
-                if app.poly_lasso.len() >= 3 && app.to_screen(rect, app.poly_lasso[0]).distance(origin) < 8.0 {
-                    let poly = std::mem::take(&mut app.poly_lasso);
-                    lasso_select(app, &poly, shift);
-                } else {
-                    app.poly_lasso.push(p0);
-                }
-            }
-            Tool::Text => {
-                if app.text_edit.is_some() {
-                    app.finish_text();
-                }
-                if let Some(h) = app.ed.hit_test(p0) {
-                    if let Some(ElementKind::Text(t)) = app.ed.element_at(h).map(|e| e.kind) {
-                        app.ed.select(Some(h), false);
-                        app.text_edit = Some(TextEdit { sel: h, buffer: t.text, mark: app.ed.undo_depth(), focus_requested: false });
-                        return;
-                    }
-                }
-                let mark = app.ed.undo_depth();
-                let mut el = Element::text("", app.topts.text_size, from32(app.fill), p0);
-                if let ElementKind::Text(t) = &mut el.kind {
-                    t.font = app.topts.text_font;
-                    t.align = app.topts.text_align;
-                }
-                match app.ed.add_element(el) {
-                    Some(s) => app.text_edit = Some(TextEdit { sel: s, buffer: String::new(), mark, focus_requested: false }),
-                    None => app.locked_msg(),
-                }
-            }
-            Tool::Rect | Tool::Oval | Tool::Line | Tool::PolyStar => app.drag = Drag::Draw { start: p0, cur: p0 },
-            Tool::Pencil | Tool::Brush => app.drag = Drag::Freehand { pts: vec![p0] },
-            Tool::Eraser => {
-                let mark = app.ed.undo_depth();
-                let removed = erase_at(app, p0);
-                app.drag = Drag::Erase { mark, removed, last: p0 };
-            }
-            Tool::Bucket => match app.ed.hit_test(p0) {
-                Some(s) => app.ed.paint_bucket(s, from32(app.fill)),
-                None => app.status = "Paint Bucket: click inside a shape.".into(),
-            },
-            Tool::InkBottle => match app.ed.hit_test(p0) {
-                Some(s) => {
-                    app.ed.selection = vec![s];
-                    let st = Stroke { color: from32(app.stroke), width: app.stroke_w };
-                    app.ed.modify_selected("Ink Bottle", move |e| {
-                        if let ElementKind::Shape(sh) = &mut e.kind {
-                            sh.stroke = Some(st);
-                        }
-                    });
-                }
-                None => app.status = "Ink Bottle: click a shape to give it an outline.".into(),
-            },
-            Tool::Eyedropper => eyedrop(app, p0),
-            _ => {}
-        }
+        press(app, rect, tool, origin, p0, shift, alt);
     }
 
     if resp.dragged() {
-        let zoom = app.zoom;
-        let tool_now = app.tool;
-        let snap_on = app.topts.snap && !alt;
-        if let Some(pen) = app.pen.as_mut().filter(|pn| pn.dragging) {
-            if let Some(last) = pen.pts.last_mut() {
-                last.1 = pt(p.x - last.0.x, p.y - last.0.y);
-            }
-        }
-        match &mut app.drag {
-            Drag::Pan { last } => {
-                app.pan += pos - *last;
-                *last = pos;
-            }
-            Drag::ZoomBox { cur, .. } => *cur = pos,
-            Drag::Move { last, moved, raw, applied, start, targets } => {
-                let d = pt(p.x - last.x, p.y - last.y);
-                *last = p;
-                if !*moved {
-                    app.ed.begin_drag();
-                    *moved = true;
-                }
-                raw.x += d.x;
-                raw.y += d.y;
-                let mut want = *raw;
-                app.snap_guides = (None, None);
-                if let (true, Some((lo, hi))) = (snap_on, *start) {
-                    let thr = 6.0 / zoom;
-                    let (ax, gx) = snap_axis([lo.x + raw.x, (lo.x + hi.x) / 2.0 + raw.x, hi.x + raw.x], &targets.0, thr);
-                    let (ay, gy) = snap_axis([lo.y + raw.y, (lo.y + hi.y) / 2.0 + raw.y, hi.y + raw.y], &targets.1, thr);
-                    want = pt(raw.x + ax, raw.y + ay);
-                    app.snap_guides = (gx, gy);
-                }
-                let inc = pt(want.x - applied.x, want.y - applied.y);
-                *applied = want;
-                app.ed.modify_selected_continuous(|e| {
-                    e.matrix.tx += inc.x;
-                    e.matrix.ty += inc.y;
-                });
-            }
-            Drag::Transform { mode, applied, started } => {
-                if !*started {
-                    app.ed.begin_drag();
-                    *started = true;
-                }
-                let total = match *mode {
-                    TMode::Scale { anchor: a, start: s } => {
-                        let mut sx = if (s.x - a.x).abs() > 0.5 { (p.x - a.x) / (s.x - a.x) } else { 1.0 };
-                        let mut sy = if (s.y - a.y).abs() > 0.5 { (p.y - a.y) / (s.y - a.y) } else { 1.0 };
-                        if shift {
-                            let u = sx.abs().max(sy.abs());
-                            sx = u * sx.signum();
-                            sy = u * sy.signum();
-                        }
-                        let clamp = |v: f32| if v.abs() < 0.01 { 0.01_f32.copysign(if v == 0.0 { 1.0 } else { v }) } else { v };
-                        Matrix::translate(a.x, a.y).concat(&Matrix::scale(clamp(sx), clamp(sy))).concat(&Matrix::translate(-a.x, -a.y))
-                    }
-                    TMode::Rotate { center: c, start_angle } => {
-                        let mut ang = (p.y - c.y).atan2(p.x - c.x) - start_angle;
-                        if shift {
-                            let step = std::f32::consts::PI / 4.0;
-                            ang = (ang / step).round() * step;
-                        }
-                        Matrix::translate(c.x, c.y).concat(&Matrix::rotate(ang)).concat(&Matrix::translate(-c.x, -c.y))
-                    }
-                };
-                if let Some(inv) = applied.invert() {
-                    let inc = total.concat(&inv);
-                    app.ed.modify_selected_continuous(|e| e.matrix = inc.concat(&e.matrix));
-                    *applied = total;
-                }
-            }
-            Drag::Point { sel, r, started } => {
-                if !*started {
-                    app.ed.begin_drag();
-                    *started = true;
-                }
-                let (sel, r) = (*sel, *r);
-                if let Some(inv) = app.ed.element_at(sel).and_then(|e| e.matrix.invert()) {
-                    let lp = inv.apply(p);
-                    app.ed.selection = vec![sel];
-                    app.ed.modify_selected_continuous(|e| {
-                        if let ElementKind::Shape(sh) = &mut e.kind {
-                            sh.path.set_point(r, lp);
-                        }
-                    });
-                }
-            }
-            Drag::Marquee { cur, .. } => *cur = p,
-            Drag::Draw { start, cur } => {
-                *cur = p;
-                if shift {
-                    if tool_now == Tool::Line {
-                        let (dx, dy) = (p.x - start.x, p.y - start.y);
-                        let ang = (dy.atan2(dx) / (std::f32::consts::PI / 4.0)).round() * (std::f32::consts::PI / 4.0);
-                        let len = (dx * dx + dy * dy).sqrt();
-                        *cur = pt(start.x + len * ang.cos(), start.y + len * ang.sin());
-                    } else {
-                        let s = (p.x - start.x).abs().max((p.y - start.y).abs());
-                        *cur = pt(start.x + s * (p.x - start.x).signum(), start.y + s * (p.y - start.y).signum());
-                    }
-                }
-            }
-            Drag::Freehand { pts } => {
-                if pts.last().map(|l| l.dist(p) > 1.5 / zoom).unwrap_or(true) {
-                    pts.push(p);
-                }
-            }
-            Drag::Erase { .. } => {
-                let removed = erase_at(app, p);
-                if let Drag::Erase { removed: r, last, .. } = &mut app.drag {
-                    *r += removed;
-                    *last = p;
-                }
-            }
-            Drag::None => {}
-        }
+        drag(app, ui, rect, pos, p, shift, alt);
     }
 
     let released = resp.drag_stopped() || (resp.clicked() && !matches!(app.drag, Drag::Pan { .. }));
     if released {
-        if let Some(pen) = &mut app.pen {
-            pen.dragging = false;
+        release(app, rect, p, shift, alt);
+    }
+}
+
+fn press(app: &mut App, rect: Rect, tool: Tool, origin: Pos2, p0: Pt, shift: bool, alt: bool) {
+    match tool {
+        Tool::Hand => app.drag = Drag::Pan { last: origin },
+        Tool::Zoom => app.drag = Drag::ZoomBox { start: origin, cur: origin },
+        Tool::RotateView => {
+            let c = rect.center();
+            app.drag = Drag::RotView { start: (origin.y - c.y).atan2(origin.x - c.x), base: app.view_rot };
         }
-        app.snap_guides = (None, None);
-        let drag = std::mem::replace(&mut app.drag, Drag::None);
-        match drag {
-            Drag::Move { moved: false, .. } => {
-                if !shift && app.ed.selection.len() > 1 {
-                    if let Some(hit) = app.ed.hit_test(p) {
-                        app.ed.select(Some(hit), false);
+        Tool::FreeTransform if app.topts.ft_mode != FtMode::Normal && !app.ed.selection.is_empty() => {
+            if let Some((lo, hi, hs)) = app.warp_handles() {
+                if let Some(i) = hs.iter().position(|h| app.to_screen(rect, *h).distance(origin) < 8.0) {
+                    let mut base = Vec::new();
+                    let mut skipped = 0;
+                    for s in app.ed.selection.clone() {
+                        match app.ed.element_at(s) {
+                            Some(Element { kind: ElementKind::Shape(sh), matrix, .. }) if app.ed.layer_editable(s.layer) => base.push((s, sh.path.transformed(&matrix))),
+                            _ => skipped += 1,
+                        }
+                    }
+                    if skipped > 0 {
+                        app.status = format!("{} works on shapes: {skipped} symbol/text object(s) skipped (Break Apart first).", if app.topts.ft_mode == FtMode::Distort { "Distort" } else { "Envelope" });
+                    }
+                    if !base.is_empty() {
+                        app.drag = Drag::FtWarp { envelope: app.topts.ft_mode == FtMode::Envelope, handle: i, lo, hi, handles: hs, base, started: false };
+                    }
+                    return;
+                }
+            }
+            select_press(app, p0, shift);
+        }
+        Tool::Select | Tool::FreeTransform => {
+            if let Some(g) = app.grab_at(rect, origin, tool) {
+                let (lo, hi) = app.ed.selection_bounds().unwrap();
+                let pv = app.pivot().unwrap_or(pt((lo.x + hi.x) / 2.0, (lo.y + hi.y) / 2.0));
+                let hs = handles8(lo, hi);
+                let mode = match g {
+                    Grab::Pivot => {
+                        app.drag = Drag::Pivot;
+                        return;
+                    }
+                    Grab::Rotate(_) => TMode::Rotate { center: pv, start_angle: (p0.y - pv.y).atan2(p0.x - pv.x) },
+                    Grab::Scale(i) => {
+                        let opposite = [3, 2, 1, 0, 5, 4, 7, 6][i];
+                        let anchor = if alt { pv } else { hs[opposite] };
+                        TMode::Scale { anchor, start: hs[i], ax: !(4..6).contains(&i), ay: i < 6 }
+                    }
+                    Grab::Skew(e) => {
+                        let horizontal = e < 2;
+                        let anchor = if alt { pv } else { [pt(lo.x, hi.y), pt(lo.x, lo.y), pt(hi.x, lo.y), pt(lo.x, lo.y)][e] };
+                        TMode::Skew { horizontal, anchor, start: p0 }
+                    }
+                };
+                app.drag = Drag::Transform { mode, applied: Matrix::IDENTITY, started: false };
+                return;
+            }
+            select_press(app, p0, shift);
+        }
+        Tool::Subselect => {
+            if let Some((s, inv, path)) = app.shape_for_points(p0, true) {
+                let scale = app.ed.element_at(s).map(|e| e.matrix.decompose().scale_x.abs().max(0.01)).unwrap_or(1.0);
+                if let Some(r) = path.pick_point(inv.apply(p0), 8.0 / app.zoom / scale, true) {
+                    app.drag = Drag::Point { sel: s, r, started: false };
+                } else {
+                    app.drag = Drag::Move { last: p0, moved: false, raw: pt(0.0, 0.0), applied: pt(0.0, 0.0), start: None, targets: (vec![], vec![]) };
+                }
+            } else if app.ed.hit_test(p0).is_none() {
+                app.ed.select(None, false);
+            }
+        }
+        Tool::AddAnchor | Tool::DeleteAnchor | Tool::ConvertAnchor => {
+            if let Some((s, inv, path)) = app.shape_for_points(p0, true) {
+                let scale = app.ed.element_at(s).map(|e| e.matrix.decompose().scale_x.abs().max(0.01)).unwrap_or(1.0);
+                let lp = inv.apply(p0);
+                let tol = 8.0 / app.zoom / scale;
+                let mut path2 = path.clone();
+                let changed = match tool {
+                    Tool::AddAnchor => path2.insert_anchor(lp, tol).is_some(),
+                    Tool::DeleteAnchor => match path.pick_point(lp, tol, false) {
+                        Some(PointRef::Anchor(i)) => path2.delete_anchor(i),
+                        _ => false,
+                    },
+                    _ => match path.pick_point(lp, tol, false) {
+                        Some(PointRef::Anchor(i)) => {
+                            path2.convert_anchor(i);
+                            true
+                        }
+                        _ => false,
+                    },
+                };
+                if changed {
+                    app.ed.selection = vec![s];
+                    let label = tool.info().name;
+                    app.ed.modify_selected(label, move |e| {
+                        if let ElementKind::Shape(sh) = &mut e.kind {
+                            sh.path = path2.clone();
+                            sh.warp = None;
+                        }
+                    });
+                } else {
+                    app.status = match tool {
+                        Tool::AddAnchor => "Click on the shape's outline to add a point.".into(),
+                        _ => "Click on an anchor point.".into(),
+                    };
+                }
+            }
+        }
+        Tool::Pen => {
+            if !app.ed.layer_editable(app.ed.layer) {
+                app.locked_msg();
+                return;
+            }
+            let first = app.pen.as_ref().and_then(|pn| pn.pts.first().map(|f| f.0));
+            let n = app.pen.as_ref().map(|pn| pn.pts.len()).unwrap_or(0);
+            if let Some(f) = first {
+                if n >= 2 && app.to_screen(rect, f).distance(origin) < 8.0 {
+                    app.finish_pen(true);
+                    return;
+                }
+            }
+            let pen = app.pen.get_or_insert_with(Default::default);
+            pen.pts.push((p0, pt(0.0, 0.0)));
+            pen.dragging = true;
+        }
+        Tool::Lasso => app.drag = Drag::Freehand { pts: vec![p0] },
+        Tool::PolyLasso => {
+            if app.poly_lasso.len() >= 3 && app.to_screen(rect, app.poly_lasso[0]).distance(origin) < 8.0 {
+                let poly = std::mem::take(&mut app.poly_lasso);
+                lasso_select(app, &poly, shift);
+            } else {
+                app.poly_lasso.push(p0);
+            }
+        }
+        Tool::Text => {
+            if app.text_edit.is_some() {
+                app.finish_text();
+            }
+            if let Some(h) = app.ed.hit_test(p0) {
+                if let Some(ElementKind::Text(t)) = app.ed.element_at(h).map(|e| e.kind) {
+                    app.ed.select(Some(h), false);
+                    app.text_edit = Some(TextEdit { sel: h, buffer: t.text, mark: app.ed.undo_depth(), focus_requested: false });
+                    return;
+                }
+            }
+            let mark = app.ed.undo_depth();
+            let mut el = Element::text("", app.topts.text_size, from32(app.fill), p0);
+            if let ElementKind::Text(t) = &mut el.kind {
+                t.font = app.topts.text_font;
+                t.align = app.topts.text_align;
+            }
+            match app.ed.add_element(el) {
+                Some(s) => app.text_edit = Some(TextEdit { sel: s, buffer: String::new(), mark, focus_requested: false }),
+                None => app.locked_msg(),
+            }
+        }
+        Tool::Rect | Tool::Oval | Tool::Line | Tool::PolyStar => app.drag = Drag::Draw { start: p0, cur: p0 },
+        Tool::Pencil | Tool::Brush => app.drag = Drag::Freehand { pts: vec![p0] },
+        Tool::FluidBrush => app.drag = Drag::Fluid { pts: vec![(p0, app.ctx.input(|i| i.time))] },
+        Tool::Eraser => {
+            let mark = app.ed.undo_depth();
+            let removed = erase_at(app, p0);
+            app.drag = Drag::Erase { mark, removed, last: p0 };
+        }
+        Tool::Bucket => match app.ed.hit_test(p0) {
+            Some(s) => {
+                let shape = matches!(app.ed.element_at(s).map(|e| e.kind), Some(ElementKind::Shape(_)));
+                match (app.topts.fill_gradient, shape) {
+                    (Some(kind), true) => {
+                        let stops = vec![(0.0, from32(app.fill)), (1.0, from32(app.topts.fill2))];
+                        app.ed.selection = vec![s];
+                        app.ed.modify_selected("Paint Bucket", move |e| {
+                            if let ElementKind::Shape(sh) = &mut e.kind {
+                                sh.fill = Some(stops[0].1);
+                                sh.gradient = sh.path.bounds().map(|(lo, hi)| Gradient::fit(kind, stops.clone(), lo, hi));
+                            }
+                        });
+                    }
+                    _ => {
+                        let mark = app.ed.undo_depth();
+                        let had_gradient = matches!(app.ed.element_at(s).map(|e| e.kind), Some(ElementKind::Shape(sh)) if sh.gradient.is_some());
+                        app.ed.paint_bucket(s, from32(app.fill));
+                        if had_gradient {
+                            app.ed.selection = vec![s];
+                            app.ed.modify_selected("Paint Bucket", |e| {
+                                if let ElementKind::Shape(sh) = &mut e.kind {
+                                    sh.gradient = None;
+                                }
+                            });
+                            app.ed.squash_undo(mark, "Paint Bucket");
+                        }
                     }
                 }
             }
-            Drag::Marquee { start, cur, add } => {
-                if start.dist(cur) > 2.0 / app.zoom {
-                    app.ed.select_in_rect(start, cur, add);
-                    let n = app.ed.selection.len();
-                    app.status = if n == 0 { "No objects fully inside the box (locked layers are skipped).".into() } else { format!("{n} object(s) selected") };
-                }
+            None => app.status = "Paint Bucket: click inside a shape.".into(),
+        },
+        Tool::InkBottle => match app.ed.hit_test(p0) {
+            Some(s) => {
+                app.ed.selection = vec![s];
+                let st = Stroke { color: from32(app.stroke), width: app.stroke_w };
+                app.ed.modify_selected("Ink Bottle", move |e| {
+                    if let ElementKind::Shape(sh) = &mut e.kind {
+                        sh.stroke = Some(st);
+                    }
+                });
             }
-            Drag::ZoomBox { start, cur } => {
-                if start.distance(cur) < 4.0 {
-                    app.zoom_at(rect, cur, if alt { 0.5 } else { 2.0 });
+            None => app.status = "Ink Bottle: click a shape to give it an outline.".into(),
+        },
+        Tool::Eyedropper => eyedrop(app, p0),
+        Tool::Rotate3D | Tool::Translate3D => {
+            if let Some((kind, center)) = app.grab3d_at(rect, origin) {
+                let editable = app.ed.selection.iter().all(|s| app.ed.layer_editable(s.layer));
+                if editable {
+                    app.drag = Drag::Gizmo3D { kind, last: origin, center, started: false };
                 } else {
-                    let r = Rect::from_two_pos(start, cur);
-                    let factor = (rect.width() / r.width()).min(rect.height() / r.height()).clamp(0.1, 16.0);
-                    let c = r.center();
-                    app.zoom_at(rect, c, factor);
-                    app.pan += rect.center() - (rect.min + (c - rect.min));
+                    app.locked_msg();
+                }
+            } else if let Some(h) = app.ed.hit_test(p0) {
+                app.ed.select(Some(h), shift);
+            } else if !shift {
+                app.ed.select(None, false);
+            }
+        }
+        Tool::GradientTransform => gradient_press(app, rect, origin, p0),
+        Tool::Bone => {
+            // Start from an existing joint (chains bones), or from the object under the mouse.
+            let joint = app.bone_segments().into_iter().find(|(l, _, _, tail)| app.ed.layer_editable(*l) && app.to_screen(rect, *tail).distance(origin) < 8.0);
+            if let Some((l, bi, _, tail)) = joint {
+                let child = app.ed.bones(l)[bi].child;
+                app.drag = Drag::BoneDraw { layer: l, parent: child, head: tail, cur: p0 };
+            } else if let Some(h) = app.ed.hit_test(p0) {
+                if app.ed.layer_editable(h.layer) {
+                    app.ed.select(Some(h), false);
+                    app.drag = Drag::BoneDraw { layer: h.layer, parent: h.element, head: p0, cur: p0 };
+                } else {
+                    app.locked_msg();
+                }
+            } else {
+                app.status = "Bone: press on an object, then drag to another object on the same layer.".into();
+            }
+        }
+        Tool::Width => {
+            let found = stroked_shape_at(app, p0);
+            match found {
+                Some((s, t)) => {
+                    app.ed.select(Some(s), false);
+                    app.drag = Drag::WidthPt { sel: s, t, started: false };
+                }
+                None => app.status = "Width: press on the stroke (outline) of a shape and drag outwards or inwards.".into(),
+            }
+        }
+        Tool::AssetWarp => warp_press(app, p0, alt),
+        Tool::Camera => {
+            if app.ed.editing.is_some() {
+                app.status = "The camera belongs to the scene: leave symbol editing first (Esc).".into();
+                return;
+            }
+            if app.ed.camera_layer().is_none() {
+                app.ed.add_camera();
+                app.ed.camera_view = true;
+                app.status = "Added a Camera layer. Drag to pan, scroll to zoom, Shift+drag to rotate; keyframe it like any layer.".into();
+            }
+            app.drag = Drag::CameraPan { last: origin, rotate: shift, started: false };
+        }
+    }
+}
+
+/// Selection-tool press on an object (or empty stage).
+fn select_press(app: &mut App, p0: Pt, shift: bool) {
+    if let Some(hit) = app.ed.hit_test(p0) {
+        if shift {
+            app.ed.select(Some(hit), true);
+        } else if !app.ed.is_selected(hit) {
+            app.ed.select(Some(hit), false);
+        }
+        // Objects joined by bones are posed with inverse kinematics.
+        let boned = app.ed.bones(hit.layer).iter().any(|b| b.parent == hit.element || b.child == hit.element);
+        if boned && !shift && app.tool == Tool::Select {
+            if let Some(inv) = app.ed.element_at(hit).and_then(|e| e.matrix.invert()) {
+                app.ed.select(Some(hit), false);
+                app.drag = Drag::Ik { layer: hit.layer, element: hit.element, grab: inv.apply(p0), started: false };
+                return;
+            }
+        }
+        if app.ed.is_selected(hit) {
+            let targets = if app.topts.snap { app.snap_targets() } else { (vec![], vec![]) };
+            app.drag = Drag::Move { last: p0, moved: false, raw: pt(0.0, 0.0), applied: pt(0.0, 0.0), start: app.ed.selection_bounds(), targets };
+        }
+    } else {
+        if !shift {
+            app.ed.select(None, false);
+        }
+        app.drag = Drag::Marquee { start: p0, cur: p0, add: shift };
+    }
+}
+
+/// Width tool target: a stroked shape whose outline is near `p` → (shape, position along it).
+fn stroked_shape_at(app: &App, p: Pt) -> Option<(Selection, f32)> {
+    let mut cands: Vec<Selection> = app.ed.selection.clone();
+    if let Some(h) = app.ed.hit_test(p) {
+        cands.push(h);
+    }
+    // also any shape whose stroke passes near p
+    for it in app.ed.evaluate_current(app.ed.frame).iter().rev() {
+        if let Some((l, e)) = it.src {
+            cands.push(Selection { layer: l, element: e });
+        }
+    }
+    for s in cands {
+        if !app.ed.layer_editable(s.layer) {
+            continue;
+        }
+        let Some(el) = app.ed.element_at(s) else { continue };
+        let ElementKind::Shape(sh) = &el.kind else { continue };
+        let Some(st) = sh.stroke else { continue };
+        let Some(inv) = el.matrix.invert() else { continue };
+        let lp = inv.apply(p);
+        let scale = el.matrix.decompose().scale_x.abs().max(0.01);
+        if let Some((t, d)) = deform::nearest_t(&sh.path, lp) {
+            let max_w = sh.width_profile.as_ref().map(|w| w.iter().map(|x| x.1).fold(1.0f32, f32::max)).unwrap_or(1.0);
+            if d < st.width * max_w / 2.0 + 8.0 / app.zoom / scale {
+                return Some((s, t));
+            }
+        }
+    }
+    None
+}
+
+fn warp_press(app: &mut App, p0: Pt, alt: bool) {
+    let Some((s, inv, _)) = app.shape_for_points(p0, true) else {
+        if app.ed.hit_test(p0).is_none() {
+            app.status = "Asset Warp: click a shape to drop a pin, then drag pins to bend it.".into();
+        }
+        return;
+    };
+    if !app.ed.layer_editable(s.layer) {
+        app.locked_msg();
+        return;
+    }
+    let Some(el) = app.ed.element_at(s) else { return };
+    let ElementKind::Shape(sh) = &el.kind else { return };
+    let lp = inv.apply(p0);
+    let scale = el.matrix.decompose().scale_x.abs().max(0.01);
+    let tol = 9.0 / app.zoom / scale;
+    let mut warp = sh.warp.clone().unwrap_or_else(|| Warp::new(&sh.path));
+    if let Some(i) = warp.pins.iter().position(|(_, q)| q.dist(lp) < tol) {
+        if alt {
+            warp.pins.remove(i);
+            let path = warp.apply();
+            app.ed.selection = vec![s];
+            app.ed.modify_selected("Remove Pin", move |e| {
+                if let ElementKind::Shape(sh) = &mut e.kind {
+                    sh.path = path.clone();
+                    sh.warp = Some(warp.clone());
+                }
+            });
+        } else {
+            app.drag = Drag::WarpPin { sel: s, pin: i, started: false };
+        }
+        return;
+    }
+    if alt {
+        return;
+    }
+    warp.pins.push((lp, lp));
+    let pin = warp.pins.len() - 1;
+    let path = warp.apply();
+    app.ed.selection = vec![s];
+    app.ed.modify_selected("Add Pin", move |e| {
+        if let ElementKind::Shape(sh) = &mut e.kind {
+            sh.path = path.clone();
+            sh.warp = Some(warp.clone());
+        }
+    });
+    app.drag = Drag::WarpPin { sel: s, pin, started: false };
+    app.status = "Pin added. Drag a pin to bend the shape; Alt+click a pin to remove it.".into();
+}
+
+/// Gradient handles (world): centre, x-handle, y-handle.
+fn gradient_handles(el: &Element) -> Option<[Pt; 3]> {
+    let ElementKind::Shape(sh) = &el.kind else { return None };
+    let g = sh.gradient.as_ref()?;
+    let w = el.matrix.concat(&g.matrix);
+    Some([w.apply(pt(0.0, 0.0)), w.apply(pt(1.0, 0.0)), w.apply(pt(0.0, 1.0))])
+}
+
+fn gradient_press(app: &mut App, rect: Rect, origin: Pos2, p0: Pt) {
+    for s in app.ed.selection.clone() {
+        let Some(el) = app.ed.element_at(s) else { continue };
+        let radial = matches!(&el.kind, ElementKind::Shape(sh) if sh.gradient.as_ref().map(|g| g.kind == ac_core::GradientKind::Radial).unwrap_or(false));
+        if let Some(hs) = gradient_handles(&el) {
+            for (i, h) in hs.iter().enumerate() {
+                if i == 2 && !radial {
+                    continue;
+                }
+                if app.to_screen(rect, *h).distance(origin) < 8.0 {
+                    if app.ed.layer_editable(s.layer) {
+                        app.drag = Drag::Grad { sel: s, handle: i, started: false };
+                    } else {
+                        app.locked_msg();
+                    }
+                    return;
                 }
             }
-            Drag::Draw { start, cur } if start.dist(cur) > 2.0 => {
-                let (x0, y0, x1, y1) = (start.x.min(cur.x), start.y.min(cur.y), start.x.max(cur.x), start.y.max(cur.y));
-                let o = &app.topts;
-                let (name, path, fill) = match app.tool {
-                    Tool::Rect => ("Rectangle", Path::rounded_rect(x0, y0, x1 - x0, y1 - y0, o.rect_radius), app.cur_fill()),
-                    Tool::Oval => ("Oval", Path::ellipse((x0 + x1) / 2.0, (y0 + y1) / 2.0, (x1 - x0) / 2.0, (y1 - y0) / 2.0), app.cur_fill()),
-                    Tool::PolyStar => ("PolyStar", Path::polystar((x0 + x1) / 2.0, (y0 + y1) / 2.0, (x1 - x0) / 2.0, (y1 - y0) / 2.0, o.poly_sides, o.poly_star, o.poly_inner), app.cur_fill()),
-                    _ => ("Line", Path { segs: vec![Seg::M(start), Seg::L(cur)] }, None),
+        }
+    }
+    match app.ed.hit_test(p0) {
+        Some(h) => {
+            app.ed.select(Some(h), false);
+            let has = app.ed.element_at(h).map(|e| gradient_handles(&e).is_some()).unwrap_or(false);
+            app.status = if has { "Drag the centre to move the gradient, the square handle to rotate/stretch it, the round one (radial) to change its height.".into() } else { "This object has no gradient fill. Set Fill › Linear or Radial in Properties first.".into() };
+        }
+        None => app.ed.select(None, false),
+    }
+}
+
+fn drag(app: &mut App, ui: &egui::Ui, rect: Rect, pos: Pos2, p: Pt, shift: bool, alt: bool) {
+    let zoom = app.zoom;
+    let tool_now = app.tool;
+    let snap_on = app.topts.snap && !alt;
+    if let Some(pen) = app.pen.as_mut().filter(|pn| pn.dragging) {
+        if let Some(last) = pen.pts.last_mut() {
+            last.1 = pt(p.x - last.0.x, p.y - last.0.y);
+        }
+    }
+    match &mut app.drag {
+        Drag::Pan { last } => {
+            app.pan += pos - *last;
+            *last = pos;
+        }
+        Drag::ZoomBox { cur, .. } => *cur = pos,
+        Drag::RotView { start, base } => {
+            let c = rect.center();
+            let mut a = *base + (pos.y - c.y).atan2(pos.x - c.x) - *start;
+            if shift {
+                let step = 15f32.to_radians();
+                a = (a / step).round() * step;
+            }
+            app.set_view_rot(rect, a);
+        }
+        Drag::Move { last, moved, raw, applied, start, targets } => {
+            let d = pt(p.x - last.x, p.y - last.y);
+            *last = p;
+            if !*moved {
+                app.ed.begin_drag();
+                *moved = true;
+            }
+            raw.x += d.x;
+            raw.y += d.y;
+            let mut want = *raw;
+            app.snap_guides = (None, None);
+            if let (true, Some((lo, hi))) = (snap_on, *start) {
+                let thr = 6.0 / zoom;
+                let (ax, gx) = snap_axis([lo.x + raw.x, (lo.x + hi.x) / 2.0 + raw.x, hi.x + raw.x], &targets.0, thr);
+                let (ay, gy) = snap_axis([lo.y + raw.y, (lo.y + hi.y) / 2.0 + raw.y, hi.y + raw.y], &targets.1, thr);
+                want = pt(raw.x + ax, raw.y + ay);
+                app.snap_guides = (gx, gy);
+            }
+            let inc = pt(want.x - applied.x, want.y - applied.y);
+            *applied = want;
+            app.ed.modify_selected_continuous(|e| {
+                e.matrix.tx += inc.x;
+                e.matrix.ty += inc.y;
+            });
+            if let Some((_, pv)) = &mut app.ft_pivot {
+                pv.x += inc.x;
+                pv.y += inc.y;
+            }
+        }
+        Drag::Pivot => {
+            let sel = app.ed.selection.clone();
+            app.ft_pivot = Some((sel, p));
+        }
+        Drag::Transform { mode, applied, started } => {
+            if !*started {
+                app.ed.begin_edit(match mode { TMode::Scale { .. } => "Scale", TMode::Rotate { .. } => "Rotate", TMode::Skew { .. } => "Skew" });
+                *started = true;
+            }
+            let total = match *mode {
+                TMode::Scale { anchor: a, start: s, ax, ay } => {
+                    let mut sx = if ax && (s.x - a.x).abs() > 0.5 { (p.x - a.x) / (s.x - a.x) } else { 1.0 };
+                    let mut sy = if ay && (s.y - a.y).abs() > 0.5 { (p.y - a.y) / (s.y - a.y) } else { 1.0 };
+                    if shift && ax && ay {
+                        let u = sx.abs().max(sy.abs());
+                        sx = u * sx.signum();
+                        sy = u * sy.signum();
+                    }
+                    let clamp = |v: f32| if v.abs() < 0.01 { 0.01_f32.copysign(if v == 0.0 { 1.0 } else { v }) } else { v };
+                    Matrix::translate(a.x, a.y).concat(&Matrix::scale(clamp(sx), clamp(sy))).concat(&Matrix::translate(-a.x, -a.y))
+                }
+                TMode::Rotate { center: c, start_angle } => {
+                    let mut ang = (p.y - c.y).atan2(p.x - c.x) - start_angle;
+                    if shift {
+                        let step = std::f32::consts::PI / 4.0;
+                        ang = (ang / step).round() * step;
+                    }
+                    Matrix::translate(c.x, c.y).concat(&Matrix::rotate(ang)).concat(&Matrix::translate(-c.x, -c.y))
+                }
+                TMode::Skew { horizontal, anchor: a, start: s } => {
+                    if horizontal {
+                        let k = if (s.y - a.y).abs() > 0.5 { (p.x - s.x) / (s.y - a.y) } else { 0.0 };
+                        Matrix { a: 1.0, b: 0.0, c: k, d: 1.0, tx: -k * a.y, ty: 0.0 }
+                    } else {
+                        let k = if (s.x - a.x).abs() > 0.5 { (p.y - s.y) / (s.x - a.x) } else { 0.0 };
+                        Matrix { a: 1.0, b: k, c: 0.0, d: 1.0, tx: 0.0, ty: -k * a.x }
+                    }
+                }
+            };
+            if let Some(inv) = applied.invert() {
+                let inc = total.concat(&inv);
+                app.ed.modify_selected_continuous(|e| e.matrix = inc.concat(&e.matrix));
+                if let Some((_, pv)) = &mut app.ft_pivot {
+                    *pv = inc.apply(*pv);
+                }
+                *applied = total;
+            }
+        }
+        Drag::FtWarp { envelope, handle, lo, hi, handles, base, started } => {
+            if !*started {
+                app.ed.begin_edit(if *envelope { "Envelope" } else { "Distort" });
+                *started = true;
+            }
+            handles[*handle] = p;
+            let (lo, hi, envelope) = (*lo, *hi, *envelope);
+            let hs = handles.clone();
+            let base = base.clone();
+            let keep = app.ed.selection.clone();
+            for (s, world) in base {
+                let out = if envelope {
+                    let g: [Pt; 9] = hs.clone().try_into().unwrap_or(deform::envelope_grid(lo, hi));
+                    deform::envelope(&world, lo, hi, &g)
+                } else {
+                    let q: [Pt; 4] = hs.clone().try_into().unwrap_or([lo, pt(hi.x, lo.y), hi, pt(lo.x, hi.y)]);
+                    deform::distort(&world, lo, hi, &q)
                 };
-                let stroke = if app.tool == Tool::Line { Some(Stroke { color: from32(app.stroke), width: app.stroke_w }) } else { app.cur_stroke() };
-                if fill.is_none() && stroke.is_none() {
-                    app.status = "Both fill and stroke are set to none.".into();
-                } else if app.ed.add_element(Element::shape(name, Shape { path, fill, stroke })).is_none() {
+                app.ed.selection = vec![s];
+                app.ed.modify_selected_continuous(|e| {
+                    let m = e.matrix;
+                    if let (ElementKind::Shape(sh), Some(inv)) = (&mut e.kind, m.invert()) {
+                        sh.path = out.transformed(&inv);
+                        sh.warp = None;
+                    }
+                });
+            }
+            app.ed.selection = keep;
+        }
+        Drag::Gizmo3D { kind, last, center, started } => {
+            let (kind, center, last0, first) = (*kind, *center, *last, !*started);
+            *last = pos;
+            *started = true;
+            let d = pos - last0;
+            let dw = {
+                let a = app.to_doc(rect, last0);
+                pt(p.x - a.x, p.y - a.y)
+            };
+            let a0 = (last0.y - center.y).atan2(last0.x - center.x);
+            let a1 = (pos.y - center.y).atan2(pos.x - center.x);
+            if first {
+                app.ed.begin_edit(match kind { Grab3D::TX | Grab3D::TY | Grab3D::TZ => "3D Translation", Grab3D::Center => "3D Center", _ => "3D Rotation" });
+                app.ensure_3d();
+            }
+            let mut dz = (a1 - a0).to_degrees();
+            if dz > 180.0 {
+                dz -= 360.0;
+            } else if dz < -180.0 {
+                dz += 360.0;
+            }
+            app.ed.modify_selected_continuous(|e| {
+                let mut t = e.three_d.unwrap_or_default();
+                match kind {
+                    Grab3D::X => t.rx -= d.y * 0.5,
+                    Grab3D::Y => t.ry += d.x * 0.5,
+                    Grab3D::Z => t.rz += dz,
+                    Grab3D::Free => {
+                        t.rx -= d.y * 0.5;
+                        t.ry += d.x * 0.5;
+                    }
+                    Grab3D::Center => {
+                        if let Some(inv) = e.matrix.invert() {
+                            let cw = e.matrix.apply(t.center);
+                            t.center = inv.apply(pt(cw.x + dw.x, cw.y + dw.y));
+                        }
+                    }
+                    Grab3D::TX => e.matrix.tx += dw.x,
+                    Grab3D::TY => e.matrix.ty += dw.y,
+                    Grab3D::TZ => t.z += d.y * 2.0 / zoom,
+                }
+                e.three_d = Some(t);
+            });
+        }
+        Drag::Grad { sel, handle, started } => {
+            let (sel, handle) = (*sel, *handle);
+            if !*started {
+                *started = true;
+                app.ed.begin_edit("Gradient Transform");
+            }
+            let Some(el) = app.ed.element_at(sel) else { return };
+            let Some(inv) = el.matrix.invert() else { return };
+            let lp = inv.apply(p);
+            app.ed.selection = vec![sel];
+            app.ed.modify_selected_continuous(|e| {
+                let ElementKind::Shape(sh) = &mut e.kind else { return };
+                let Some(g) = &mut sh.gradient else { return };
+                let m = &mut g.matrix;
+                match handle {
+                    0 => {
+                        m.tx = lp.x;
+                        m.ty = lp.y;
+                    }
+                    1 => {
+                        let u = pt(lp.x - m.tx, lp.y - m.ty);
+                        let len = (u.x * u.x + u.y * u.y).sqrt().max(0.5);
+                        let len2 = (m.c * m.c + m.d * m.d).sqrt();
+                        let len2 = if g.kind == ac_core::GradientKind::Linear { len } else { len2 };
+                        m.a = u.x;
+                        m.b = u.y;
+                        m.c = -u.y / len * len2;
+                        m.d = u.x / len * len2;
+                    }
+                    _ => {
+                        let u = pt(m.a, m.b);
+                        let len = (u.x * u.x + u.y * u.y).sqrt().max(1e-3);
+                        let n = pt(-u.y / len, u.x / len);
+                        let h = ((lp.x - m.tx) * n.x + (lp.y - m.ty) * n.y).abs().max(0.5);
+                        m.c = n.x * h;
+                        m.d = n.y * h;
+                    }
+                }
+            });
+        }
+        Drag::BoneDraw { cur, .. } => *cur = p,
+        Drag::Ik { layer, element, grab, started } => {
+            if !*started {
+                *started = true;
+                app.ed.begin_edit("Pose Bones");
+            }
+            let (l, e, g) = (*layer, *element, *grab);
+            app.ed.ik_drag(l, e, g, p);
+        }
+        Drag::WidthPt { sel, t, started } => {
+            let (sel, t) = (*sel, *t);
+            if !*started {
+                *started = true;
+                app.ed.begin_edit("Width");
+            }
+            let Some(el) = app.ed.element_at(sel) else { return };
+            let Some(inv) = el.matrix.invert() else { return };
+            let ElementKind::Shape(sh) = &el.kind else { return };
+            let (Some(st), Some(c)) = (sh.stroke, deform::point_at(&sh.path, t)) else { return };
+            let lp = inv.apply(p);
+            let mult = (2.0 * lp.dist(c) / st.width.max(0.1)).clamp(0.05, 60.0);
+            app.ed.selection = vec![sel];
+            app.ed.modify_selected_continuous(|e| {
+                if let ElementKind::Shape(sh) = &mut e.kind {
+                    let prof = sh.width_profile.get_or_insert_with(|| vec![(0.0, 1.0), (1.0, 1.0)]);
+                    match prof.iter_mut().find(|(pt_, _)| (pt_ - t).abs() < 0.02) {
+                        Some(w) => w.1 = mult,
+                        None => {
+                            prof.push((t, mult));
+                            prof.sort_by(|a, b| a.0.total_cmp(&b.0));
+                        }
+                    }
+                }
+            });
+            app.status = format!("Width {:.1} px at {:.0}% along the stroke", mult * st.width, t * 100.0);
+        }
+        Drag::WarpPin { sel, pin, started } => {
+            let (sel, pin) = (*sel, *pin);
+            if !*started {
+                *started = true;
+                app.ed.begin_edit("Asset Warp");
+            }
+            let Some(inv) = app.ed.element_at(sel).and_then(|e| e.matrix.invert()) else { return };
+            let lp = inv.apply(p);
+            app.ed.selection = vec![sel];
+            app.ed.modify_selected_continuous(|e| {
+                if let ElementKind::Shape(sh) = &mut e.kind {
+                    if let Some(w) = &mut sh.warp {
+                        if let Some(pp) = w.pins.get_mut(pin) {
+                            pp.1 = lp;
+                        }
+                        sh.path = w.apply();
+                    }
+                }
+            });
+        }
+        Drag::CameraPan { last, rotate, started } => {
+            let (rotate, l, first) = (*rotate, *last, !*started);
+            *last = pos;
+            *started = true;
+            if first {
+                app.ed.begin_edit("Camera");
+            }
+            let a = app.to_doc(rect, l);
+            let cam = app.ed.camera_at(app.ed.frame).unwrap_or_else(|| ac_core::default_camera(&app.ed.doc).matrix);
+            let (c, rot, z) = Editor::camera_params(&cam);
+            let new = if rotate {
+                let sc = pt(app.ed.doc.width / 2.0, app.ed.doc.height / 2.0);
+                let da = (p.y - sc.y).atan2(p.x - sc.x) - (a.y - sc.y).atan2(a.x - sc.x);
+                Editor::camera_from(c, rot - da.to_degrees(), z)
+            } else {
+                // a view-space drag moves the scene with the mouse: the camera goes the other way
+                let d = pt(p.x - a.x, p.y - a.y);
+                let r = rot.to_radians();
+                let w = pt((d.x * r.cos() - d.y * r.sin()) / z, (d.x * r.sin() + d.y * r.cos()) / z);
+                Editor::camera_from(pt(c.x - w.x, c.y - w.y), rot, z)
+            };
+            app.ed.set_camera(new);
+        }
+        Drag::Marquee { cur, .. } => *cur = p,
+        Drag::Draw { start, cur } => {
+            *cur = p;
+            if shift {
+                if tool_now == Tool::Line {
+                    let (dx, dy) = (p.x - start.x, p.y - start.y);
+                    let ang = (dy.atan2(dx) / (std::f32::consts::PI / 4.0)).round() * (std::f32::consts::PI / 4.0);
+                    let len = (dx * dx + dy * dy).sqrt();
+                    *cur = pt(start.x + len * ang.cos(), start.y + len * ang.sin());
+                } else {
+                    let s = (p.x - start.x).abs().max((p.y - start.y).abs());
+                    *cur = pt(start.x + s * (p.x - start.x).signum(), start.y + s * (p.y - start.y).signum());
+                }
+            }
+        }
+        Drag::Freehand { pts } => {
+            if pts.last().map(|l| l.dist(p) > 1.5 / zoom).unwrap_or(true) {
+                pts.push(p);
+            }
+        }
+        Drag::Fluid { pts } => {
+            if pts.last().map(|l| l.0.dist(p) > 2.0 / zoom).unwrap_or(true) {
+                pts.push((p, ui.input(|i| i.time)));
+            }
+        }
+        Drag::Point { sel, r, started } => {
+            if !*started {
+                app.ed.begin_edit("Edit Points");
+                *started = true;
+            }
+            let (sel, r) = (*sel, *r);
+            if let Some(inv) = app.ed.element_at(sel).and_then(|e| e.matrix.invert()) {
+                let lp = inv.apply(p);
+                app.ed.selection = vec![sel];
+                app.ed.modify_selected_continuous(|e| {
+                    if let ElementKind::Shape(sh) = &mut e.kind {
+                        sh.path.set_point(r, lp);
+                        sh.warp = None;
+                    }
+                });
+            }
+        }
+        Drag::Erase { .. } => {
+            let removed = erase_at(app, p);
+            if let Drag::Erase { removed: r, last, .. } = &mut app.drag {
+                *r += removed;
+                *last = p;
+            }
+        }
+        Drag::None => {}
+    }
+}
+
+fn release(app: &mut App, rect: Rect, p: Pt, shift: bool, alt: bool) {
+    if let Some(pen) = &mut app.pen {
+        pen.dragging = false;
+    }
+    app.snap_guides = (None, None);
+    let drag = std::mem::replace(&mut app.drag, Drag::None);
+    match drag {
+        Drag::Move { moved: false, .. } => {
+            if !shift && app.ed.selection.len() > 1 {
+                if let Some(hit) = app.ed.hit_test(p) {
+                    app.ed.select(Some(hit), false);
+                }
+            }
+        }
+        Drag::Marquee { start, cur, add } => {
+            if start.dist(cur) > 2.0 / app.zoom {
+                app.ed.select_in_rect(start, cur, add);
+                let n = app.ed.selection.len();
+                app.status = if n == 0 { "No objects fully inside the box (locked layers are skipped).".into() } else { format!("{n} object(s) selected") };
+            }
+        }
+        Drag::ZoomBox { start, cur } => {
+            if start.distance(cur) < 4.0 {
+                app.zoom_at(rect, cur, if alt { 0.5 } else { 2.0 });
+            } else {
+                let r = Rect::from_two_pos(start, cur);
+                let factor = (rect.width() / r.width()).min(rect.height() / r.height()).clamp(0.1, 16.0);
+                let c = r.center();
+                app.zoom_at(rect, c, factor);
+                app.pan += rect.center() - c;
+            }
+        }
+        Drag::Draw { start, cur } if start.dist(cur) > 2.0 => {
+            let (x0, y0, x1, y1) = (start.x.min(cur.x), start.y.min(cur.y), start.x.max(cur.x), start.y.max(cur.y));
+            let o = &app.topts;
+            let (name, path, fill) = match app.tool {
+                Tool::Rect => ("Rectangle", Path::rounded_rect(x0, y0, x1 - x0, y1 - y0, o.rect_radius), app.cur_fill()),
+                Tool::Oval => ("Oval", oval_path((x0 + x1) / 2.0, (y0 + y1) / 2.0, (x1 - x0) / 2.0, (y1 - y0) / 2.0, o.oval_start, o.oval_end, o.oval_inner), app.cur_fill()),
+                Tool::PolyStar => ("PolyStar", Path::polystar((x0 + x1) / 2.0, (y0 + y1) / 2.0, (x1 - x0) / 2.0, (y1 - y0) / 2.0, o.poly_sides, o.poly_star, o.poly_inner), app.cur_fill()),
+                _ => ("Line", Path { segs: vec![Seg::M(start), Seg::L(cur)] }, None),
+            };
+            let stroke = if app.tool == Tool::Line { Some(Stroke { color: from32(app.stroke), width: app.stroke_w }) } else { app.cur_stroke() };
+            if fill.is_none() && stroke.is_none() {
+                app.status = "Both fill and stroke are set to none.".into();
+            } else {
+                let shape = app.make_shape(path, fill, stroke);
+                if app.ed.add_element(Element::shape(name, shape)).is_none() {
                     app.locked_msg();
                 }
             }
-            Drag::Freehand { pts } => match app.tool {
-                Tool::Lasso => {
-                    if pts.len() > 2 {
-                        lasso_select(app, &pts, shift);
-                    }
+        }
+        Drag::Freehand { pts } => match app.tool {
+            Tool::Lasso => {
+                if pts.len() > 2 {
+                    lasso_select(app, &pts, shift);
                 }
-                Tool::Pencil if pts.len() > 1 => {
-                    let path = match app.topts.pencil_mode {
-                        PencilMode::Straighten => {
-                            let simple = ac_core::geom::simplify(&pts, 4.0 / app.zoom);
-                            let mut p = Path::polygon(&simple);
-                            p.segs.pop();
-                            p
-                        }
-                        PencilMode::Smooth => Path::smooth_polyline(&pts, 1.5 / app.zoom),
-                        PencilMode::Ink => Path::smooth_polyline(&pts, 0.3 / app.zoom),
-                    };
-                    let stroke = Some(Stroke { color: from32(app.stroke), width: app.stroke_w });
-                    if app.ed.add_element(Element::shape("Pencil", Shape { path, fill: None, stroke })).is_none() {
+            }
+            Tool::Pencil if pts.len() > 1 => {
+                let path = match app.topts.pencil_mode {
+                    PencilMode::Straighten => {
+                        let simple = ac_core::geom::simplify(&pts, 4.0 / app.zoom);
+                        let mut p = Path::polygon(&simple);
+                        p.segs.pop();
+                        p
+                    }
+                    PencilMode::Smooth => Path::smooth_polyline(&pts, 1.5 / app.zoom),
+                    PencilMode::Ink => Path::smooth_polyline(&pts, 0.3 / app.zoom),
+                };
+                let stroke = Some(Stroke { color: from32(app.stroke), width: app.stroke_w });
+                if app.ed.add_element(Element::shape("Pencil", Shape::new(path, None, stroke))).is_none() {
+                    app.locked_msg();
+                }
+            }
+            Tool::Brush => {
+                if let Some(path) = brush_outline(&pts, app.topts.brush_size, app.topts.brush_smooth) {
+                    let shape = app.make_shape(path, Some(from32(app.fill)), None);
+                    if app.ed.add_element(Element::shape("Brush", shape)).is_none() {
                         app.locked_msg();
                     }
                 }
-                Tool::Brush => {
-                    if let Some(path) = brush_outline(&pts, app.topts.brush_size, app.topts.brush_smooth) {
-                        if app.ed.add_element(Element::shape("Brush", Shape { path, fill: Some(from32(app.fill)), stroke: None })).is_none() {
-                            app.locked_msg();
-                        }
-                    }
-                }
-                _ => {}
-            },
-            Drag::Erase { mark, removed, .. } => {
-                if removed > 0 {
-                    app.ed.squash_undo(mark, "Erase");
-                    app.status = format!("Erased {removed} object(s)");
-                }
             }
             _ => {}
+        },
+        Drag::Fluid { pts } => {
+            let widths = fluid_widths(&pts, app.topts.fluid_size, app.topts.fluid_sensitivity, app.zoom);
+            let centre: Vec<Pt> = pts.iter().map(|x| x.0).collect();
+            let path = if centre.len() == 1 { Path::ellipse(centre[0].x, centre[0].y, app.topts.fluid_size / 2.0, app.topts.fluid_size / 2.0) } else { deform::outline_polyline(&centre, &widths, false) };
+            let shape = app.make_shape(path, Some(from32(app.fill)), None);
+            if app.ed.add_element(Element::shape("Fluid Brush", shape)).is_none() {
+                app.locked_msg();
+            }
         }
+        Drag::BoneDraw { layer, parent, head, cur } => {
+            if head.dist(cur) < 3.0 / app.zoom {
+                app.status = "Bone: drag from one object to another.".into();
+                return;
+            }
+            match app.ed.hit_test_on_layer(cur, layer, Some(parent)) {
+                Some(child) => match app.ed.add_bone(layer, parent, child, head, cur) {
+                    Ok(()) => {
+                        let n = app.ed.bones(layer).len();
+                        app.status = format!("Bone added ({n} on this layer). Drag objects with the Selection tool (V) to pose them.");
+                    }
+                    Err(e) => app.status = format!("Can't add bone: {e}."),
+                },
+                None => app.status = "Bone: end the drag on another object on the same layer.".into(),
+            }
+        }
+        Drag::Erase { mark, removed, .. }
+            if removed > 0 => {
+                app.ed.squash_undo(mark, "Erase");
+                app.status = format!("Erased {removed} object(s)");
+            }
+        _ => {}
     }
 }
 
@@ -796,8 +1641,8 @@ fn erase_at(app: &mut App, p: Pt) -> usize {
     0
 }
 
-/// Eyedropper: pick fill or stroke under the cursor and switch to the tool
-/// that applies it (Animate behaviour).
+/// Eyedropper: pick fill (incl. gradients) or stroke under the cursor and
+/// switch to the tool that applies it (Animate behaviour).
 fn eyedrop(app: &mut App, p: Pt) {
     let items = app.ed.evaluate_current(app.ed.frame);
     let Some(it) = items.iter().rev().find(|it| it.hit(p)) else {
@@ -805,15 +1650,25 @@ fn eyedrop(app: &mut App, p: Pt) {
         return;
     };
     let on_edge = it.stroke.is_some() && it.matrix.invert().map(|inv| it.path.hit(inv.apply(p), false, it.stroke.unwrap().width / 2.0 + 2.0 / app.zoom)).unwrap_or(false);
-    if let (true, Some(st)) = (on_edge || it.fill.is_none(), it.stroke) {
+    if let (true, Some(st)) = (on_edge || (it.fill.is_none() && it.gradient.is_none()), it.stroke) {
         app.stroke = crate::c32(st.color);
         app.stroke_w = st.width;
         app.stroke_on = true;
         app.set_tool(Tool::InkBottle);
         app.status = format!("Picked stroke {} — Ink Bottle selected", st.color.to_hex());
+    } else if let Some(g) = &it.gradient {
+        if let (Some(a), Some(b)) = (g.stops.first(), g.stops.last()) {
+            app.fill = crate::c32(a.1);
+            app.topts.fill2 = crate::c32(b.1);
+            app.topts.fill_gradient = Some(g.kind);
+            app.fill_on = true;
+            app.set_tool(Tool::Bucket);
+            app.status = format!("Picked {} gradient {} → {} — Paint Bucket selected", if g.kind == ac_core::GradientKind::Linear { "linear" } else { "radial" }, a.1.to_hex(), b.1.to_hex());
+        }
     } else if let Some(f) = it.fill {
         app.fill = crate::c32(f);
         app.fill_on = true;
+        app.topts.fill_gradient = None;
         app.set_tool(Tool::Bucket);
         app.status = format!("Picked fill {} — Paint Bucket selected", f.to_hex());
     }
@@ -828,8 +1683,7 @@ fn render_stage(app: &mut App, ui: &egui::Ui, rect: Rect) {
     let (pw, ph) = ((rect.width() * ppp).round() as u32, (rect.height() * ppp).round() as u32);
     let Some(mut pix) = sk::Pixmap::new(pw.max(1), ph.max(1)) else { return };
     pix.fill(sk::Color::from_rgba8(0x3C, 0x3C, 0x3C, 255));
-    let o = app.content_offset();
-    let view = Matrix::scale(ppp, ppp).concat(&Matrix::translate(app.pan.x, app.pan.y)).concat(&Matrix::scale(app.zoom, app.zoom));
+    let view = Matrix::scale(ppp, ppp).concat(&app.view_base());
     let d = &app.ed.doc;
     let stage_dim = app.ed.editing.is_some();
     for (off, a) in [(6.0, 40u8), (3.0, 60)] {
@@ -845,7 +1699,7 @@ fn render_stage(app: &mut App, ui: &egui::Ui, rect: Rect) {
         paint.set_color(sk::Color::from_rgba8(bg.r, bg.g, bg.b, if stage_dim { 90 } else { 255 }));
         pix.fill_rect(r, &paint, to_ts(&view), None);
     }
-    let content_view = view.concat(&Matrix::translate(o.x, o.y));
+    let content_view = Matrix::scale(ppp, ppp).concat(&app.view_content());
     let n = app.ed.frame_count();
     if app.onion && !app.playing {
         for k in (1..=app.onion_n).rev() {
@@ -878,14 +1732,34 @@ fn render_stage(app: &mut App, ui: &egui::Ui, rect: Rect) {
     ui.painter_at(rect).image(tex.id(), rect, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
 }
 
+fn handle_box(painter: &egui::Painter, c: Pos2, size: f32, fill: Color32) {
+    let r = Rect::from_center_size(c, vec2(size, size));
+    painter.rect_filled(r, 0.0, fill);
+    painter.rect_stroke(r, 0.0, EStroke::new(1.0_f32, ACCENT));
+}
+
 fn overlays(app: &App, ui: &egui::Ui, rect: Rect) {
     let painter = ui.painter_at(rect);
     let preview = EStroke::new(1.0_f32, ACCENT);
+    let hover = ui.input(|i| i.pointer.hover_pos());
     if app.ed.editing.is_some() {
         let c = app.to_screen(rect, pt(0.0, 0.0));
         let s = EStroke::new(1.0_f32, Color32::from_gray(20));
         painter.line_segment([c - vec2(9.0, 0.0), c + vec2(9.0, 0.0)], s);
         painter.line_segment([c - vec2(0.0, 9.0), c + vec2(0.0, 9.0)], s);
+    }
+    // Camera frame
+    if app.ed.camera_view {
+        let cam_col = Color32::from_rgb(0xFF, 0xA0, 0x30);
+        let q = app.quad(rect, pt(0.0, 0.0), pt(app.ed.doc.width, app.ed.doc.height));
+        painter.add(egui::Shape::closed_line(q.clone(), EStroke::new(2.0_f32, cam_col)));
+        if let Some(cam) = app.ed.camera_at(app.ed.frame) {
+            let (c, rot, z) = Editor::camera_params(&cam);
+            painter.text(q[0] + vec2(6.0, 6.0), egui::Align2::LEFT_TOP, format!("🎥 Camera  x {:.0} y {:.0}  zoom {:.0}%  rot {:.0}°", c.x, c.y, z * 100.0, rot), egui::FontId::proportional(12.0), cam_col);
+        }
+        let c = app.to_screen(rect, pt(app.ed.doc.width / 2.0, app.ed.doc.height / 2.0));
+        painter.line_segment([c - vec2(8.0, 0.0), c + vec2(8.0, 0.0)], EStroke::new(1.0_f32, cam_col));
+        painter.line_segment([c - vec2(0.0, 8.0), c + vec2(0.0, 8.0)], EStroke::new(1.0_f32, cam_col));
     }
     let point_tools = matches!(app.tool, Tool::Subselect | Tool::AddAnchor | Tool::DeleteAnchor | Tool::ConvertAnchor);
     if point_tools {
@@ -910,33 +1784,66 @@ fn overlays(app: &App, ui: &egui::Ui, rect: Rect) {
                 }
             }
             for (_, a) in sh.path.anchors() {
-                let c = app.to_screen(rect, m.apply(a));
-                painter.rect_filled(Rect::from_center_size(c, vec2(6.0, 6.0)), 0.0, Color32::WHITE);
-                painter.rect_stroke(Rect::from_center_size(c, vec2(6.0, 6.0)), 0.0, EStroke::new(1.0_f32, ACCENT));
+                handle_box(&painter, app.to_screen(rect, m.apply(a)), 6.0, Color32::WHITE);
             }
         }
-    } else {
+    } else if !app.playing {
         if app.ed.selection.len() > 1 {
             for s in &app.ed.selection {
                 if let Some((lo, hi)) = app.ed.bounds_of(&[*s]) {
-                    let r = Rect::from_two_pos(app.to_screen(rect, lo), app.to_screen(rect, hi)).expand(1.0);
-                    painter.rect_stroke(r, 0.0, EStroke::new(1.0_f32, ACCENT.gamma_multiply(0.7)));
+                    painter.add(egui::Shape::closed_line(app.quad(rect, lo, hi), EStroke::new(1.0_f32, ACCENT.gamma_multiply(0.7))));
                 }
             }
         }
         if let Some((lo, hi)) = app.ed.selection_bounds() {
-            let r = Rect::from_two_pos(app.to_screen(rect, lo), app.to_screen(rect, hi)).expand(2.0);
-            painter.rect_stroke(r, 0.0, EStroke::new(1.0_f32, ACCENT));
-            if matches!(app.tool, Tool::Select | Tool::FreeTransform) {
-                for c in [r.left_top(), r.right_top(), r.left_bottom(), r.right_bottom()] {
-                    painter.rect_filled(Rect::from_center_size(c, vec2(7.0, 7.0)), 0.0, Color32::WHITE);
-                    painter.rect_stroke(Rect::from_center_size(c, vec2(7.0, 7.0)), 0.0, EStroke::new(1.0_f32, ACCENT));
+            painter.add(egui::Shape::closed_line(app.quad(rect, lo, hi), EStroke::new(1.0_f32, ACCENT)));
+            let ft = app.tool == Tool::FreeTransform;
+            if ft && app.topts.ft_mode != FtMode::Normal {
+                if let Some((_, _, mut hs)) = app.warp_handles() {
+                    if let Drag::FtWarp { handles, .. } = &app.drag {
+                        hs = handles.clone();
+                    }
+                    let sp: Vec<Pos2> = hs.iter().map(|h| app.to_screen(rect, *h)).collect();
+                    let grid = EStroke::new(1.0_f32, Color32::from_rgb(0x40, 0xE0, 0x90));
+                    if sp.len() == 4 {
+                        painter.add(egui::Shape::closed_line(sp.clone(), grid));
+                    } else {
+                        for r in 0..3 {
+                            painter.add(egui::Shape::line(vec![sp[r * 3], sp[r * 3 + 1], sp[r * 3 + 2]], grid));
+                            painter.add(egui::Shape::line(vec![sp[r], sp[r + 3], sp[r + 6]], grid));
+                        }
+                    }
+                    for c in sp {
+                        let hot = hover.map(|h| h.distance(c) < 8.0).unwrap_or(false);
+                        handle_box(&painter, c, 8.0, if hot { Color32::YELLOW } else { Color32::from_rgb(0x40, 0xE0, 0x90) });
+                    }
+                }
+            } else if matches!(app.tool, Tool::Select | Tool::FreeTransform) {
+                let hs = handles8(lo, hi);
+                let n = if ft { 8 } else { 4 };
+                let hot = hover.and_then(|h| app.grab_at(rect, h, app.tool));
+                for (i, h) in hs.iter().enumerate().take(n) {
+                    let c = app.to_screen(rect, *h);
+                    handle_box(&painter, c, 7.0, if hot == Some(Grab::Scale(i)) { Color32::YELLOW } else { Color32::WHITE });
+                }
+                if ft {
+                    if let Some(Grab::Skew(e)) = hot {
+                        let q = app.quad(rect, lo, hi);
+                        let (a, b) = [(q[0], q[1]), (q[3], q[2]), (q[0], q[3]), (q[1], q[2])][e];
+                        painter.line_segment([a, b], EStroke::new(3.0_f32, Color32::YELLOW));
+                    }
+                    if let Some(Grab::Rotate(i)) = hot {
+                        let c = app.to_screen(rect, hs[i]);
+                        painter.circle_stroke(c, 12.0, EStroke::new(1.5_f32, Color32::YELLOW));
+                    }
+                    if let Some(pv) = app.pivot() {
+                        let c = app.to_screen(rect, pv);
+                        painter.circle_filled(c, 4.5, Color32::WHITE);
+                        painter.circle_stroke(c, 4.5, EStroke::new(1.0_f32, Color32::BLACK));
+                    }
                 }
             }
-            if app.tool == Tool::FreeTransform {
-                painter.circle_stroke(r.center(), 4.0, EStroke::new(1.5_f32, Color32::WHITE));
-            }
-            if app.ed.selection.len() == 1 {
+            if app.ed.selection.len() == 1 && !ft {
                 if let Some(el) = app.ed.selected_element() {
                     if matches!(el.kind, ElementKind::Instance(_)) {
                         let reg = app.to_screen(rect, pt(el.matrix.tx, el.matrix.ty));
@@ -947,22 +1854,147 @@ fn overlays(app: &App, ui: &egui::Ui, rect: Rect) {
             }
         }
     }
+    // Bones
+    if app.topts.show_bones && !app.playing {
+        let hot_bone = Color32::from_rgb(0xFF, 0xD0, 0x40);
+        for (_, _, head, tail) in app.bone_segments() {
+            let (h, t) = (app.to_screen(rect, head), app.to_screen(rect, tail));
+            let d = t - h;
+            let len = d.length();
+            if len > 1.0 {
+                let n = vec2(-d.y, d.x) / len * (len * 0.12).clamp(3.0, 9.0);
+                let knee = h + d * 0.2;
+                let kite = vec![h, knee + n, t, knee - n];
+                painter.add(egui::Shape::convex_polygon(kite.clone(), Color32::from_rgba_unmultiplied(0x30, 0xA0, 0xFF, 110), EStroke::NONE));
+                painter.add(egui::Shape::closed_line(kite, EStroke::new(1.2_f32, Color32::WHITE)));
+            }
+            painter.circle_filled(h, 4.0, Color32::WHITE);
+            painter.circle_stroke(h, 4.0, EStroke::new(1.0_f32, ACCENT));
+            let hot = app.tool == Tool::Bone && hover.map(|p| p.distance(t) < 8.0).unwrap_or(false);
+            painter.circle_filled(t, if hot { 5.5 } else { 4.0 }, if hot { hot_bone } else { Color32::WHITE });
+            painter.circle_stroke(t, 4.0, EStroke::new(1.0_f32, ACCENT));
+        }
+    }
+    // Tool-specific overlays
+    match app.tool {
+        Tool::Rotate3D | Tool::Translate3D if !app.ed.selection.is_empty() && !app.playing => {
+            if let Some(c) = app.gizmo_center(rect) {
+                let r = GIZMO_R;
+                let hot = match &app.drag {
+                    Drag::Gizmo3D { kind, .. } => Some(*kind),
+                    _ => hover.and_then(|h| app.grab3d_at(rect, h).map(|g| g.0)),
+                };
+                let col = |g: Grab3D, base: Color32| if hot == Some(g) { Color32::YELLOW } else { base };
+                let red = Color32::from_rgb(0xE8, 0x40, 0x40);
+                let green = Color32::from_rgb(0x40, 0xC8, 0x50);
+                let blue = Color32::from_rgb(0x40, 0x90, 0xFF);
+                if app.tool == Tool::Rotate3D {
+                    painter.circle_stroke(c, r + 14.0, EStroke::new(2.0_f32, col(Grab3D::Free, Color32::from_rgb(0xFF, 0x90, 0x20))));
+                    painter.circle_stroke(c, r, EStroke::new(2.5_f32, col(Grab3D::Z, blue)));
+                    painter.line_segment([c - vec2(0.0, r), c + vec2(0.0, r)], EStroke::new(3.0_f32, col(Grab3D::X, red)));
+                    painter.line_segment([c - vec2(r, 0.0), c + vec2(r, 0.0)], EStroke::new(3.0_f32, col(Grab3D::Y, green)));
+                    painter.circle_filled(c, 5.0, col(Grab3D::Center, Color32::WHITE));
+                    painter.circle_stroke(c, 5.0, EStroke::new(1.0_f32, Color32::BLACK));
+                } else {
+                    painter.arrow(c, vec2(r, 0.0), EStroke::new(3.0_f32, col(Grab3D::TX, red)));
+                    painter.arrow(c, vec2(0.0, -r), EStroke::new(3.0_f32, col(Grab3D::TY, green)));
+                    painter.circle_filled(c, 6.0, col(Grab3D::TZ, Color32::from_gray(20)));
+                    painter.circle_stroke(c, 6.0, EStroke::new(1.5_f32, Color32::WHITE));
+                }
+                if let Some(t) = app.ed.selected_element().and_then(|e| e.three_d) {
+                    painter.text(c + vec2(r + 20.0, -r), egui::Align2::LEFT_TOP, format!("X {:.0}°  Y {:.0}°  Z {:.0}°\nz {:.0}", t.rx, t.ry, t.rz, t.z), egui::FontId::proportional(11.0), Color32::WHITE);
+                }
+            }
+        }
+        Tool::GradientTransform => {
+            for s in &app.ed.selection {
+                let Some(el) = app.ed.element_at(*s) else { continue };
+                let Some([c, hx, hy]) = gradient_handles(&el) else { continue };
+                let radial = matches!(&el.kind, ElementKind::Shape(sh) if sh.gradient.as_ref().map(|g| g.kind == ac_core::GradientKind::Radial).unwrap_or(false));
+                let (sc, sx, sy) = (app.to_screen(rect, c), app.to_screen(rect, hx), app.to_screen(rect, hy));
+                let thin = EStroke::new(1.0_f32, Color32::WHITE);
+                if radial {
+                    // ellipse outline of the gradient's unit circle
+                    let w = |a: f32| app.to_screen(rect, pt(c.x + (hx.x - c.x) * a.cos() + (hy.x - c.x) * a.sin(), c.y + (hx.y - c.y) * a.cos() + (hy.y - c.y) * a.sin()));
+                    painter.add(egui::Shape::closed_line((0..48).map(|i| w(i as f32 / 48.0 * std::f32::consts::TAU)).collect(), thin));
+                    painter.line_segment([sc, sy], thin);
+                    painter.circle_filled(sy, 5.0, Color32::WHITE);
+                    painter.circle_stroke(sy, 5.0, EStroke::new(1.0_f32, ACCENT));
+                } else {
+                    // bounding lines at both ends of the ramp
+                    let perp = (sy - sc).normalized() * 400.0;
+                    let back = sc - (sx - sc);
+                    painter.line_segment([sx - perp, sx + perp], thin);
+                    painter.line_segment([back - perp, back + perp], thin);
+                }
+                painter.line_segment([sc, sx], thin);
+                handle_box(&painter, sx, 8.0, Color32::WHITE);
+                painter.circle_filled(sc, 5.0, Color32::WHITE);
+                painter.circle_stroke(sc, 5.0, EStroke::new(1.0_f32, ACCENT));
+            }
+        }
+        Tool::Width => {
+            let warn = Color32::from_rgb(0xFF, 0x60, 0xC0);
+            for s in &app.ed.selection {
+                let Some(el) = app.ed.element_at(*s) else { continue };
+                let ElementKind::Shape(sh) = &el.kind else { continue };
+                if let Some(prof) = &sh.width_profile {
+                    for (t, _) in prof {
+                        if let Some(q) = deform::point_at(&sh.path, *t) {
+                            painter.circle_filled(app.to_screen(rect, el.matrix.apply(q)), 4.0, warn);
+                        }
+                    }
+                }
+            }
+            if let Some(h) = hover.filter(|h| rect.contains(*h)) {
+                let p = app.to_doc(rect, h);
+                if let Some((s, t)) = stroked_shape_at(app, p) {
+                    if let Some(el) = app.ed.element_at(s) {
+                        if let ElementKind::Shape(sh) = &el.kind {
+                            if let Some(q) = deform::point_at(&sh.path, t) {
+                                painter.circle_stroke(app.to_screen(rect, el.matrix.apply(q)), 5.0, EStroke::new(1.5_f32, warn));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        Tool::AssetWarp => {
+            for s in &app.ed.selection {
+                let Some(el) = app.ed.element_at(*s) else { continue };
+                let ElementKind::Shape(sh) = &el.kind else { continue };
+                for (poly, closed) in sh.path.transformed(&el.matrix).flatten(8) {
+                    let mut pts: Vec<Pos2> = poly.iter().map(|p| app.to_screen(rect, *p)).collect();
+                    if closed {
+                        pts.push(pts[0]);
+                    }
+                    painter.add(egui::Shape::line(pts, EStroke::new(1.0_f32, ACCENT.gamma_multiply(0.7))));
+                }
+                if let Some(w) = &sh.warp {
+                    for (_, q) in &w.pins {
+                        let c = app.to_screen(rect, el.matrix.apply(*q));
+                        painter.circle_filled(c, 5.5, Color32::from_rgb(0xFF, 0xC8, 0x30));
+                        painter.circle_stroke(c, 5.5, EStroke::new(1.5_f32, Color32::BLACK));
+                    }
+                }
+            }
+        }
+        _ => {}
+    }
     // Snap guides
     let guide = EStroke::new(1.0_f32, Color32::from_rgb(0xFF, 0x3D, 0xB5));
     if let Some(x) = app.snap_guides.0 {
-        let sx = app.to_screen(rect, pt(x, 0.0)).x;
-        painter.line_segment([pos2(sx, rect.top()), pos2(sx, rect.bottom())], guide);
+        painter.line_segment([app.to_screen(rect, pt(x, -1e5)), app.to_screen(rect, pt(x, 1e5))], guide);
     }
     if let Some(y) = app.snap_guides.1 {
-        let sy = app.to_screen(rect, pt(0.0, y)).y;
-        painter.line_segment([pos2(rect.left(), sy), pos2(rect.right(), sy)], guide);
+        painter.line_segment([app.to_screen(rect, pt(-1e5, y)), app.to_screen(rect, pt(1e5, y))], guide);
     }
-    let hover = ui.input(|i| i.pointer.hover_pos());
     match &app.drag {
         Drag::Marquee { start, cur, .. } => {
-            let r = Rect::from_two_pos(app.to_screen(rect, *start), app.to_screen(rect, *cur));
-            painter.rect_filled(r, 0.0, ACCENT.gamma_multiply(0.12));
-            painter.rect_stroke(r, 0.0, preview);
+            let (lo, hi) = (pt(start.x.min(cur.x), start.y.min(cur.y)), pt(start.x.max(cur.x), start.y.max(cur.y)));
+            let q = app.quad(rect, lo, hi);
+            painter.add(egui::Shape::convex_polygon(q.clone(), ACCENT.gamma_multiply(0.12), EStroke::NONE));
+            painter.add(egui::Shape::closed_line(q, preview));
         }
         Drag::ZoomBox { start, cur } => {
             painter.rect_stroke(Rect::from_two_pos(*start, *cur), 0.0, EStroke::new(1.0_f32, Color32::WHITE));
@@ -972,7 +2004,7 @@ fn overlays(app: &App, ui: &egui::Ui, rect: Rect) {
             let o = &app.topts;
             let path = match app.tool {
                 Tool::Rect => Some(Path::rounded_rect(a.x.min(b.x), a.y.min(b.y), (b.x - a.x).abs(), (b.y - a.y).abs(), o.rect_radius)),
-                Tool::Oval => Some(Path::ellipse((a.x + b.x) / 2.0, (a.y + b.y) / 2.0, (b.x - a.x).abs() / 2.0, (b.y - a.y).abs() / 2.0)),
+                Tool::Oval => Some(oval_path((a.x + b.x) / 2.0, (a.y + b.y) / 2.0, (b.x - a.x).abs() / 2.0, (b.y - a.y).abs() / 2.0, o.oval_start, o.oval_end, o.oval_inner)),
                 Tool::PolyStar => Some(Path::polystar((a.x + b.x) / 2.0, (a.y + b.y) / 2.0, (b.x - a.x).abs() / 2.0, (b.y - a.y).abs() / 2.0, o.poly_sides, o.poly_star, o.poly_inner)),
                 _ => None,
             };
@@ -999,6 +2031,21 @@ fn overlays(app: &App, ui: &egui::Ui, rect: Rect) {
                 _ => EStroke::new(app.stroke_w * app.zoom, app.stroke),
             };
             painter.add(egui::Shape::line(s, st));
+        }
+        Drag::Fluid { pts } => {
+            let w = fluid_widths(pts, app.topts.fluid_size, app.topts.fluid_sensitivity, app.zoom);
+            for i in 1..pts.len() {
+                painter.line_segment([app.to_screen(rect, pts[i - 1].0), app.to_screen(rect, pts[i].0)], EStroke::new(w[i] * app.zoom, app.fill));
+            }
+            if let Some(f) = pts.first() {
+                painter.circle_filled(app.to_screen(rect, f.0), w.first().copied().unwrap_or(1.0) * app.zoom / 2.0, app.fill);
+            }
+        }
+        Drag::BoneDraw { head, cur, .. } => {
+            let (h, t) = (app.to_screen(rect, *head), app.to_screen(rect, *cur));
+            painter.line_segment([h, t], EStroke::new(4.0_f32, Color32::from_rgba_unmultiplied(0x30, 0xA0, 0xFF, 180)));
+            painter.circle_filled(h, 4.0, Color32::WHITE);
+            painter.circle_stroke(t, 5.0, EStroke::new(1.5_f32, Color32::WHITE));
         }
         _ => {}
     }
@@ -1029,8 +2076,7 @@ fn overlays(app: &App, ui: &egui::Ui, rect: Rect) {
                 painter.circle_filled(h1, 2.5, ACCENT);
                 painter.circle_filled(h2, 2.5, ACCENT);
             }
-            painter.rect_filled(Rect::from_center_size(c, vec2(6.0, 6.0)), 0.0, Color32::WHITE);
-            painter.rect_stroke(Rect::from_center_size(c, vec2(6.0, 6.0)), 0.0, EStroke::new(1.0_f32, ACCENT));
+            handle_box(&painter, c, 6.0, Color32::WHITE);
             prev = Some((a, h));
         }
         if let (Some(&(last, _)), Some(hp), false) = (pen.pts.last(), hover, pen.dragging) {
@@ -1048,10 +2094,17 @@ fn overlays(app: &App, ui: &egui::Ui, rect: Rect) {
         }
         painter.add(egui::Shape::line(pts, EStroke::new(1.0_f32, ACCENT)));
     }
-    // Eraser cursor
-    if app.tool == Tool::Eraser {
-        if let Some(h) = hover.filter(|h| rect.contains(*h)) {
-            painter.circle_stroke(h, app.topts.eraser_size / 2.0 * app.zoom, EStroke::new(1.0_f32, Color32::WHITE));
+    // Eraser / brush cursors
+    if let Some(h) = hover.filter(|h| rect.contains(*h)) {
+        match app.tool {
+            Tool::Eraser => {
+                painter.circle_stroke(h, app.topts.eraser_size / 2.0 * app.zoom, EStroke::new(1.0_f32, Color32::WHITE));
+            }
+            Tool::Brush | Tool::FluidBrush if matches!(app.drag, Drag::None) => {
+                let size = if app.tool == Tool::Brush { app.topts.brush_size } else { app.topts.fluid_size };
+                painter.circle_stroke(h, size / 2.0 * app.zoom, EStroke::new(1.0_f32, Color32::from_gray(200)));
+            }
+            _ => {}
         }
     }
     if app.lib_drag.is_some() && ui.rect_contains_pointer(rect) {
@@ -1069,14 +2122,15 @@ fn text_editor(app: &mut App, ui: &mut egui::Ui, rect: Rect) {
     };
     let anchor = app.to_screen(rect, pt(el.matrix.tx, el.matrix.ty));
     let (lo, hi) = app.ed.bounds_of(&[sel]).unwrap_or((pt(el.matrix.tx, el.matrix.ty), pt(el.matrix.tx + 10.0, el.matrix.ty + 10.0)));
-    let box_r = Rect::from_two_pos(app.to_screen(rect, lo), app.to_screen(rect, hi)).expand(3.0);
-    ui.painter_at(rect).rect_stroke(box_r, 0.0, EStroke::new(1.0_f32, ACCENT));
+    let q = app.quad(rect, lo, hi);
+    let box_r = Rect::from_points(&q).expand(3.0);
+    ui.painter_at(rect).add(egui::Shape::closed_line(q, EStroke::new(1.0_f32, ACCENT)));
     let mut buffer = te.buffer.clone();
     let focus_requested = te.focus_requested;
     let mark = te.mark;
     let mut done = false;
     let mut got_focus = false;
-    egui::Area::new(egui::Id::new("text-tool-editor")).order(egui::Order::Foreground).fixed_pos(pos2(anchor.x, box_r.bottom() + 6.0)).show(ui.ctx(), |ui| {
+    egui::Area::new(egui::Id::new("text-tool-editor")).order(egui::Order::Foreground).fixed_pos(pos2(anchor.x.min(box_r.left()), box_r.bottom() + 6.0)).show(ui.ctx(), |ui| {
         egui::Frame::popup(ui.style()).show(ui, |ui| {
             ui.label(egui::RichText::new("Type text · Esc or click away to finish").small().color(Color32::from_gray(160)));
             let r = ui.add(egui::TextEdit::multiline(&mut buffer).desired_rows(2).desired_width(260.0));

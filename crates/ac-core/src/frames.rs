@@ -27,9 +27,7 @@ fn ensure_first(layer: &mut Layer) {
     if layer.end == 0 {
         layer.end = 1;
     }
-    if !layer.keyframes.contains_key(&0) {
-        layer.keyframes.insert(0, Keyframe::blank());
-    }
+    layer.keyframes.entry(0).or_insert_with(Keyframe::blank);
 }
 
 /// Pin the content that frame `f` currently shows into a keyframe at `f`, so

@@ -47,14 +47,50 @@ tools. Options for the active tool are in Properties ▸ **Tool**.
 
 | Group | Tools (shortcut) |
 |---|---|
-| Select | Selection (V), Subselection (A: drag anchors and curve handles), Free Transform (Q), Lasso (L), Polygon Lasso |
-| Draw | Pen (P) + Add (=) / Delete (−) / Convert Anchor, Text (T), Line (N), Rectangle (R, corner radius), Oval (O), PolyStar |
-| Paint | Paint Brush (Y, filled strokes), Pencil (Shift+Y: Straighten / Smooth / Ink), Paint Bucket (K), Ink Bottle (S), Eyedropper (I), Eraser (E, object mode) |
-| View | Hand (H / Space), Zoom (Z: click, Alt+click, drag a box) |
-| Colours | Stroke / Fill / none, Swap (X), Black & White (D), Snap to objects |
+| Select | Selection (V), Subselection (A), Free Transform (Q: scale, **skew**, rotate around a movable transformation point; **Distort** and **Envelope** modes), Gradient Transform (F), **3D Rotation (W)**, **3D Translation (G)**, Lasso (L), Polygon Lasso |
+| Draw | Pen (P) + Add (=) / Delete (−) / Convert Anchor, Text (T), Line (N), Rectangle (R, corner radius), Oval (O, start/end angle, inner radius), PolyStar |
+| Paint | Paint Brush (Y), **Fluid Brush (B)**, Pencil (Shift+Y), **Width (U)**, **Bone (M)**, **Asset Warp (Shift+W)**, Paint Bucket (K), Ink Bottle (S), **Eyedropper (I)**, Eraser (E) |
+| View | **Camera (C)**, Hand (H / Space), **Rotation (Shift+H)**, Zoom (Z) |
+| Colours | Stroke / Fill / none, Swap (X), Black & White (D), Snap; fill type Solid / Linear / Radial gradient |
 
-Dimmed tools are planned and say what they need: Gradient Transform, Fluid
-Brush, Bone, Width, Asset Warp, Camera, Rotate View.
+### Transforms
+
+- **Free Transform (Q)**: corner handles scale (Shift = proportional, Alt =
+  around the transformation point), side handles stretch one axis, dragging an
+  **edge** skews (top/bottom = horizontal, left/right = vertical), just outside
+  a corner rotates. Drag the white dot to move the transformation point.
+- **Distort / Envelope**: pick the mode in Properties ▸ Tool or Modify ▸
+  Transform; drag the green handles (shapes; Break Apart symbols first).
+- **Window ▸ Transform (Ctrl+T)**: exact W/H %, rotate or skew H/V, 3D
+  rotation and centre, flip, Remove Transform, and *Copy selection and apply
+  transform* for radial patterns. Modify ▸ Transform ▸ Scale and Rotate
+  (Ctrl+Alt+S).
+- **3D Rotation (W)**: red line = X, green = Y, blue ring = Z, orange ring =
+  free, centre dot = 3D centre. **3D Translation (G)**: X/Y arrows, centre dot =
+  depth. Perspective angle and vanishing point: Properties ▸ Doc. 3D values
+  tween with Classic tweens.
+
+### Bones, warp, width, camera
+
+- **Bone (M)**: drag from one object to another on the same layer; start on a
+  joint to extend the chain. Then drag any bonded object with the Selection
+  tool to pose the chain (inverse kinematics); poses become keyframes.
+  Properties ▸ Object shows the bone and Remove bone / Remove all bones.
+- **Asset Warp (Shift+W)**: click a shape to drop pins, drag pins to bend it,
+  Alt+click removes a pin.
+- **Width (U)**: drag out from a stroke to make it thicker there.
+- **Gradients**: Properties ▸ Object ▸ Fill ▸ Linear/Radial (edit stops there),
+  then the Gradient Transform tool (F) to move, rotate and stretch.
+- **Camera (C)**: adds a Camera layer; drag pans, scroll zooms, Shift+drag
+  rotates. Keyframe and tween it like any layer; playback shows the camera view.
+- **Rotation (Shift+H)** turns the view only (double-click to reset).
+
+### Library
+
+The Library fills the rest of the right column under Properties (Properties
+grows first and pushes it down). Search, sortable Name/Type/Uses/Frames
+columns, an animated preview with play, and drag-to-stage. **View ▸ Library
+position ▸ Own panel on the left** docks it beside the Tools; Ctrl+L hides it.
 
 ## Scripting
 
@@ -81,6 +117,8 @@ See [SCRIPTING.md](SCRIPTING.md) for the API, examples and the safety model.
 | Enter | Play / stop | Ctrl+Z / Ctrl+Shift+Z | Undo / redo |
 | Esc | Deselect, then leave symbol | Ctrl+1 / Ctrl+2 | 100% / fit |
 | F9 | Actions panel | F2 | Output panel |
+| Ctrl+T | Transform panel | Ctrl+L | Library |
+| W / G | 3D Rotation / Translation | M / U / B | Bone / Width / Fluid Brush |
 
 ## UI smoke testing
 

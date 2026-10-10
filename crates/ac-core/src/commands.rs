@@ -26,7 +26,7 @@ macro_rules! cmds {
 
 cmds! {
     "doc.info", "", "Document size, fps, frame count, layers, library and current position";
-    "doc.set", "width?, height?, fps?, background?", "Change document settings";
+    "doc.set", "width?, height?, fps?, background?, perspective_angle?, vanishing_x?, vanishing_y?", "Change document settings (incl. 3D perspective)";
     "timeline.goto", "frame", "Move the playhead";
     "timeline.select", "layer?, frame?, to_layer?, to_frame?", "Select frames (defaults: current layer/frame)";
     "timeline.insert_frames", "frames? (1), layer?, frame?", "F5: insert frames";
@@ -65,6 +65,17 @@ cmds! {
     "selection.duplicate", "", "Duplicate (offset by 10 px)";
     "selection.to_symbol", "name, kind? ('graphic'|'movieclip'|'button')", "F8: convert to symbol; returns its id";
     "selection.break_apart", "", "Ctrl+B on a symbol instance";
+    "selection.skew", "h? (deg), v? (deg)", "Skew horizontally / vertically around the selection centre";
+    "selection.set_3d", "rx?, ry?, rz? (deg), z?", "3D rotation and depth (perspective-projected)";
+    "selection.distort", "corners [[x,y] x4: TL, TR, BR, BL]", "Distort shapes onto a quadrilateral";
+    "selection.set_gradient", "kind ('linear'|'radial'|'none'), colors [\"#RRGGBB\"...]", "Gradient fill on selected shapes";
+    "bone.add", "x1, y1, x2, y2", "Bone from the object at (x1,y1) to the object at (x2,y2) on the current layer";
+    "bone.list", "layer?", "Bones on a layer";
+    "bone.clear", "layer?", "Remove all bones on a layer";
+    "bone.drag", "x, y, to_x, to_y", "IK: drag the bonded object point at (x,y) to (to_x,to_y), posing the chain";
+    "camera.add", "", "Add a camera layer to the scene";
+    "camera.set", "x?, y?, zoom?, rotation?, frame?", "Camera centre, zoom (1 = 100%) and rotation at a frame (makes a keyframe)";
+    "camera.remove", "", "Remove the camera layer";
     "selection.arrange", "front (bool)", "Bring to front / send to back";
     "library.list", "", "Library items";
     "library.place", "symbol (name or id), x, y", "Place an instance on the current layer";
@@ -180,7 +191,7 @@ fn add_shape(ed: &mut Editor, name: &str, path: Path, fill: Option<Color>, strok
     if fill.is_none() && stroke.is_none() {
         return Err("shape needs a fill or a stroke".into());
     }
-    let s = ed.add_element(Element::shape(name, Shape { path, fill, stroke })).ok_or("current layer is locked or hidden")?;
+    let s = ed.add_element(Element::shape(name, Shape { path, fill, stroke, ..Default::default() })).ok_or("current layer is locked or hidden")?;
     Ok(json!({ "layer": s.layer + 1, "index": s.element }))
 }
 
@@ -237,7 +248,17 @@ pub fn execute(ed: &mut Editor, id: &str, a: &Value) -> Result<Value, String> {
             if w < 1.0 || h < 1.0 || !(0.1..=240.0).contains(&fps) {
                 return Err("width/height must be ≥ 1 and fps 0.1–240".into());
             }
+            let pa = num(a, "perspective_angle");
+            let vx = num(a, "vanishing_x");
+            let vy = num(a, "vanishing_y");
             ed.set_doc_props(w, h, fps, bg);
+            if let Some(v) = pa {
+                ed.doc.perspective_angle = v.clamp(1.0, 179.0);
+            }
+            if vx.is_some() || vy.is_some() {
+                let cur = ed.doc.perspective().vanishing;
+                ed.doc.vanishing_point = Some(pt(vx.unwrap_or(cur.x), vy.unwrap_or(cur.y)));
+            }
             Ok(Value::Null)
         }
         "timeline.goto" => {
@@ -558,6 +579,128 @@ pub fn execute(ed: &mut Editor, id: &str, a: &Value) -> Result<Value, String> {
         "selection.break_apart" => {
             need_selection(ed)?;
             ed.break_apart();
+            Ok(Value::Null)
+        }
+        "selection.skew" => {
+            need_selection(ed)?;
+            let c = center(ed)?;
+            let (h, v) = (num(a, "h").unwrap_or(0.0).to_radians(), num(a, "v").unwrap_or(0.0).to_radians());
+            // x' = x + tan(h)·y ; y' = y + tan(v)·x
+            let sk = Matrix { a: 1.0, b: v.tan(), c: h.tan(), d: 1.0, tx: 0.0, ty: 0.0 };
+            let m = Matrix::translate(c.x, c.y).concat(&sk).concat(&Matrix::translate(-c.x, -c.y));
+            ed.modify_selected("Skew", |e| e.matrix = m.concat(&e.matrix));
+            Ok(Value::Null)
+        }
+        "selection.set_3d" => {
+            need_selection(ed)?;
+            let (rx, ry, rz, z) = (num(a, "rx"), num(a, "ry"), num(a, "rz"), num(a, "z"));
+            ed.modify_selected("3D", |e| {
+                let mut t = e.three_d.unwrap_or_default();
+                if let Some(v) = rx { t.rx = v; }
+                if let Some(v) = ry { t.ry = v; }
+                if let Some(v) = rz { t.rz = v; }
+                if let Some(v) = z { t.z = v; }
+                e.three_d = if t.is_identity() { None } else { Some(t) };
+            });
+            Ok(Value::Null)
+        }
+        "selection.distort" => {
+            need_selection(ed)?;
+            let cs: Vec<Pt> = a.get("corners").and_then(Value::as_array).ok_or("missing 'corners' [[x,y] x4]")?
+                .iter().filter_map(|p| Some(pt(p.get(0)?.as_f64()? as f32, p.get(1)?.as_f64()? as f32))).collect();
+            if cs.len() != 4 {
+                return Err("'corners' needs 4 points: top-left, top-right, bottom-right, bottom-left".into());
+            }
+            let (lo, hi) = ed.selection_bounds().ok_or("selection has no size")?;
+            let quad = [cs[0], cs[1], cs[2], cs[3]];
+            let mut skipped = 0;
+            for s in ed.selection.clone() {
+                if !matches!(ed.element_at(s).map(|e| e.kind), Some(ElementKind::Shape(_))) { skipped += 1; }
+            }
+            ed.modify_selected("Distort", |e| {
+                let m = e.matrix;
+                if let (ElementKind::Shape(sh), Some(inv)) = (&mut e.kind, m.invert()) {
+                    let world = sh.path.transformed(&m);
+                    sh.path = crate::deform::distort(&world, lo, hi, &quad).transformed(&inv);
+                    sh.warp = None;
+                }
+            });
+            Ok(json!({ "skipped_non_shapes": skipped }))
+        }
+        "selection.set_gradient" => {
+            need_selection(ed)?;
+            let kind = match string(a, "kind").unwrap_or("linear") {
+                "linear" => Some(GradientKind::Linear),
+                "radial" => Some(GradientKind::Radial),
+                "none" => None,
+                k => return Err(format!("unknown gradient kind '{k}'")),
+            };
+            let colors: Vec<Color> = match a.get("colors").and_then(Value::as_array) {
+                Some(v) => v.iter().filter_map(|c| c.as_str().and_then(Color::from_hex)).collect(),
+                None => vec![Color::rgb(255, 255, 255), Color::rgb(0, 0, 0)],
+            };
+            if kind.is_some() && colors.len() < 2 {
+                return Err("need at least 2 colors".into());
+            }
+            let n = colors.len();
+            let stops: Vec<(f32, Color)> = colors.into_iter().enumerate().map(|(i, c)| (i as f32 / (n - 1).max(1) as f32, c)).collect();
+            ed.modify_selected("Gradient", |e| {
+                if let ElementKind::Shape(sh) = &mut e.kind {
+                    sh.gradient = kind.and_then(|k| sh.path.bounds().map(|(lo, hi)| Gradient::fit(k, stops.clone(), lo, hi)));
+                }
+            });
+            Ok(Value::Null)
+        }
+        "bone.add" => {
+            let p1 = pt(req(a, "x1")?, req(a, "y1")?);
+            let p2 = pt(req(a, "x2")?, req(a, "y2")?);
+            let h1 = ed.hit_test(p1).ok_or("no object at (x1, y1)")?;
+            let h2 = ed.hit_test(p2).ok_or("no object at (x2, y2)")?;
+            if h1.layer != h2.layer {
+                return Err("both objects must be on the same layer".into());
+            }
+            ed.add_bone(h1.layer, h1.element, h2.element, p1, p2)?;
+            Ok(Value::Null)
+        }
+        "bone.list" => {
+            let li = layer_arg(ed, a, "layer")?.unwrap_or(ed.layer);
+            Ok(Value::Array(ed.bones(li).iter().map(|b| json!({ "parent": b.parent, "child": b.child })).collect()))
+        }
+        "bone.clear" => {
+            let li = layer_arg(ed, a, "layer")?.unwrap_or(ed.layer);
+            ed.clear_bones(li);
+            Ok(Value::Null)
+        }
+        "bone.drag" => {
+            let p = pt(req(a, "x")?, req(a, "y")?);
+            let to = pt(req(a, "to_x")?, req(a, "to_y")?);
+            let h = ed.hit_test(p).ok_or("no object at (x, y)")?;
+            if ed.bones(h.layer).is_empty() {
+                return Err("that object's layer has no bones".into());
+            }
+            let el = ed.element_at(h).ok_or("no object")?;
+            let grab = el.matrix.invert().ok_or("object has no size")?.apply(p);
+            ed.begin_edit("Pose Bones");
+            ed.ik_drag(h.layer, h.element, grab, to);
+            Ok(Value::Null)
+        }
+        "camera.add" => Ok(json!(ed.add_camera() + 1)),
+        "camera.remove" => {
+            ed.remove_camera();
+            Ok(Value::Null)
+        }
+        "camera.set" => {
+            if ed.camera_layer().is_none() {
+                ed.add_camera();
+            }
+            if let Some(f) = frame_arg(a, "frame")? {
+                ed.set_frame(f);
+            }
+            let cur = ed.camera_at(ed.frame).unwrap_or_else(|| default_camera(&ed.doc).matrix);
+            let (c, rot, zoom) = Editor::camera_params(&cur);
+            let m = Editor::camera_from(pt(num(a, "x").unwrap_or(c.x), num(a, "y").unwrap_or(c.y)), num(a, "rotation").unwrap_or(rot), num(a, "zoom").unwrap_or(zoom));
+            ed.begin_edit("Camera");
+            ed.set_camera(m);
             Ok(Value::Null)
         }
         "selection.arrange" => {

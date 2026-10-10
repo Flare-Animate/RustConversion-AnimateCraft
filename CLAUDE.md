@@ -28,7 +28,8 @@ Status: ✅ in the demo · 🟡 partial · ⬜ planned
 
 **Document & workspace**
 - ✅ Stage with pasteboard, zoom/pan, document size, FPS, stage colour
-- ✅ Panels: Tools, Timeline, Properties (context-sensitive), Library w/ preview
+- ✅ Panels: Tools, Timeline, Properties (context-sensitive), Library (search,
+  sortable columns, animated preview; fills the column or docks left), Transform
 - ✅ Scenes breadcrumb + edit-symbol mode · ⬜ edit-in-place, multiple scenes
 - ✅ Multi-select (click, Shift+click, marquee, Select All), move/scale/rotate groups, arrow nudge,
   cut/copy/paste/paste-in-place/duplicate, Delete, Break Apart, stage right-click menu
@@ -45,12 +46,25 @@ Status: ✅ in the demo · 🟡 partial · ⬜ planned
   (Straighten/Smooth/Ink), Paint Brush (filled outline), Paint Bucket, Ink
   Bottle, Eyedropper (switches to Bucket/Ink Bottle), Eraser (object mode),
   Hand, Zoom; snapping with guides
+- ✅ M0.3 tools: Free Transform with 8 handles, edge skew, movable
+  transformation point, Distort + Envelope modes; Transform panel (Ctrl+T) and
+  Scale and Rotate; 3D Rotation / 3D Translation gizmos with perspective angle
+  and vanishing point; Gradient fills (linear/radial, multi-stop) + Gradient
+  Transform; Fluid Brush (velocity → width, tapered); Width tool (variable-width
+  strokes); Bone tool + IK posing; Asset Warp (rigid MLS pins); Camera layer +
+  tool; Rotation (view) tool; Oval start/end angle + inner radius; Eyedropper
+  picks gradients
+- ⬜ Toolbar gaps after the M0.3 review: Rectangle/Oval **Primitive** (live
+  parametric shapes), **Classic Brush** with brush modes (Normal / Fills /
+  Behind / Selection / Inside — needs Merge Drawing), Art/Pattern brushes,
+  pressure/tilt, **Magic Wand** (needs bitmaps), **Bind** tool (bones inside a
+  single shape), Eraser modes + Faucet, Paint Bucket gap size / Lock Fill,
+  Object-vs-Merge drawing toggle (J), deleting single width points, Asset Warp on
+  symbols/bitmaps, camera colour filters and layer depth
 - ⬜ **Merge Drawing** model: Flash's planar map where shapes cut/merge, fill
   styles left/right of each edge, Selection-tool edge bending. This is the core
   engine milestone; nothing else in open source does it well.
-- ⬜ Pressure/tilt, Fluid Brush, Art/Pattern brushes, fill-cutting Eraser modes,
-  gradients (linear/radial) + Gradient Transform, bitmap fills, Width tool,
-  dynamic/input text, system fonts, Rotate View, Camera, Bone, Asset Warp
+- ⬜ Bitmap fills, dynamic/input text, system fonts
 
 **Timeline**
 - ✅ Layers (visible / lock / outline, colour), frames, keyframes, blank keyframes,
@@ -58,8 +72,9 @@ Status: ✅ in the demo · 🟡 partial · ⬜ planned
 - ✅ Frame selection (click, drag range across layers, Shift+click, double-click span,
   layer-name click), drag to move keyframes, Clear Frames, Copy/Cut/Paste Frames,
   F5/F6/F7 on ranges, right-click frame menu, layer reorder by drag
+- ✅ Camera layer (pan / zoom / rotate, keyframed + classic-tweened)
 - ⬜ Layer folders, guide & motion-guide layers, masks, layer parenting,
-  layer depth (2.5D), Camera layer, multi-frame edit,
+  layer depth (2.5D), multi-frame edit,
   audio layers with waveform + lip-sync
 
 **Symbols**
@@ -74,8 +89,10 @@ Status: ✅ in the demo · 🟡 partial · ⬜ planned
   via shortest path, extra CW turns), alpha + tint interpolation, −100…+100 ease
 - ✅ Shape tween with automatic correspondence
 - ⬜ Shape hints, Motion tweens (property keyframes on a span + motion path +
-  Motion Editor curves), custom ease graphs and presets, Bone tool / IK,
-  Asset Warp, Puppet pins, rig mapping
+  Motion Editor curves), custom ease graphs and presets, rig mapping,
+  bone springiness / joint constraints, armature layers
+- ✅ Bones (FK at evaluation, CCD inverse kinematics), Asset Warp pins, 3D
+  properties and gradients all tween with Classic tweens
 
 **Output**
 - ✅ Animated GIF, PNG frame, SVG frame (same rasteriser as the stage)
@@ -128,12 +145,13 @@ crates/
 |---|---|
 | **M0 (done: demo)** | Model, classic + shape tweens, symbols, onion skin, egui editor, GIF/PNG/SVG export, CLI. M0.1: selection, frame ops, clipboard, library management; 24 tests |
 | **M0.2 (done)** | Toolbar overhaul (17 working tools), command registry, multi-language scripting, frame scripts; 40 tests |
+| **M0.3 (done)** | Every toolbar tool works (31): skew/distort/envelope, Transform panel, 3D tools, gradients, Fluid Brush, Width, Bone/IK, Asset Warp, Camera, view rotation; Library fills the panel / docks left; 48 tests |
 | **M1** | Route every menu item through the registry; MCP server; rulers/guides, Align panel, native file dialogs |
 | **M2** | Merge Drawing planar-map engine, Brush/Eraser/Pen/Subselection, gradients, Selection-tool edge bending |
 | **M3** | `.fla`/XFL import with a corpus of real files; XFL export; round-trip tests |
 | **M4** | Motion tweens + Motion Editor, custom eases, shape hints, masks, guide layers, layer parenting, camera |
 | **M5** | Video (ffmpeg), sprite sheets, Lottie, HTML5 Canvas runtime, audio layers |
-| **M6** | Bone tool / IK, Asset Warp, filters and blend modes, text |
+| **M6** | Bone springs/constraints, shape bones (Bind), filters and blend modes, text |
 | **M7** | Web build (wasm), plug-ins, docs site, first public release |
 
 ## 5. Rules

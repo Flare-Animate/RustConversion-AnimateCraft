@@ -15,6 +15,8 @@ pub enum Tool {
     Subselect,
     FreeTransform,
     GradientTransform,
+    Rotate3D,
+    Translate3D,
     Lasso,
     PolyLasso,
     Pen,
@@ -55,6 +57,7 @@ pub struct ToolInfo {
 const fn t(name: &'static str, key: Option<Key>, shift: bool, tip: &'static str) -> ToolInfo {
     ToolInfo { name, key, shift, planned: None, tip }
 }
+#[allow(dead_code)] // kept for future planned tools
 const fn planned(name: &'static str, key: Option<Key>, shift: bool, why: &'static str) -> ToolInfo {
     ToolInfo { name, key, shift, planned: Some(why), tip: "" }
 }
@@ -65,8 +68,10 @@ impl Tool {
         match self {
             Tool::Select => t("Selection", Some(V), false, "Click or box-select objects; drag to move, corners to scale"),
             Tool::Subselect => t("Subselection", Some(A), false, "Edit the anchor points and curve handles of a shape"),
-            Tool::FreeTransform => t("Free Transform", Some(Q), false, "Scale with corners, rotate just outside a corner"),
-            Tool::GradientTransform => planned("Gradient Transform", Some(F), false, "needs gradient fills (roadmap M2)"),
+            Tool::FreeTransform => t("Free Transform", Some(Q), false, "Scale (corners/sides), skew (drag an edge), rotate (just outside a corner) around the movable transformation point. Distort and Envelope modes in Tool properties"),
+            Tool::GradientTransform => t("Gradient Transform", Some(F), false, "Move, rotate and stretch a shape's gradient fill"),
+            Tool::Rotate3D => t("3D Rotation", Some(W), false, "Rotate in 3D: red = X, green = Y, blue ring = Z, orange ring = free. Drag the centre dot to move the 3D centre"),
+            Tool::Translate3D => t("3D Translation", Some(G), false, "Move in 3D: red arrow = X, green arrow = Y, centre dot = depth (Z)"),
             Tool::Lasso => t("Lasso", Some(L), false, "Draw a freehand loop to select the objects inside it"),
             Tool::PolyLasso => t("Polygon Lasso", None, false, "Click corners of a selection polygon; double-click to finish"),
             Tool::Pen => t("Pen", Some(P), false, "Click for corners, drag for curves; click the first point to close; Enter finishes"),
@@ -76,21 +81,21 @@ impl Tool {
             Tool::Text => t("Text", Some(T), false, "Click to type new text, or click text to edit it"),
             Tool::Line => t("Line", Some(N), false, "Drag a straight line (Shift: 45° steps)"),
             Tool::Rect => t("Rectangle", Some(R), false, "Drag a rectangle (Shift: square). Corner radius in Tool properties"),
-            Tool::Oval => t("Oval", Some(O), false, "Drag an oval (Shift: circle)"),
+            Tool::Oval => t("Oval", Some(O), false, "Drag an oval (Shift: circle). Start/end angle and inner radius in Tool properties"),
             Tool::PolyStar => t("PolyStar", None, false, "Drag a polygon or star. Sides and style in Tool properties"),
             Tool::Pencil => t("Pencil", Some(Y), true, "Freehand line: Straighten, Smooth or Ink mode"),
             Tool::Brush => t("Paint Brush", Some(Y), false, "Freehand filled stroke using the fill colour"),
-            Tool::FluidBrush => planned("Fluid Brush", Some(B), false, "pressure/velocity-sensitive brush (roadmap M2)"),
-            Tool::Bone => planned("Bone", Some(M), false, "IK rigging (roadmap M6)"),
+            Tool::FluidBrush => t("Fluid Brush", Some(B), false, "Brush whose width follows your speed: slow = thick, fast = thin"),
+            Tool::Bone => t("Bone", Some(M), false, "Drag from one object to another to link them with a bone. Then drag objects with the Selection tool to pose them (IK)"),
             Tool::Bucket => t("Paint Bucket", Some(K), false, "Fill a shape (or tint an instance) with the fill colour"),
             Tool::InkBottle => t("Ink Bottle", Some(S), false, "Give a shape's outline the stroke colour and size"),
             Tool::Eyedropper => t("Eyedropper", Some(I), false, "Pick a colour from an object (fill → Paint Bucket, stroke → Ink Bottle)"),
             Tool::Eraser => t("Eraser", Some(E), false, "Erase whole objects you drag over (cutting fills needs Merge Drawing)"),
-            Tool::Width => planned("Width", Some(U), false, "variable-width strokes (roadmap M2)"),
-            Tool::AssetWarp => planned("Asset Warp", Some(W), false, "mesh warping with pins (roadmap M6)"),
-            Tool::Camera => planned("Camera", None, false, "camera layer (roadmap M4)"),
+            Tool::Width => t("Width", Some(U), false, "Drag out from a stroke to make it thicker or thinner at that point"),
+            Tool::AssetWarp => t("Asset Warp", Some(W), true, "Click a shape to pin it, drag pins to bend it. Alt+click removes a pin"),
+            Tool::Camera => t("Camera", Some(C), false, "Pan the camera by dragging, scroll to zoom, Shift+drag to rotate. Tweenable like any layer"),
             Tool::Hand => t("Hand", Some(H), false, "Drag to pan (or hold Space with any tool)"),
-            Tool::RotateView => planned("Rotation", Some(H), true, "rotating the view (roadmap M1)"),
+            Tool::RotateView => t("Rotation", Some(H), true, "Rotate the view of the stage (like turning paper). Shift snaps to 15°"),
             Tool::Zoom => t("Zoom", Some(Z), false, "Click to zoom in, Alt+click out, drag a box to zoom to it"),
         }
     }
@@ -120,11 +125,21 @@ impl Tool {
 
 /// Toolbar layout: sections → slots (flyout groups) → tools. Animate order.
 pub const SECTIONS: &[&[&[Tool]]] = &[
-    &[&[Tool::Select], &[Tool::Subselect], &[Tool::FreeTransform, Tool::GradientTransform], &[Tool::Lasso, Tool::PolyLasso]],
+    &[&[Tool::Select], &[Tool::Subselect], &[Tool::FreeTransform, Tool::GradientTransform], &[Tool::Rotate3D, Tool::Translate3D], &[Tool::Lasso, Tool::PolyLasso]],
     &[&[Tool::Pen, Tool::AddAnchor, Tool::DeleteAnchor, Tool::ConvertAnchor], &[Tool::Text], &[Tool::Line], &[Tool::Rect, Tool::Oval, Tool::PolyStar]],
-    &[&[Tool::Brush, Tool::Pencil, Tool::FluidBrush], &[Tool::Bone], &[Tool::Bucket, Tool::InkBottle, Tool::Eyedropper], &[Tool::Eraser], &[Tool::Width], &[Tool::AssetWarp]],
+    &[&[Tool::Brush, Tool::FluidBrush, Tool::Pencil], &[Tool::Width], &[Tool::Bone], &[Tool::AssetWarp], &[Tool::Bucket, Tool::InkBottle], &[Tool::Eyedropper], &[Tool::Eraser]],
     &[&[Tool::Camera], &[Tool::Hand, Tool::RotateView], &[Tool::Zoom]],
 ];
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum FtMode {
+    /// Scale, rotate and skew.
+    Normal,
+    /// Move corners independently (shapes).
+    Distort,
+    /// Bend with a 3×3 mesh of handles (shapes).
+    Envelope,
+}
 
 pub fn all_tools() -> impl Iterator<Item = Tool> {
     SECTIONS.iter().flat_map(|s| s.iter()).flat_map(|slot| slot.iter().copied())
@@ -143,10 +158,21 @@ pub struct ToolOpts {
     pub poly_sides: usize,
     pub poly_star: bool,
     pub poly_inner: f32,
+    /// Oval options: start/end angle (degrees) and inner radius (%).
+    pub oval_start: f32,
+    pub oval_end: f32,
+    pub oval_inner: f32,
     pub pencil_mode: PencilMode,
     pub brush_size: f32,
     pub brush_smooth: f32,
     pub eraser_size: f32,
+    pub ft_mode: FtMode,
+    pub fluid_size: f32,
+    pub fluid_sensitivity: f32,
+    pub show_bones: bool,
+    /// Fill type for new shapes: None = solid, Some(kind) = gradient from fill → fill2.
+    pub fill_gradient: Option<ac_core::GradientKind>,
+    pub fill2: Color32,
     pub text_size: f32,
     pub text_font: FontFace,
     pub text_align: Align,
@@ -165,10 +191,19 @@ impl Default for ToolOpts {
             poly_sides: 5,
             poly_star: true,
             poly_inner: 0.5,
+            oval_start: 0.0,
+            oval_end: 0.0,
+            oval_inner: 0.0,
             pencil_mode: PencilMode::Smooth,
             brush_size: 10.0,
             brush_smooth: 50.0,
             eraser_size: 12.0,
+            ft_mode: FtMode::Normal,
+            fluid_size: 14.0,
+            fluid_sensitivity: 50.0,
+            show_bones: true,
+            fill_gradient: None,
+            fill2: Color32::WHITE,
             text_size: 28.0,
             text_font: FontFace::Sans,
             text_align: Align::Left,
@@ -391,6 +426,17 @@ pub fn draw_icon(p: &egui::Painter, r: Rect, t: Tool, col: Color32) {
                 p.rect_filled(Rect::from_center_size(k, vec2(4.0, 4.0)), 0.0, col);
             }
             if t == Tool::GradientTransform { p.circle_stroke(c, 3.0, thin); }
+        }
+        Tool::Rotate3D => {
+            p.circle_stroke(c, 8.0, Stroke::new(1.4_f32, Color32::from_rgb(0x40, 0x90, 0xFF).gamma_multiply(if col == Color32::from_gray(95) { 0.4 } else { 1.0 })));
+            p.line_segment([c + vec2(0.0, -10.0), c + vec2(0.0, 10.0)], Stroke::new(1.6_f32, Color32::from_rgb(0xE0, 0x40, 0x40)));
+            p.line_segment([c + vec2(-10.0, 0.0), c + vec2(10.0, 0.0)], Stroke::new(1.6_f32, Color32::from_rgb(0x40, 0xC0, 0x40)));
+            if col == ACCENT { p.circle_stroke(c, 10.5, Stroke::new(1.0_f32, ACCENT)); }
+        }
+        Tool::Translate3D => {
+            p.arrow(c, vec2(11.0, 0.0), Stroke::new(1.6_f32, Color32::from_rgb(0xE0, 0x40, 0x40)));
+            p.arrow(c, vec2(0.0, -11.0), Stroke::new(1.6_f32, Color32::from_rgb(0x40, 0xC0, 0x40)));
+            p.circle_filled(c, 2.5, col);
         }
         Tool::Lasso => {
             let pts: Vec<_> = (0..=20).map(|i| { let a = i as f32 / 20.0 * 5.6; c + vec2(a.cos() * 8.0, a.sin() * 5.0 - 2.0) }).collect();

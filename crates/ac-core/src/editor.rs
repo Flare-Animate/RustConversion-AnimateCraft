@@ -52,6 +52,8 @@ pub struct Editor {
     redo: Vec<Snapshot>,
     element_clip: Vec<(Element, usize)>,
     frame_clip: Vec<FrameClip>,
+    /// Show the scene through the camera layer (playback, Camera tool).
+    pub camera_view: bool,
 }
 
 #[derive(Clone)]
@@ -75,6 +77,7 @@ impl Editor {
             redo: vec![],
             element_clip: vec![],
             frame_clip: vec![],
+            camera_view: false,
         }
     }
 
@@ -149,6 +152,11 @@ impl Editor {
         let ctx = EvalCtx { doc: &self.doc, global_frame: frame };
         let mut out = Vec::new();
         evaluate(&ctx, self.timeline(), frame, &Matrix::IDENTITY, 1.0, 0, &mut out);
+        if self.camera_view && self.editing.is_none() {
+            if let Some(v) = camera_view(&self.doc, &self.doc.scene, frame) {
+                apply_view(&mut out, &v);
+            }
+        }
         out
     }
 
@@ -449,7 +457,7 @@ impl Editor {
     }
 
     pub fn layer_editable(&self, layer: usize) -> bool {
-        self.timeline().layers.get(layer).map(|l| !l.locked && l.visible).unwrap_or(false)
+        self.timeline().layers.get(layer).map(|l| !l.locked && l.visible && l.kind != LayerKind::Camera).unwrap_or(false)
     }
     pub fn layer_locked(&self) -> bool {
         !self.layer_editable(self.layer)
@@ -480,6 +488,14 @@ impl Editor {
                 return None;
             }
             it.hit(p).then_some(Selection { layer: li, element: ei })
+        })
+    }
+
+    /// Topmost editable object under `p` on `layer`, ignoring `skip`.
+    pub fn hit_test_on_layer(&self, p: Pt, layer: usize, skip: Option<usize>) -> Option<usize> {
+        self.evaluate_current(self.frame).iter().rev().find_map(|it| {
+            let (li, ei) = it.src?;
+            (li == layer && Some(ei) != skip && it.hit(p)).then_some(ei)
         })
     }
 
@@ -604,6 +620,10 @@ impl Editor {
     pub fn begin_drag(&mut self) {
         self.checkpoint("Move");
     }
+    /// Start a continuous edit with a named undo step (pair with the `*_continuous` APIs).
+    pub fn begin_edit(&mut self, label: &str) {
+        self.checkpoint(label);
+    }
 
     /// Delete the selected elements from the keyframe they live in.
     pub fn delete_selected(&mut self) -> usize {
@@ -616,6 +636,8 @@ impl Editor {
         sels.sort();
         let mut removed = 0;
         for s in sels.iter().rev() {
+            let e = s.element;
+            self.remap_bones(s.layer, |i| if i == e { None } else if i > e { Some(i - 1) } else { Some(i) });
             let Some(start) = self.target_keyframe(s.layer, false) else { continue };
             let l = &mut self.timeline_mut().layers[s.layer];
             if let Some(kf) = l.keyframes.get_mut(&start) {
@@ -682,6 +704,16 @@ impl Editor {
         }
     }
 
+    /// Duplicate exactly on top of the original (used by Copy and Transform).
+    pub fn duplicate_in_place(&mut self) {
+        if self.copy_selected() > 0 {
+            if let Some(s) = self.selection.first() {
+                self.layer = s.layer;
+            }
+            self.paste(true);
+        }
+    }
+
     /// Ctrl+Up/Down style arrange within one layer (first selected element).
     pub fn arrange(&mut self, to_front: bool) {
         let Some(&s) = self.selection.first() else { return };
@@ -694,9 +726,15 @@ impl Editor {
         if s.element >= els.len() {
             return;
         }
+        let n = els.len();
         let e = els.remove(s.element);
         let idx = if to_front { els.len() } else { 0 };
         els.insert(idx, e);
+        // keep bone references pointing at the same objects
+        let mut order: Vec<usize> = (0..n).collect();
+        let moved = order.remove(s.element);
+        order.insert(idx, moved);
+        self.remap_bones(s.layer, |i| order.iter().position(|&o| o == i));
         self.selection = vec![Selection { layer: s.layer, element: idx }];
     }
 
@@ -724,8 +762,12 @@ impl Editor {
         tl.layers[0].keyframes.insert(0, Keyframe::with(inner));
         let id = self.doc.add_symbol(name, kind, tl);
         let start = self.target_keyframe(first.layer, false)?;
-        let kf = self.timeline_mut().layers[first.layer].keyframes.get_mut(&start).unwrap();
         let slot = sels[0].element;
+        let gone: Vec<usize> = sels.iter().map(|s| s.element).collect();
+        let kept: Vec<usize> = gone.iter().skip(1).copied().collect();
+        let mapping = move |i: usize| if gone.contains(&i) { None } else { Some(i - kept.iter().filter(|&&k| k < i).count()) };
+        self.remap_bones(first.layer, mapping);
+        let kf = self.timeline_mut().layers[first.layer].keyframes.get_mut(&start).unwrap();
         for s in sels.iter().skip(1).rev() {
             if s.element < kf.elements.len() {
                 kf.elements.remove(s.element);
@@ -769,6 +811,8 @@ impl Editor {
         for (i, p) in parts.into_iter().enumerate() {
             els.insert(s.element + i, p);
         }
+        let at = s.element;
+        self.remap_bones(s.layer, |i| if i == at { None } else if i > at { Some(i + n - 1) } else { Some(i) });
         self.selection = (s.element..s.element + n).map(|element| Selection { layer: s.layer, element }).collect();
     }
 
@@ -846,6 +890,13 @@ impl Editor {
         self.doc.background = bg;
     }
 
+    /// 3D perspective: field of view and vanishing point (`None` = stage centre).
+    pub fn set_perspective(&mut self, angle: f32, vanishing: Option<Pt>) {
+        self.checkpoint("Perspective");
+        self.doc.perspective_angle = angle.clamp(1.0, 179.0);
+        self.doc.vanishing_point = vanishing;
+    }
+
     /// Paint bucket on an element: sets fill (shapes) or tint (instances).
     pub fn paint_bucket(&mut self, sel: Selection, color: Color) {
         self.selection = vec![sel];
@@ -854,6 +905,235 @@ impl Editor {
             ElementKind::Instance(_) => el.tint = Some((color, 0.6)),
             ElementKind::Text(t) => t.color = color,
         });
+    }
+}
+
+// ------------------------------------------------------------ bones (IK)
+impl Editor {
+    pub fn bones(&self, layer: usize) -> &[Bone] {
+        self.timeline().layers.get(layer).map(|l| l.bones.as_slice()).unwrap_or(&[])
+    }
+
+    /// Re-index bones after objects on a layer were removed/reordered;
+    /// bones touching a removed object are dropped.
+    pub fn remap_bones(&mut self, layer: usize, f: impl Fn(usize) -> Option<usize>) {
+        let Some(l) = self.timeline_mut().layers.get_mut(layer) else { return };
+        if l.bones.is_empty() {
+            return;
+        }
+        l.bones = l
+            .bones
+            .iter()
+            .filter_map(|b| Some(Bone { parent: f(b.parent)?, child: f(b.child)?, ..*b }))
+            .collect();
+    }
+
+    /// Objects connected below `e` (including `e`).
+    pub fn bone_subtree(bones: &[Bone], e: usize) -> Vec<usize> {
+        let mut out = vec![e];
+        let mut i = 0;
+        while i < out.len() {
+            let cur = out[i];
+            for b in bones.iter().filter(|b| b.parent == cur) {
+                if !out.contains(&b.child) {
+                    out.push(b.child);
+                }
+            }
+            i += 1;
+        }
+        out
+    }
+
+    /// Joint an object rotates around: where it attaches to its parent, or
+    /// (for the root) the head of its first bone.
+    pub fn bone_pivot(bones: &[Bone], els: &[Element], e: usize) -> Option<Pt> {
+        if let Some(b) = bones.iter().find(|b| b.child == e) {
+            return els.get(e).map(|el| el.matrix.apply(b.tail_child));
+        }
+        bones.iter().find(|b| b.parent == e).and_then(|b| els.get(e).map(|el| el.matrix.apply(b.head)))
+    }
+
+    /// Bone tool: link `parent` → `child` with a bone from `head` to `tail` (doc coords).
+    pub fn add_bone(&mut self, layer: usize, parent: usize, child: usize, head: Pt, tail: Pt) -> Result<(), String> {
+        if parent == child {
+            return Err("drag from one object to a different one".into());
+        }
+        if !self.layer_editable(layer) {
+            return Err("the layer is locked or hidden".into());
+        }
+        let bones = self.bones(layer).to_vec();
+        if bones.iter().any(|b| b.child == child) {
+            return Err("that object is already attached to a bone".into());
+        }
+        if Self::bone_subtree(&bones, child).contains(&parent) {
+            return Err("that would make a loop in the armature".into());
+        }
+        let l = &self.timeline().layers[layer];
+        let (els, _) = layer_elements_at(l, self.frame).ok_or("nothing on this frame")?;
+        let pm = els.get(parent).ok_or("no such object")?.matrix.invert().ok_or("object has no size")?;
+        let cm = els.get(child).ok_or("no such object")?.matrix.invert().ok_or("object has no size")?;
+        let bone = Bone { parent, child, head: pm.apply(head), tail_parent: pm.apply(tail), tail_child: cm.apply(tail) };
+        self.checkpoint("Add Bone");
+        self.timeline_mut().layers[layer].bones.push(bone);
+        Ok(())
+    }
+
+    /// Remove the bone that attaches `child` to its parent.
+    pub fn remove_bone(&mut self, layer: usize, child: usize) {
+        if !self.bones(layer).iter().any(|b| b.child == child) {
+            return;
+        }
+        self.checkpoint("Remove Bone");
+        self.timeline_mut().layers[layer].bones.retain(|b| b.child != child);
+    }
+
+    pub fn clear_bones(&mut self, layer: usize) {
+        if self.bones(layer).is_empty() {
+            return;
+        }
+        self.checkpoint("Remove Bones");
+        self.timeline_mut().layers[layer].bones.clear();
+    }
+
+    /// Inverse kinematics: pull the point `grab` (local to `element`) towards
+    /// `target`, rotating the chain of parents (CCD). Dragging an armature's
+    /// root moves the whole armature. Writes a pose keyframe at the playhead.
+    /// Call `begin_drag` first so a drag is one undo step.
+    pub fn ik_drag(&mut self, layer: usize, element: usize, grab: Pt, target: Pt) {
+        let f = self.frame;
+        let Some(l) = self.timeline().layers.get(layer) else { return };
+        let bones = l.bones.clone();
+        let Some((mut els, _)) = layer_elements_at(l, f) else { return };
+        if element >= els.len() {
+            return;
+        }
+        let mut chain = vec![element];
+        while let Some(b) = bones.iter().find(|b| b.child == *chain.last().unwrap()) {
+            if chain.contains(&b.parent) {
+                break;
+            }
+            chain.push(b.parent);
+        }
+        let root = *chain.last().unwrap();
+        let affected = Self::bone_subtree(&bones, root);
+        if chain.len() == 1 {
+            let eff = els[element].matrix.apply(grab);
+            for &y in &affected {
+                els[y].matrix.tx += target.x - eff.x;
+                els[y].matrix.ty += target.y - eff.y;
+            }
+        } else {
+            for _ in 0..16 {
+                for &x in &chain {
+                    let Some(j) = Self::bone_pivot(&bones, &els, x) else { continue };
+                    let eff = els[element].matrix.apply(grab);
+                    let a1 = (eff.y - j.y).atan2(eff.x - j.x);
+                    let a2 = (target.y - j.y).atan2(target.x - j.x);
+                    let mut d = a2 - a1;
+                    while d > std::f32::consts::PI {
+                        d -= std::f32::consts::TAU;
+                    }
+                    while d < -std::f32::consts::PI {
+                        d += std::f32::consts::TAU;
+                    }
+                    if eff.dist(j) < 1e-3 {
+                        continue;
+                    }
+                    let r = Matrix::translate(j.x, j.y).concat(&Matrix::rotate(d)).concat(&Matrix::translate(-j.x, -j.y));
+                    for y in Self::bone_subtree(&bones, x) {
+                        els[y].matrix = r.concat(&els[y].matrix);
+                    }
+                }
+                if els[element].matrix.apply(grab).dist(target) < 0.25 {
+                    break;
+                }
+            }
+        }
+        apply_bones(&bones, &mut els);
+        let l = &mut self.timeline_mut().layers[layer];
+        if !l.keyframes.contains_key(&f) {
+            frames::convert_to_keyframes(l, f, f, false);
+        }
+        if let Some(kf) = l.keyframes.get_mut(&f) {
+            for y in affected {
+                if let (Some(dst), Some(src)) = (kf.elements.get_mut(y), els.get(y)) {
+                    dst.matrix = src.matrix;
+                }
+            }
+        }
+    }
+}
+
+// ------------------------------------------------------------ camera
+impl Editor {
+    /// Index of the scene's camera layer, if any.
+    pub fn camera_layer(&self) -> Option<usize> {
+        self.doc.scene.layers.iter().position(|l| l.kind == LayerKind::Camera)
+    }
+
+    /// Add a camera layer (top of the scene) if there isn't one.
+    pub fn add_camera(&mut self) -> usize {
+        if let Some(i) = self.camera_layer() {
+            return i;
+        }
+        self.checkpoint("Add Camera");
+        let end = self.doc.scene.frame_count();
+        let mut l = Layer::new("Camera", 5);
+        l.kind = LayerKind::Camera;
+        l.end = end;
+        l.keyframes.insert(0, Keyframe::with(vec![default_camera(&self.doc)]));
+        self.doc.scene.layers.insert(0, l);
+        if self.editing.is_none() {
+            self.layer = (self.layer + 1).min(self.doc.scene.layers.len() - 1);
+        }
+        self.fix_layer_selection();
+        0
+    }
+
+    pub fn remove_camera(&mut self) {
+        if let Some(i) = self.camera_layer() {
+            self.checkpoint("Remove Camera");
+            self.doc.scene.layers.remove(i);
+            self.fix_layer_selection();
+        }
+    }
+
+    fn fix_layer_selection(&mut self) {
+        let n = self.timeline().layers.len();
+        self.layer = self.layer.min(n.saturating_sub(1));
+        self.selection.clear();
+        self.frame_sel = None;
+    }
+
+    /// The camera element's matrix at `frame` (centre, rotation, zoom).
+    pub fn camera_at(&self, frame: u32) -> Option<Matrix> {
+        let l = &self.doc.scene.layers[self.camera_layer()?];
+        layer_elements_at(l, frame).and_then(|(e, _)| e.first().map(|c| c.matrix))
+    }
+
+    /// Set the camera at the playhead (makes a camera keyframe). No undo step:
+    /// call `begin_drag` (or `checkpoint` via a command) first.
+    pub fn set_camera(&mut self, cam: Matrix) {
+        let f = self.frame;
+        let Some(i) = self.camera_layer() else { return };
+        let doc_cam = default_camera(&self.doc);
+        let l = &mut self.doc.scene.layers[i];
+        if !l.keyframes.contains_key(&f) {
+            frames::convert_to_keyframes(l, f, f, false);
+        }
+        let kf = l.keyframes.get_mut(&f).unwrap();
+        if kf.elements.is_empty() {
+            kf.elements.push(doc_cam);
+        }
+        kf.elements[0].matrix = cam;
+    }
+
+    pub fn camera_params(cam: &Matrix) -> (Pt, f32, f32) {
+        let d = cam.decompose();
+        (pt(cam.tx, cam.ty), d.skew_y.to_degrees(), d.scale_x.abs())
+    }
+    pub fn camera_from(center: Pt, rotation_deg: f32, zoom: f32) -> Matrix {
+        Matrix::translate(center.x, center.y).concat(&Matrix::rotate(rotation_deg.to_radians())).concat(&Matrix::scale(zoom.max(0.01), zoom.max(0.01)))
     }
 }
 

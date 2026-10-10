@@ -63,7 +63,27 @@ pub fn draw_items(pix: &mut sk::PixmapMut, items: &[DrawItem], opts: &RenderOpts
             }
             continue;
         }
-        if let Some(fill) = it.fill {
+        if let Some(g) = &it.gradient {
+            let mut paint = sk::Paint { anti_alias: true, ..Default::default() };
+            let stops: Vec<sk::GradientStop> = g.stops.iter().map(|(t, c)| sk::GradientStop::new(t.clamp(0.0, 1.0), shade(*c, alpha, tint))).collect();
+            let gts = to_sk_transform(&g.matrix); // tiny-skia applies the fill transform to the shader too
+            let shader = match g.kind {
+                ac_core::GradientKind::Linear => sk::LinearGradient::new(sk::Point::from_xy(-1.0, 0.0), sk::Point::from_xy(1.0, 0.0), stops, sk::SpreadMode::Pad, gts),
+                ac_core::GradientKind::Radial => sk::RadialGradient::new(sk::Point::from_xy(0.0, 0.0), sk::Point::from_xy(0.0, 0.0), 1.0, stops, sk::SpreadMode::Pad, gts),
+            };
+            match shader {
+                Some(sh) => {
+                    paint.shader = sh;
+                    pix.fill_path(&path, &paint, sk::FillRule::EvenOdd, ts, None);
+                }
+                None => {
+                    if let Some(c) = g.stops.first().map(|s| s.1).or(it.fill) {
+                        paint.set_color(shade(c, alpha, tint));
+                        pix.fill_path(&path, &paint, sk::FillRule::EvenOdd, ts, None);
+                    }
+                }
+            }
+        } else if let Some(fill) = it.fill {
             let mut paint = sk::Paint::default();
             paint.set_color(shade(fill, alpha, tint));
             paint.anti_alias = true;
@@ -143,26 +163,43 @@ pub fn export_svg(doc: &Document, frame: u32) -> String {
         h = doc.height,
         bg = doc.background.to_hex()
     );
-    for it in evaluate_scene(doc, frame) {
+    let mut defs = String::new();
+    let mut body = String::new();
+    for (gi, it) in evaluate_scene(doc, frame).into_iter().enumerate() {
         let m = it.matrix;
         let col = |c: Color| {
             let c = match it.tint { Some((t, a)) => c.lerp(t, a), None => c };
             (c.to_hex(), c.a as f32 / 255.0 * it.alpha)
         };
-        let fill = match it.fill {
-            Some(c) => { let (h, a) = col(c); format!("fill=\"{h}\" fill-opacity=\"{a:.3}\" fill-rule=\"evenodd\"") }
-            None => "fill=\"none\"".into(),
+        let fill = match (&it.gradient, it.fill) {
+            (Some(g), _) => {
+                let gm = g.matrix;
+                let tag = if g.kind == ac_core::GradientKind::Linear { "linearGradient" } else { "radialGradient" };
+                let geo = if g.kind == ac_core::GradientKind::Linear { "x1=\"-1\" y1=\"0\" x2=\"1\" y2=\"0\"" } else { "cx=\"0\" cy=\"0\" r=\"1\"" };
+                defs += &format!("<{tag} id=\"g{gi}\" gradientUnits=\"userSpaceOnUse\" {geo} gradientTransform=\"matrix({:.4} {:.4} {:.4} {:.4} {:.2} {:.2})\">", gm.a, gm.b, gm.c, gm.d, gm.tx, gm.ty);
+                for (t, c) in &g.stops {
+                    let (h, a) = col(*c);
+                    defs += &format!("<stop offset=\"{t:.3}\" stop-color=\"{h}\" stop-opacity=\"{a:.3}\"/>");
+                }
+                defs += &format!("</{tag}>\n");
+                format!("fill=\"url(#g{gi})\" fill-rule=\"evenodd\"")
+            }
+            (None, Some(c)) => { let (h, a) = col(c); format!("fill=\"{h}\" fill-opacity=\"{a:.3}\" fill-rule=\"evenodd\"") }
+            (None, None) => "fill=\"none\"".into(),
         };
         let stroke = match it.stroke {
             Some(s) => { let (h, a) = col(s.color); format!(" stroke=\"{h}\" stroke-opacity=\"{a:.3}\" stroke-width=\"{}\" stroke-linecap=\"round\" stroke-linejoin=\"round\"", s.width) }
             None => String::new(),
         };
-        out += &format!(
+        body += &format!(
             "<path transform=\"matrix({:.4} {:.4} {:.4} {:.4} {:.2} {:.2})\" d=\"{}\" {}{}/>\n",
             m.a, m.b, m.c, m.d, m.tx, m.ty, svg_path(&it.path), fill, stroke
         );
     }
-    out + "</svg>\n"
+    if !defs.is_empty() {
+        out += &format!("<defs>\n{defs}</defs>\n");
+    }
+    out + &body + "</svg>\n"
 }
 
 #[cfg(test)]
@@ -179,6 +216,24 @@ mod tests {
         // ground is green at the bottom-left
         let p = a.pixel(5, 395).unwrap().demultiply();
         assert!(p.green() > p.red() && p.green() > p.blue());
+    }
+
+    #[test]
+    fn gradient_follows_object_and_view() {
+        use ac_core::{Element, Gradient, GradientKind, Shape};
+        let mut doc = Document { width: 200.0, height: 200.0, ..Default::default() };
+        let mut sh = Shape::new(Path::rect(-40.0, -40.0, 80.0, 80.0), Some(Color::rgb(0, 0, 255)), None);
+        sh.gradient = Some(Gradient::fit(GradientKind::Radial, vec![(0.0, Color::rgb(0, 0, 255)), (1.0, Color::rgb(255, 255, 255))], ac_core::pt(-40.0, -40.0), ac_core::pt(40.0, 40.0)));
+        let mut el = Element::shape("g", sh);
+        el.matrix = Matrix::translate(100.0, 100.0);
+        doc.scene.layers[0].keyframes.insert(0, ac_core::Keyframe::with(vec![el]));
+        for scale in [1.0, 2.0] {
+            let pix = render_frame(&doc, 0, scale);
+            let c = pix.pixel((100.0 * scale) as u32, (100.0 * scale) as u32).unwrap().demultiply();
+            assert!(c.blue() > 200 && c.red() < 60, "centre is the first stop at scale {scale}: {c:?}");
+            let e = pix.pixel((139.0 * scale) as u32, (139.0 * scale) as u32).unwrap().demultiply();
+            assert!(e.red() > 150, "corner is near the last stop at scale {scale}: {e:?}");
+        }
     }
 
     #[test]

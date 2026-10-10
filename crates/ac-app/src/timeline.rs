@@ -38,7 +38,7 @@ const CLASSIC: Color32 = Color32::from_rgb(0x6E, 0x5B, 0xB0);
 const SHAPE: Color32 = Color32::from_rgb(0x4E, 0x8F, 0x57);
 const PLAYHEAD: Color32 = Color32::from_rgb(0xE5, 0x3B, 0x3B);
 
-/// Frame commands (Insert menu, Edit ▸ Timeline, and the right-click menu).
+/// Frame commands (Insert menu, Edit › Timeline, and the right-click menu).
 pub fn frame_menu(app: &mut App, ui: &mut egui::Ui) {
     let item = |ui: &mut egui::Ui, label: &str, sc: &str| ui.add(egui::Button::new(label).shortcut_text(sc)).clicked();
     if item(ui, "Insert Frame", "F5") { app.ed.insert_frame(); ui.close_menu(); }

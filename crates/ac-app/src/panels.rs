@@ -1,38 +1,98 @@
-//! Tools panel (left) and Properties + Library panels (right).
+//! Properties panel (right), Library (below Properties or docked left) and
+//! the Transform panel.
 
-use crate::toolbar::{PencilMode, Tool};
+use crate::toolbar::{FtMode, PencilMode, Tool};
 use crate::{c32, from32, App, Dialog, PropsTab, ACCENT};
+use ac_core::deform::Transform3D;
+use ac_core::geom::Decomposed;
 use ac_core::text::{Align, FontFace};
-use ac_core::{pt, Element, ElementKind, LoopMode, Matrix, Stroke, SymbolKind, Tween};
+use ac_core::{pt, Editor, Element, ElementKind, Gradient, GradientKind, LoopMode, Matrix, Pt, Stroke, SymbolKind, Tween};
 use eframe::egui::{self, pos2, vec2, Align2, Color32, FontId, Rect, RichText, Sense, Stroke as EStroke};
 use tiny_skia as sk;
 
+/// Library panel state.
+pub struct LibraryState {
+    pub open: bool,
+    /// Dock the Library in its own panel on the left instead of under Properties.
+    pub left: bool,
+    pub search: String,
+    pub play: bool,
+    pub frame: u32,
+    accum: f64,
+    sort: (u8, bool),
+}
+
+impl Default for LibraryState {
+    fn default() -> Self {
+        LibraryState { open: true, left: false, search: String::new(), play: false, frame: 0, accum: 0.0, sort: (0, true) }
+    }
+}
+
+/// Transform panel (Ctrl+T) state.
+pub struct TransformPanel {
+    pub skew: bool,
+    pub constrain: bool,
+    pub step_rotate: f32,
+    pub step_scale: f32,
+}
+
+impl Default for TransformPanel {
+    fn default() -> Self {
+        TransformPanel { skew: false, constrain: true, step_rotate: 30.0, step_scale: 100.0 }
+    }
+}
+
+fn panel_title(ui: &mut egui::Ui, title: &str) {
+    egui::Frame::none().fill(Color32::from_gray(0x2A)).inner_margin(egui::Margin::symmetric(6.0, 3.0)).show(ui, |ui| {
+        ui.set_width(ui.available_width());
+        ui.label(RichText::new(title).strong());
+    });
+}
+
 pub fn right_panel(app: &mut App, ctx: &egui::Context) {
-    egui::SidePanel::right("props").default_width(290.0).min_width(240.0).show(ctx, |ui| {
-        egui::ScrollArea::vertical().show(ui, |ui| {
-            egui::CollapsingHeader::new(RichText::new("Properties").strong()).default_open(true).show(ui, |ui| {
-                ui.horizontal(|ui| {
-                    for (t, name) in [(PropsTab::Tool, "Tool"), (PropsTab::Object, "Object"), (PropsTab::Frame, "Frame"), (PropsTab::Doc, "Doc")] {
-                        ui.selectable_value(&mut app.props_tab, t, name);
-                    }
-                });
-                ui.separator();
-                match app.props_tab {
-                    PropsTab::Tool => tool_properties(app, ui),
-                    PropsTab::Object => {
-                        if app.ed.selection.is_empty() {
-                            ui.label(RichText::new("Nothing selected. Click an object on the stage.").color(Color32::from_gray(150)));
-                        } else {
-                            object_properties(app, ui);
-                        }
-                    }
-                    PropsTab::Frame => frame_properties(app, ui),
-                    PropsTab::Doc => document_properties(app, ui),
+    egui::SidePanel::right("props").default_width(300.0).min_width(250.0).show(ctx, |ui| {
+        let lib_here = app.lib.open && !app.lib.left;
+        let total = ui.available_height();
+        // Properties take what they need (scrolling past a cap); the Library fills the rest.
+        let props_max = if lib_here { (total - 220.0).max(160.0) } else { total - 30.0 };
+        panel_title(ui, "Properties");
+        egui::ScrollArea::vertical().id_salt("props-scroll").max_height(props_max).auto_shrink([false, true]).show(ui, |ui| {
+            ui.horizontal(|ui| {
+                for (t, name) in [(PropsTab::Tool, "Tool"), (PropsTab::Object, "Object"), (PropsTab::Frame, "Frame"), (PropsTab::Doc, "Doc")] {
+                    ui.selectable_value(&mut app.props_tab, t, name);
                 }
             });
+            ui.separator();
+            match app.props_tab {
+                PropsTab::Tool => tool_properties(app, ui),
+                PropsTab::Object => {
+                    if app.ed.selection.is_empty() {
+                        ui.label(RichText::new("Nothing selected. Click an object on the stage.").color(Color32::from_gray(150)));
+                    } else {
+                        object_properties(app, ui);
+                    }
+                }
+                PropsTab::Frame => frame_properties(app, ui),
+                PropsTab::Doc => document_properties(app, ui),
+            }
             ui.add_space(4.0);
-            egui::CollapsingHeader::new(RichText::new("Library").strong()).default_open(true).show(ui, |ui| library(app, ui));
         });
+        if lib_here {
+            ui.add_space(2.0);
+            panel_title(ui, "Library");
+            library(app, ui);
+        }
+    });
+}
+
+/// The Library docked on the left (View › Library position).
+pub fn left_library(app: &mut App, ctx: &egui::Context) {
+    if !(app.lib.open && app.lib.left) {
+        return;
+    }
+    egui::SidePanel::left("library-left").default_width(270.0).min_width(220.0).show(ctx, |ui| {
+        panel_title(ui, "Library");
+        library(app, ui);
     });
 }
 
@@ -54,7 +114,7 @@ fn apply(app: &mut App, resp: &egui::Response, label: &str, f: impl Fn(&mut Elem
     }
     if resp.dragged() {
         if !app.prop_dragging {
-            app.ed.begin_drag();
+            app.ed.begin_edit(label);
             app.prop_dragging = true;
         }
         app.ed.modify_selected_continuous(f);
@@ -63,9 +123,42 @@ fn apply(app: &mut App, resp: &egui::Response, label: &str, f: impl Fn(&mut Elem
     }
 }
 
+/// Change scale/rotation/skew of each selected object while keeping the
+/// transformation point (Free Transform's white dot) where it is.
+fn apply_decomp(app: &mut App, resp: &egui::Response, label: &str, f: impl Fn(&mut Decomposed)) {
+    let Some(pw) = app.pivot() else { return };
+    apply(app, resp, label, move |e| {
+        let Some(inv) = e.matrix.invert() else { return };
+        let lp = inv.apply(pw);
+        let mut dd = e.matrix.decompose();
+        f(&mut dd);
+        let mut m = Matrix::compose(&dd);
+        let q = m.apply(lp);
+        m.tx += pw.x - q.x;
+        m.ty += pw.y - q.y;
+        e.matrix = m;
+    });
+}
+
+/// Edit 3D properties; objects get a 3D centre first.
+fn apply_3d(app: &mut App, resp: &egui::Response, label: &str, f: impl Fn(&mut Transform3D)) {
+    if edited(resp) {
+        app.ensure_3d();
+    }
+    apply(app, resp, label, move |e| {
+        let mut t = e.three_d.unwrap_or_default();
+        f(&mut t);
+        e.three_d = Some(t);
+    });
+}
+
 fn section(ui: &mut egui::Ui, title: &str) {
     ui.add_space(2.0);
     ui.label(RichText::new(title).strong().color(Color32::from_gray(200)));
+}
+
+fn hint(ui: &mut egui::Ui, text: &str) {
+    ui.label(RichText::new(text).small().color(Color32::from_gray(150)));
 }
 
 fn object_properties(app: &mut App, ui: &mut egui::Ui) {
@@ -74,6 +167,7 @@ fn object_properties(app: &mut App, ui: &mut egui::Ui) {
         ui.label("Selection is not visible on this frame.");
         return;
     };
+    let sel0 = app.ed.selection[0];
     let editable = app.ed.selection.iter().all(|s| app.ed.layer_editable(s.layer));
     let title = if n > 1 {
         format!("{n} objects")
@@ -136,42 +230,109 @@ fn object_properties(app: &mut App, ui: &mut egui::Ui) {
             let mut rot = d.skew_y.to_degrees();
             ui.label("Rotate");
             let r = ui.add(egui::DragValue::new(&mut rot).speed(0.5).suffix("°").max_decimals(1));
-            apply(app, &r, "Rotate", move |e| {
-                let mut dd = e.matrix.decompose();
-                let delta = rot.to_radians() - d.skew_y;
+            let delta = rot.to_radians() - d.skew_y;
+            apply_decomp(app, &r, "Rotate", move |dd| {
                 dd.skew_y += delta;
                 dd.skew_x += delta;
-                e.matrix = Matrix::compose(&dd);
             });
             let mut alpha = el.alpha * 100.0;
             ui.label("Alpha");
             let r = ui.add(egui::DragValue::new(&mut alpha).range(0.0..=100.0).speed(0.5).suffix("%").max_decimals(0));
             apply(app, &r, "Color Effect", |e| e.alpha = alpha / 100.0);
             ui.end_row();
+            // Skew: the angle between the object's axes (0° = none).
+            let mut sh = (d.skew_x - d.skew_y).to_degrees();
+            if sh.abs() < 0.05 {
+                sh = 0.0; // no "-0.0°"
+            }
+            ui.label("Skew");
+            let r = ui.add(egui::DragValue::new(&mut sh).speed(0.5).suffix("°").max_decimals(1)).on_hover_text("Horizontal skew. With Free Transform (Q) drag an edge of the box: top/bottom = horizontal, left/right = vertical. Ctrl+T for both axes");
+            apply_decomp(app, &r, "Skew", move |dd| dd.skew_x = dd.skew_y + sh.clamp(-89.0, 89.0).to_radians());
+            ui.end_row();
         });
         ui.horizontal(|ui| {
-            if ui.button("⇋ Flip H").clicked() { app.flip(true); }
-            if ui.button("⇵ Flip V").clicked() { app.flip(false); }
+            if ui.button("Flip H").clicked() { app.flip(true); }
+            if ui.button("Flip V").clicked() { app.flip(false); }
             if ui.button("↻ 90°").clicked() { app.rotate_selection(std::f32::consts::FRAC_PI_2); }
             if ui.button("Reset").on_hover_text("Remove Transform").clicked() {
-                app.ed.modify_selected("Remove Transform", |e| { let (x, y) = (e.matrix.tx, e.matrix.ty); e.matrix = Matrix::translate(x, y); });
+                app.ed.modify_selected("Remove Transform", |e| { let (x, y) = (e.matrix.tx, e.matrix.ty); e.matrix = Matrix::translate(x, y); e.three_d = None; });
             }
+            if ui.button("More…").on_hover_text("Transform panel (Ctrl+T)").clicked() { app.transform_open = true; }
         });
+
+        // 3D
+        let td = el.three_d;
+        if td.is_some() || matches!(app.tool, Tool::Rotate3D | Tool::Translate3D) {
+            section(ui, "3D position and rotation");
+            let t = td.unwrap_or_default();
+            egui::Grid::new("xform3d").num_columns(4).spacing([6.0, 4.0]).show(ui, |ui| {
+                let (mut rx, mut ry, mut rz, mut z) = (t.rx, t.ry, t.rz, t.z);
+                ui.label("X°");
+                let r = ui.add(egui::DragValue::new(&mut rx).speed(0.5).max_decimals(1));
+                apply_3d(app, &r, "3D Rotation", |t| t.rx = rx);
+                ui.label("Y°");
+                let r = ui.add(egui::DragValue::new(&mut ry).speed(0.5).max_decimals(1));
+                apply_3d(app, &r, "3D Rotation", |t| t.ry = ry);
+                ui.end_row();
+                ui.label("Z°");
+                let r = ui.add(egui::DragValue::new(&mut rz).speed(0.5).max_decimals(1));
+                apply_3d(app, &r, "3D Rotation", |t| t.rz = rz);
+                ui.label("Depth");
+                let r = ui.add(egui::DragValue::new(&mut z).speed(1.0).max_decimals(0)).on_hover_text("Z position: positive = further away");
+                apply_3d(app, &r, "3D Translation", |t| t.z = z);
+                ui.end_row();
+            });
+            ui.horizontal(|ui| {
+                if ui.add_enabled(td.is_some(), egui::Button::new("Reset 3D")).clicked() {
+                    app.ed.modify_selected("Remove 3D", |e| e.three_d = None);
+                }
+                if ui.button("Perspective…").on_hover_text("Perspective angle and vanishing point are document settings").clicked() {
+                    app.props_tab = PropsTab::Doc;
+                }
+            });
+        }
 
         match &el.kind {
             ElementKind::Shape(s) if n == 1 => {
                 section(ui, "Fill and stroke");
+                let mut kind = s.gradient.as_ref().map(|g| g.kind);
                 ui.horizontal(|ui| {
-                    let mut has_fill = s.fill.is_some();
-                    let mut c = s.fill.map(c32).unwrap_or(app.fill);
-                    if ui.checkbox(&mut has_fill, "Fill").changed() {
-                        let col = from32(c);
-                        app.ed.modify_selected("Fill", move |e| if let ElementKind::Shape(s) = &mut e.kind { s.fill = has_fill.then_some(col) });
+                    ui.label("Fill");
+                    let before = kind;
+                    egui::ComboBox::from_id_salt("filltype").width(80.0).selected_text(match kind { None => "Solid", Some(GradientKind::Linear) => "Linear", Some(GradientKind::Radial) => "Radial" }).show_ui(ui, |ui| {
+                        ui.selectable_value(&mut kind, None, "Solid");
+                        ui.selectable_value(&mut kind, Some(GradientKind::Linear), "Linear gradient");
+                        ui.selectable_value(&mut kind, Some(GradientKind::Radial), "Radial gradient");
+                    });
+                    if kind != before {
+                        let base = s.fill.unwrap_or(from32(app.fill));
+                        let stops = s.gradient.as_ref().map(|g| g.stops.clone()).unwrap_or_else(|| vec![(0.0, base), (1.0, from32(app.topts.fill2))]);
+                        app.ed.modify_selected("Fill Type", move |e| {
+                            if let ElementKind::Shape(sh) = &mut e.kind {
+                                sh.gradient = kind.and_then(|k| sh.path.bounds().map(|(lo, hi)| Gradient::fit(k, stops.clone(), lo, hi)));
+                                if sh.fill.is_none() {
+                                    sh.fill = Some(stops[0].1);
+                                }
+                            }
+                        });
                     }
-                    if ui.color_edit_button_srgba(&mut c).changed() {
-                        let col = from32(c);
-                        app.ed.modify_selected("Fill Color", move |e| if let ElementKind::Shape(s) = &mut e.kind { s.fill = Some(col) });
+                    if kind.is_none() {
+                        let mut has_fill = s.fill.is_some();
+                        let mut c = s.fill.map(c32).unwrap_or(app.fill);
+                        if ui.checkbox(&mut has_fill, "").on_hover_text("Fill on/off").changed() {
+                            let col = from32(c);
+                            app.ed.modify_selected("Fill", move |e| if let ElementKind::Shape(s) = &mut e.kind { s.fill = has_fill.then_some(col) });
+                        }
+                        if ui.color_edit_button_srgba(&mut c).changed() {
+                            let col = from32(c);
+                            app.ed.modify_selected("Fill Color", move |e| if let ElementKind::Shape(s) = &mut e.kind { s.fill = Some(col) });
+                        }
                     }
+                });
+                if let Some(g) = &s.gradient {
+                    gradient_editor(app, ui, g);
+                }
+                ui.horizontal(|ui| {
                     let mut has_stroke = s.stroke.is_some();
                     let mut sc = s.stroke.map(|s| c32(s.color)).unwrap_or(app.stroke);
                     let w = s.stroke.map(|s| s.width).unwrap_or(app.stroke_w);
@@ -183,13 +344,26 @@ fn object_properties(app: &mut App, ui: &mut egui::Ui) {
                         let col = from32(sc);
                         app.ed.modify_selected("Stroke Color", move |e| if let ElementKind::Shape(s) = &mut e.kind { s.stroke = Some(Stroke { color: col, width: w }) });
                     }
-                });
-                if let Some(st) = s.stroke {
-                    let mut w = st.width;
-                    ui.horizontal(|ui| {
-                        ui.label("Stroke size");
-                        let r = ui.add(egui::DragValue::new(&mut w).range(0.1..=100.0).speed(0.1));
+                    if let Some(st) = s.stroke {
+                        let mut w = st.width;
+                        let r = ui.add(egui::DragValue::new(&mut w).range(0.1..=100.0).speed(0.1).suffix(" px"));
                         apply(app, &r, "Stroke Size", |e| if let ElementKind::Shape(s) = &mut e.kind { if let Some(st) = &mut s.stroke { st.width = w } });
+                    }
+                });
+                if let Some(prof) = &s.width_profile {
+                    ui.horizontal(|ui| {
+                        hint(ui, &format!("Variable width: {} point(s)", prof.len().saturating_sub(2)));
+                        if ui.small_button("Reset width").clicked() {
+                            app.ed.modify_selected("Reset Width", |e| if let ElementKind::Shape(s) = &mut e.kind { s.width_profile = None });
+                        }
+                    });
+                }
+                if let Some(w) = &s.warp {
+                    ui.horizontal(|ui| {
+                        hint(ui, &format!("Asset Warp: {} pin(s)", w.pins.len()));
+                        if ui.small_button("Remove warp").on_hover_text("Restore the shape before warping").clicked() {
+                            app.ed.modify_selected("Remove Warp", |e| if let ElementKind::Shape(s) = &mut e.kind { if let Some(w) = s.warp.take() { s.path = w.base } });
+                        }
                     });
                 }
             }
@@ -275,11 +449,108 @@ fn object_properties(app: &mut App, ui: &mut egui::Ui) {
             }
             _ => {}
         }
+
+        // Bones (IK)
+        let bones = app.ed.bones(sel0.layer).to_vec();
+        if n == 1 && bones.iter().any(|b| b.parent == sel0.element || b.child == sel0.element) {
+            section(ui, "Bones (inverse kinematics)");
+            let name = |i: usize| app.ed.element_at(ac_core::Selection { layer: sel0.layer, element: i }).map(|e| if e.name.is_empty() { format!("object {}", i + 1) } else { e.name }).unwrap_or_default();
+            let parent = bones.iter().find(|b| b.child == sel0.element).map(|b| b.parent);
+            let kids: Vec<usize> = bones.iter().filter(|b| b.parent == sel0.element).map(|b| b.child).collect();
+            match parent {
+                Some(p) => hint(ui, &format!("Attached to {}", name(p))),
+                None => hint(ui, "Root of the armature (dragging it moves the whole armature)"),
+            }
+            if !kids.is_empty() {
+                hint(ui, &format!("Drives: {}", kids.iter().map(|k| name(*k)).collect::<Vec<_>>().join(", ")));
+            }
+            ui.horizontal(|ui| {
+                if ui.add_enabled(parent.is_some(), egui::Button::new("Remove bone")).on_hover_text("Detach this object from its parent").clicked() {
+                    app.ed.remove_bone(sel0.layer, sel0.element);
+                }
+                if ui.button(format!("Remove all bones ({})", bones.len())).clicked() {
+                    app.ed.clear_bones(sel0.layer);
+                }
+            });
+            hint(ui, "Drag a bonded object with the Selection tool (V) to pose the chain.");
+        }
+
         ui.horizontal(|ui| {
             if ui.button("Convert to Symbol… (F8)").clicked() { app.open_symbol_dialog(true); }
             if ui.button("Duplicate").clicked() { app.ed.duplicate(); }
         });
     });
+}
+
+/// Gradient stops: colours and positions, add/remove, refit.
+fn gradient_editor(app: &mut App, ui: &mut egui::Ui, g: &Gradient) {
+    let preview_h = 14.0;
+    let (r, _) = ui.allocate_exact_size(vec2(ui.available_width().min(240.0), preview_h), Sense::hover());
+    let mut mesh = egui::Mesh::default();
+    let mut stops = g.stops.clone();
+    stops.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let mut add_col = |x: f32, c: Color32| {
+        let i = mesh.vertices.len() as u32;
+        mesh.colored_vertex(pos2(r.left() + x * r.width(), r.top()), c);
+        mesh.colored_vertex(pos2(r.left() + x * r.width(), r.bottom()), c);
+        if i >= 2 {
+            mesh.add_triangle(i - 2, i - 1, i);
+            mesh.add_triangle(i - 1, i, i + 1);
+        }
+    };
+    if let Some(f) = stops.first() {
+        add_col(0.0, c32(f.1));
+    }
+    for (t, c) in &stops {
+        add_col(t.clamp(0.0, 1.0), c32(*c));
+    }
+    if let Some(l) = stops.last() {
+        add_col(1.0, c32(l.1));
+    }
+    ui.painter().add(mesh);
+    ui.painter().rect_stroke(r, 0.0, EStroke::new(1.0_f32, Color32::from_gray(90)));
+    let mut new_stops = g.stops.clone();
+    let mut changed: Option<&str> = None;
+    let mut remove: Option<usize> = None;
+    for (i, (t, c)) in g.stops.iter().enumerate() {
+        ui.horizontal(|ui| {
+            let mut col = c32(*c);
+            if ui.color_edit_button_srgba(&mut col).changed() {
+                new_stops[i].1 = from32(col);
+                changed = Some("Gradient Colour");
+            }
+            let mut pos = t * 100.0;
+            if edited(&ui.add(egui::DragValue::new(&mut pos).range(0.0..=100.0).speed(0.5).suffix("%"))) {
+                new_stops[i].0 = pos / 100.0;
+                changed = Some("Gradient Stop");
+            }
+            if g.stops.len() > 2 && ui.small_button("✕").on_hover_text("Remove colour stop").clicked() {
+                remove = Some(i);
+            }
+        });
+    }
+    if let Some(i) = remove {
+        new_stops.remove(i);
+        changed = Some("Remove Gradient Stop");
+    }
+    ui.horizontal(|ui| {
+        if ui.small_button("+ Stop").clicked() {
+            let c = new_stops.last().map(|s| s.1).unwrap_or(from32(app.fill));
+            new_stops.push((0.5, c));
+            changed = Some("Add Gradient Stop");
+        }
+        if ui.small_button("Fit to shape").on_hover_text("Reset the gradient's position and size").clicked() {
+            let (kind, stops) = (g.kind, new_stops.clone());
+            app.ed.modify_selected("Fit Gradient", move |e| if let ElementKind::Shape(sh) = &mut e.kind { sh.gradient = sh.path.bounds().map(|(lo, hi)| Gradient::fit(kind, stops.clone(), lo, hi)) });
+        }
+        if ui.small_button("Adjust…").on_hover_text("Gradient Transform tool (F)").clicked() {
+            app.set_tool(Tool::GradientTransform);
+        }
+    });
+    if let Some(label) = changed {
+        new_stops.sort_by(|a, b| a.0.total_cmp(&b.0));
+        app.ed.modify_selected(label, move |e| if let ElementKind::Shape(sh) = &mut e.kind { if let Some(g) = &mut sh.gradient { g.stops = new_stops.clone() } });
+    }
 }
 
 fn frame_properties(app: &mut App, ui: &mut egui::Ui) {
@@ -395,78 +666,234 @@ fn document_properties(app: &mut App, ui: &mut egui::Ui) {
         app.ed.set_doc_props(w, h, fps, from32(bg));
         app.fit_pending = true;
     }
+    section(ui, "3D perspective");
+    let d = &app.ed.doc;
+    let (mut angle, vp) = (d.perspective_angle, d.vanishing_point);
+    let cur = d.perspective().vanishing;
+    let (mut vx, mut vy) = (cur.x, cur.y);
+    let mut pchanged = None;
+    egui::Grid::new("persp").num_columns(4).show(ui, |ui| {
+        ui.label("Angle");
+        if edited(&ui.add(egui::DragValue::new(&mut angle).range(1.0..=179.0).speed(0.5).suffix("°")).on_hover_text("Perspective angle (field of view). Larger = stronger perspective")) {
+            pchanged = Some(vp);
+        }
+        ui.end_row();
+        ui.label("Vanishing X");
+        if edited(&ui.add(egui::DragValue::new(&mut vx).speed(1.0))) {
+            pchanged = Some(Some(pt(vx, vy)));
+        }
+        ui.label("Y");
+        if edited(&ui.add(egui::DragValue::new(&mut vy).speed(1.0))) {
+            pchanged = Some(Some(pt(vx, vy)));
+        }
+        ui.end_row();
+    });
+    if ui.add_enabled(vp.is_some() || (angle - 55.0).abs() > 1e-3, egui::Button::new("Reset perspective")).clicked() {
+        app.ed.set_perspective(55.0, None);
+    } else if let Some(v) = pchanged {
+        app.ed.set_perspective(angle, v);
+    }
+    hint(ui, "Applies to objects edited with the 3D Rotation (W) and 3D Translation (G) tools.");
+    section(ui, "Camera");
+    ui.horizontal(|ui| {
+        if app.ed.camera_layer().is_none() {
+            if ui.add_enabled(app.ed.editing.is_none(), egui::Button::new("Add camera layer")).clicked() {
+                app.ed.add_camera();
+                app.set_tool(Tool::Camera);
+            }
+        } else if ui.button("Remove camera layer").clicked() {
+            app.ed.remove_camera();
+        }
+    });
 }
 
-fn library(app: &mut App, ui: &mut egui::Ui) {
-    // Preview of the selected symbol (first frame), like Animate's library preview pane.
-    let (prev_rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 110.0), Sense::hover());
+/// Render the selected library item at `frame` into the preview texture.
+fn library_preview(app: &mut App, ui: &mut egui::Ui, prev_rect: Rect) {
     ui.painter().rect_filled(prev_rect, 3.0, Color32::from_gray(0x26));
-    if let Some(sym) = app.lib_selected.and_then(|id| app.ed.doc.symbol(id)) {
-        let ppp = ui.ctx().pixels_per_point();
-        let (pw, ph) = ((prev_rect.width() * ppp) as u32, (prev_rect.height() * ppp) as u32);
-        if let Some(mut pix) = sk::Pixmap::new(pw.max(1), ph.max(1)) {
-            let ctx = ac_core::EvalCtx { doc: &app.ed.doc, global_frame: 0 };
-            let mut items = Vec::new();
-            ac_core::evaluate(&ctx, &sym.timeline, 0, &Matrix::IDENTITY, 1.0, 1, &mut items);
-            let bounds = items
-                .iter()
-                .filter_map(|it| it.path.transformed(&it.matrix).bounds())
-                .reduce(|a, b| (pt(a.0.x.min(b.0.x), a.0.y.min(b.0.y)), pt(a.1.x.max(b.1.x), a.1.y.max(b.1.y))));
-            if let Some((lo, hi)) = bounds {
-                let s = ((pw as f32 - 16.0) / (hi.x - lo.x).max(1.0)).min((ph as f32 - 16.0) / (hi.y - lo.y).max(1.0)).min(4.0 * ppp);
-                let view = Matrix::translate(pw as f32 / 2.0, ph as f32 / 2.0).concat(&Matrix::scale(s, s)).concat(&Matrix::translate(-(lo.x + hi.x) / 2.0, -(lo.y + hi.y) / 2.0));
-                ac_render::draw_items(&mut pix.as_mut(), &items, &ac_render::RenderOpts { view, ..Default::default() });
-            }
-            let img = egui::ColorImage::from_rgba_premultiplied([pw as usize, ph as usize], pix.data());
-            let tex = match &mut app.lib_tex {
-                Some(t) => {
-                    t.set(img, egui::TextureOptions::LINEAR);
-                    t.clone()
-                }
-                None => {
-                    let t = ui.ctx().load_texture("lib", img, egui::TextureOptions::LINEAR);
-                    app.lib_tex = Some(t.clone());
-                    t
-                }
-            };
-            ui.painter().image(tex.id(), prev_rect, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
-        }
-    } else {
+    let Some(sym) = app.lib.selected_symbol(app) else {
         ui.painter().text(prev_rect.center(), Align2::CENTER_CENTER, "Select an item to preview", FontId::proportional(12.0), Color32::from_gray(120));
-    }
-    ui.label(RichText::new(format!("{} items · drag onto the stage to place", app.ed.doc.library.len())).small().color(Color32::from_gray(150)));
-
-    let syms: Vec<(u32, String, SymbolKind, u32)> = app.ed.doc.library.iter().map(|s| (s.id, s.name.clone(), s.kind, s.timeline.frame_count())).collect();
-    let stage_center = if app.ed.editing.is_some() { pt(0.0, 0.0) } else { pt(app.ed.doc.width / 2.0, app.ed.doc.height / 2.0) };
-    for (id, name, kind, frames) in syms {
-        let icon = match kind { SymbolKind::Graphic => "🔷", SymbolKind::MovieClip => "🎞", SymbolKind::Button => "🔘" };
-        let resp = ui.add(egui::SelectableLabel::new(app.lib_selected == Some(id), format!("{icon}  {name}   ({frames}f)"))).interact(Sense::click_and_drag());
-        if resp.clicked() || resp.drag_started() {
-            app.lib_selected = Some(id);
-        }
-        if resp.drag_started() {
-            app.lib_drag = Some(id);
-        }
-        if resp.double_clicked() {
-            app.edit_symbol(id);
-        }
-        resp.context_menu(|ui| {
-            if ui.button("Edit").clicked() { app.edit_symbol(id); ui.close_menu(); }
-            if ui.button("Place on Stage").clicked() { app.ed.place_symbol(id, stage_center); ui.close_menu(); }
-            if ui.button("Rename…").clicked() { app.dialog = Dialog::RenameSymbol { id, name: name.clone() }; ui.close_menu(); }
-            if ui.button("Duplicate").clicked() { app.lib_selected = app.ed.duplicate_symbol(id); ui.close_menu(); }
-            ui.menu_button("Type", |ui| {
-                for (k, l) in [(SymbolKind::Graphic, "Graphic"), (SymbolKind::MovieClip, "Movie Clip"), (SymbolKind::Button, "Button")] {
-                    if ui.radio(kind == k, l).clicked() { app.ed.set_symbol_kind(id, k); ui.close_menu(); }
-                }
+        return;
+    };
+    let ppp = ui.ctx().pixels_per_point();
+    let (pw, ph) = ((prev_rect.width() * ppp) as u32, (prev_rect.height() * ppp) as u32);
+    let Some(mut pix) = sk::Pixmap::new(pw.max(1), ph.max(1)) else { return };
+    let frames = sym.timeline.frame_count().max(1);
+    let f = app.lib.frame % frames;
+    // Fit using the union of all frames so the preview doesn't jump while playing.
+    let ctx = ac_core::EvalCtx::new(&app.ed.doc, f);
+    let mut bounds: Option<(Pt, Pt)> = None;
+    for k in (0..frames).step_by(((frames / 12).max(1)) as usize) {
+        let mut items = Vec::new();
+        ac_core::evaluate(&ac_core::EvalCtx::new(&app.ed.doc, k), &sym.timeline, k, &Matrix::IDENTITY, 1.0, 1, &mut items);
+        for b in items.iter().filter_map(|it| it.path.transformed(&it.matrix).bounds()) {
+            bounds = Some(match bounds {
+                None => b,
+                Some(a) => (pt(a.0.x.min(b.0.x), a.0.y.min(b.0.y)), pt(a.1.x.max(b.1.x), a.1.y.max(b.1.y))),
             });
-            ui.separator();
-            if ui.button("Delete").clicked() { app.dialog = Dialog::DeleteSymbol { id, uses: app.ed.symbol_usage(id) }; ui.close_menu(); }
+        }
+    }
+    let mut items = Vec::new();
+    ac_core::evaluate(&ctx, &sym.timeline, f, &Matrix::IDENTITY, 1.0, 1, &mut items);
+    if let Some((lo, hi)) = bounds {
+        let s = ((pw as f32 - 20.0) / (hi.x - lo.x).max(1.0)).min((ph as f32 - 20.0) / (hi.y - lo.y).max(1.0)).min(6.0 * ppp);
+        let view = Matrix::translate(pw as f32 / 2.0, ph as f32 / 2.0).concat(&Matrix::scale(s, s)).concat(&Matrix::translate(-(lo.x + hi.x) / 2.0, -(lo.y + hi.y) / 2.0));
+        ac_render::draw_items(&mut pix.as_mut(), &items, &ac_render::RenderOpts { view, ..Default::default() });
+    }
+    let img = egui::ColorImage::from_rgba_premultiplied([pw as usize, ph as usize], pix.data());
+    let tex = match &mut app.lib_tex {
+        Some(t) => {
+            t.set(img, egui::TextureOptions::LINEAR);
+            t.clone()
+        }
+        None => {
+            let t = ui.ctx().load_texture("lib", img, egui::TextureOptions::LINEAR);
+            app.lib_tex = Some(t.clone());
+            t
+        }
+    };
+    ui.painter().image(tex.id(), prev_rect, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
+}
+
+impl LibraryState {
+    fn selected_symbol<'a>(&self, app: &'a App) -> Option<&'a ac_core::Symbol> {
+        app.lib_selected.and_then(|id| app.ed.doc.symbol(id))
+    }
+}
+
+/// The Library: search, animated preview, sortable item list, actions. It
+/// takes all the height it is given.
+fn library(app: &mut App, ui: &mut egui::Ui) {
+    let total_h = ui.available_height();
+    ui.horizontal(|ui| {
+        ui.add(egui::TextEdit::singleline(&mut app.lib.search).hint_text("🔍 Search library").desired_width(ui.available_width() - 70.0));
+        ui.label(RichText::new(format!("{} items", app.ed.doc.library.len())).small().color(Color32::from_gray(150)));
+    });
+    // Preview with play controls
+    let prev_h = (total_h * 0.32).clamp(90.0, 260.0);
+    let (prev_rect, prev_resp) = ui.allocate_exact_size(vec2(ui.available_width(), prev_h), Sense::click());
+    if app.lib.play {
+        let dt = ui.input(|i| i.stable_dt) as f64;
+        app.lib.accum += dt;
+        let spf = 1.0 / app.ed.doc.fps.max(1.0) as f64;
+        while app.lib.accum >= spf {
+            app.lib.accum -= spf;
+            app.lib.frame = app.lib.frame.wrapping_add(1);
+        }
+        ui.ctx().request_repaint();
+    }
+    library_preview(app, ui, prev_rect);
+    let frames = app.lib.selected_symbol(app).map(|s| s.timeline.frame_count().max(1));
+    if let Some(n) = frames {
+        let br = Rect::from_min_size(prev_rect.left_bottom() + vec2(4.0, -24.0), vec2(prev_rect.width() - 8.0, 20.0));
+        ui.allocate_new_ui(egui::UiBuilder::new().max_rect(br), |ui| {
+            ui.horizontal(|ui| {
+                if ui.small_button(if app.lib.play { "⏸" } else { "▶" }).on_hover_text("Play the symbol's timeline").clicked() {
+                    app.lib.play = !app.lib.play;
+                }
+                if ui.small_button("⏮").clicked() {
+                    app.lib.frame = 0;
+                    app.lib.play = false;
+                }
+                ui.label(RichText::new(format!("{}/{}", app.lib.frame % n + 1, n)).small().color(Color32::from_gray(170)));
+            });
         });
     }
-    ui.horizontal_wrapped(|ui| {
+    if prev_resp.double_clicked() {
+        if let Some(id) = app.lib_selected {
+            app.edit_symbol(id);
+        }
+    }
+
+    // Column header (click to sort)
+    let stage_center = if app.ed.editing.is_some() { pt(0.0, 0.0) } else { pt(app.ed.doc.width / 2.0, app.ed.doc.height / 2.0) };
+    let w = ui.available_width();
+    let cols = [("Name", 6.0), ("Type", w - 168.0), ("Uses", w - 84.0), ("Frames", w - 44.0)];
+    let (hr, _) = ui.allocate_exact_size(vec2(w, 20.0), Sense::hover());
+    ui.painter().rect_filled(hr, 0.0, Color32::from_gray(0x2A));
+    for (i, (label, x)) in cols.iter().enumerate() {
+        let r = Rect::from_min_size(pos2(hr.left() + x - 4.0, hr.top()), vec2(if i == 0 { (w - 172.0).max(40.0) } else { 42.0 }, 20.0));
+        let resp = ui.interact(r, ui.id().with(("libcol", i)), Sense::click());
+        let arrow = if app.lib.sort.0 as usize == i { if app.lib.sort.1 { " ⬆" } else { " ⬇" } } else { "" };
+        let col = if resp.hovered() { Color32::WHITE } else { Color32::from_gray(170) };
+        ui.painter().text(pos2(hr.left() + x, hr.center().y), Align2::LEFT_CENTER, format!("{label}{arrow}"), FontId::proportional(11.5), col);
+        if resp.clicked() {
+            app.lib.sort = if app.lib.sort.0 as usize == i { (i as u8, !app.lib.sort.1) } else { (i as u8, true) };
+        }
+    }
+    let q = app.lib.search.to_lowercase();
+    let mut syms: Vec<(u32, String, SymbolKind, u32, usize)> = app
+        .ed
+        .doc
+        .library
+        .iter()
+        .filter(|s| q.is_empty() || s.name.to_lowercase().contains(&q))
+        .map(|s| (s.id, s.name.clone(), s.kind, s.timeline.frame_count(), app.ed.symbol_usage(s.id)))
+        .collect();
+    let kind_name = |k: SymbolKind| match k { SymbolKind::Graphic => "Graphic", SymbolKind::MovieClip => "Movie Clip", SymbolKind::Button => "Button" };
+    match app.lib.sort.0 {
+        1 => syms.sort_by(|a, b| kind_name(a.2).cmp(kind_name(b.2))),
+        2 => syms.sort_by_key(|s| s.4),
+        3 => syms.sort_by_key(|s| s.3),
+        _ => syms.sort_by_key(|s| s.1.to_lowercase()),
+    }
+    if !app.lib.sort.1 {
+        syms.reverse();
+    }
+    let list_h = (ui.available_height() - 34.0).max(60.0);
+    egui::ScrollArea::vertical().id_salt("lib-list").max_height(list_h).auto_shrink([false, false]).show(ui, |ui| {
+        if syms.is_empty() {
+            hint(ui, if app.ed.doc.library.is_empty() { "Empty. Select objects and press F8 to make a symbol." } else { "No items match the search." });
+        }
+        for (id, name, kind, frames, uses) in syms {
+            let (r, resp) = ui.allocate_exact_size(vec2(w, 22.0), Sense::click_and_drag());
+            let selected = app.lib_selected == Some(id);
+            if selected {
+                ui.painter().rect_filled(r, 2.0, ACCENT.gamma_multiply(0.55));
+            } else if resp.hovered() {
+                ui.painter().rect_filled(r, 2.0, Color32::from_gray(0x3A));
+            }
+            let icon = match kind { SymbolKind::Graphic => "🔷", SymbolKind::MovieClip => "🎞", SymbolKind::Button => "🔘" };
+            let font = FontId::proportional(12.5);
+            let txt = Color32::from_gray(230);
+            let clip = ui.painter().with_clip_rect(Rect::from_min_max(r.min, pos2(r.left() + cols[1].1 - 6.0, r.bottom())));
+            clip.text(pos2(r.left() + 6.0, r.center().y), Align2::LEFT_CENTER, format!("{icon} {name}"), font.clone(), txt);
+            ui.painter().text(pos2(r.left() + cols[1].1, r.center().y), Align2::LEFT_CENTER, kind_name(kind), FontId::proportional(11.5), Color32::from_gray(180));
+            ui.painter().text(pos2(r.left() + cols[2].1 + 24.0, r.center().y), Align2::RIGHT_CENTER, uses.to_string(), FontId::proportional(11.5), Color32::from_gray(180));
+            ui.painter().text(pos2(r.left() + cols[3].1 + 36.0, r.center().y), Align2::RIGHT_CENTER, frames.to_string(), FontId::proportional(11.5), Color32::from_gray(180));
+            if resp.clicked() || resp.drag_started() {
+                if app.lib_selected != Some(id) {
+                    app.lib.frame = 0;
+                }
+                app.lib_selected = Some(id);
+            }
+            if resp.drag_started() {
+                app.lib_drag = Some(id);
+            }
+            if resp.double_clicked() {
+                app.edit_symbol(id);
+            }
+            let resp = resp.on_hover_text(format!("{name}\n{} · {frames} frame(s) · used {uses}×\nDrag onto the stage to place · double-click to edit", kind_name(kind)));
+            resp.context_menu(|ui| {
+                if ui.button("Edit").clicked() { app.edit_symbol(id); ui.close_menu(); }
+                if ui.button("Place on Stage").clicked() { app.ed.place_symbol(id, stage_center); ui.close_menu(); }
+                if ui.button("Rename…").clicked() { app.dialog = Dialog::RenameSymbol { id, name: name.clone() }; ui.close_menu(); }
+                if ui.button("Duplicate").clicked() { app.lib_selected = app.ed.duplicate_symbol(id); ui.close_menu(); }
+                ui.menu_button("Type", |ui| {
+                    for (k, l) in [(SymbolKind::Graphic, "Graphic"), (SymbolKind::MovieClip, "Movie Clip"), (SymbolKind::Button, "Button")] {
+                        if ui.radio(kind == k, l).clicked() { app.ed.set_symbol_kind(id, k); ui.close_menu(); }
+                    }
+                });
+                ui.separator();
+                if ui.button("Delete").clicked() { app.dialog = Dialog::DeleteSymbol { id, uses: app.ed.symbol_usage(id) }; ui.close_menu(); }
+            });
+        }
+    });
+    ui.horizontal(|ui| {
         let sel = app.lib_selected.filter(|id| app.ed.doc.symbol(*id).is_some());
-        if ui.add_enabled(sel.is_some(), egui::Button::new("Place")).clicked() {
+        if ui.button("➕").on_hover_text("New Symbol (Ctrl+F8)").clicked() {
+            app.open_symbol_dialog(false);
+        }
+        if ui.add_enabled(sel.is_some(), egui::Button::new("Place")).on_hover_text("Place an instance at the centre of the stage").clicked() {
             app.ed.place_symbol(sel.unwrap(), stage_center);
         }
         if ui.add_enabled(sel.is_some(), egui::Button::new("Edit")).clicked() {
@@ -476,16 +903,15 @@ fn library(app: &mut App, ui: &mut egui::Ui) {
             let id = sel.unwrap();
             app.dialog = Dialog::RenameSymbol { id, name: app.ed.doc.symbol(id).unwrap().name.clone() };
         }
+        if ui.add_enabled(sel.is_some(), egui::Button::new("Dup")).on_hover_text("Duplicate item").clicked() {
+            app.lib_selected = app.ed.duplicate_symbol(sel.unwrap());
+        }
         if ui.add_enabled(sel.is_some(), egui::Button::new("🗑")).on_hover_text("Delete library item").clicked() {
             let id = sel.unwrap();
             app.dialog = Dialog::DeleteSymbol { id, uses: app.ed.symbol_usage(id) };
         }
-        if ui.button("New Symbol…").clicked() {
-            app.open_symbol_dialog(false);
-        }
     });
 }
-
 /// Ghost label under the cursor while a library item is dragged, and the drop.
 pub fn library_drag_ghost(app: &mut App, ctx: &egui::Context) {
     let Some(id) = app.lib_drag else { return };
@@ -519,14 +945,27 @@ fn tool_properties(app: &mut App, ui: &mut egui::Ui) {
     ui.label(RichText::new(format!("{}  {}", info.name, tool.shortcut_label())).strong());
     ui.label(RichText::new(info.tip).small().color(Color32::from_gray(160)));
     ui.add_space(4.0);
-    let o = &mut app.topts;
     match tool {
         Tool::Rect => {
             section(ui, "Rectangle options");
-            ui.add(egui::Slider::new(&mut o.rect_radius, 0.0..=100.0).text("Corner radius"));
+            ui.add(egui::Slider::new(&mut app.topts.rect_radius, 0.0..=100.0).text("Corner radius"));
+        }
+        Tool::Oval => {
+            section(ui, "Oval options");
+            let o = &mut app.topts;
+            ui.add(egui::Slider::new(&mut o.oval_start, 0.0..=360.0).text("Start angle"));
+            ui.add(egui::Slider::new(&mut o.oval_end, 0.0..=360.0).text("End angle"));
+            ui.add(egui::Slider::new(&mut o.oval_inner, 0.0..=99.0).text("Inner radius %"));
+            if ui.small_button("Reset").clicked() {
+                o.oval_start = 0.0;
+                o.oval_end = 0.0;
+                o.oval_inner = 0.0;
+            }
+            hint(ui, "Start = end gives a full oval. Angles run clockwise from 3 o'clock; an inner radius makes rings and arcs.");
         }
         Tool::PolyStar => {
             section(ui, "PolyStar options");
+            let o = &mut app.topts;
             ui.horizontal(|ui| {
                 ui.selectable_value(&mut o.poly_star, false, "Polygon");
                 ui.selectable_value(&mut o.poly_star, true, "Star");
@@ -536,6 +975,7 @@ fn tool_properties(app: &mut App, ui: &mut egui::Ui) {
         }
         Tool::Pencil => {
             section(ui, "Pencil mode");
+            let o = &mut app.topts;
             ui.horizontal(|ui| {
                 ui.selectable_value(&mut o.pencil_mode, PencilMode::Straighten, "Straighten");
                 ui.selectable_value(&mut o.pencil_mode, PencilMode::Smooth, "Smooth");
@@ -544,17 +984,24 @@ fn tool_properties(app: &mut App, ui: &mut egui::Ui) {
         }
         Tool::Brush => {
             section(ui, "Paint Brush");
-            ui.add(egui::Slider::new(&mut o.brush_size, 1.0..=200.0).text("Size"));
-            ui.add(egui::Slider::new(&mut o.brush_smooth, 0.0..=100.0).text("Smoothing"));
-            ui.label(RichText::new("Paints with the fill colour.").small().color(Color32::from_gray(150)));
+            ui.add(egui::Slider::new(&mut app.topts.brush_size, 1.0..=200.0).text("Size"));
+            ui.add(egui::Slider::new(&mut app.topts.brush_smooth, 0.0..=100.0).text("Smoothing"));
+            hint(ui, "Paints with the fill colour (or the gradient below).");
+        }
+        Tool::FluidBrush => {
+            section(ui, "Fluid Brush");
+            ui.add(egui::Slider::new(&mut app.topts.fluid_size, 1.0..=200.0).text("Size"));
+            ui.add(egui::Slider::new(&mut app.topts.fluid_sensitivity, 0.0..=100.0).text("Velocity"));
+            hint(ui, "Velocity: how much speed thins the stroke. Strokes taper at both ends.");
         }
         Tool::Eraser => {
             section(ui, "Eraser");
-            ui.add(egui::Slider::new(&mut o.eraser_size, 2.0..=100.0).text("Size"));
-            ui.label(RichText::new("Mode: erase objects. Cutting into fills needs Merge Drawing (roadmap M2).").small().color(Color32::from_gray(150)));
+            ui.add(egui::Slider::new(&mut app.topts.eraser_size, 2.0..=100.0).text("Size"));
+            hint(ui, "Mode: erase objects. Cutting into fills needs Merge Drawing (roadmap M2).");
         }
         Tool::Text => {
             section(ui, "Character");
+            let o = &mut app.topts;
             ui.add(egui::Slider::new(&mut o.text_size, 4.0..=200.0).text("Size"));
             ui.horizontal(|ui| {
                 ui.selectable_value(&mut o.text_font, FontFace::Sans, "Sans");
@@ -564,15 +1011,86 @@ fn tool_properties(app: &mut App, ui: &mut egui::Ui) {
                 ui.selectable_value(&mut o.text_align, Align::Center, "↔");
                 ui.selectable_value(&mut o.text_align, Align::Right, "➡");
             });
-            ui.label(RichText::new("Text uses the fill colour.").small().color(Color32::from_gray(150)));
+            hint(ui, "Text uses the fill colour.");
         }
-        Tool::Select | Tool::Subselect | Tool::FreeTransform => {
+        Tool::Select | Tool::Subselect => {
             section(ui, "Snapping");
-            ui.checkbox(&mut o.snap, "Snap to objects and stage (hold Alt to bypass)");
+            ui.checkbox(&mut app.topts.snap, "Snap to objects and stage (hold Alt to bypass)");
+            if tool == Tool::Select {
+                ui.checkbox(&mut app.topts.show_bones, "Show bones");
+                hint(ui, "Dragging an object joined by bones poses the chain (inverse kinematics).");
+            }
+        }
+        Tool::FreeTransform => {
+            section(ui, "Mode");
+            ui.horizontal(|ui| {
+                ui.selectable_value(&mut app.topts.ft_mode, FtMode::Normal, "Scale / Rotate / Skew");
+                ui.selectable_value(&mut app.topts.ft_mode, FtMode::Distort, "Distort");
+                ui.selectable_value(&mut app.topts.ft_mode, FtMode::Envelope, "Envelope");
+            });
+            hint(ui, match app.topts.ft_mode {
+                FtMode::Normal => "Corners scale (Shift = keep proportions, Alt = from the transformation point). Side handles stretch one way. Drag an edge to skew. Just outside a corner: rotate. Drag the white dot to move the transformation point.",
+                FtMode::Distort => "Drag a corner on its own to distort shapes (perspective-like). Symbols and text: Break Apart first.",
+                FtMode::Envelope => "Drag any of the 9 handles to bend shapes smoothly. Symbols and text: Break Apart first.",
+            });
+            ui.checkbox(&mut app.topts.snap, "Snap (hold Alt to bypass)");
+            if ui.button("Transform panel… (Ctrl+T)").clicked() {
+                app.transform_open = true;
+            }
+        }
+        Tool::GradientTransform => {
+            section(ui, "Gradient Transform");
+            hint(ui, "Click a shape with a gradient fill. Centre dot = move; square = rotate and stretch; round handle (radial) = height. Set a gradient with Properties › Object › Fill.");
+        }
+        Tool::Rotate3D | Tool::Translate3D => {
+            section(ui, "3D");
+            hint(ui, if tool == Tool::Rotate3D { "Red line = rotate around X, green = around Y, blue ring = around Z, orange ring = free. Drag the centre dot to move the 3D centre." } else { "Red arrow = move in X, green = move in Y, centre dot (drag up/down) = depth." });
+            let mut angle = app.ed.doc.perspective_angle;
+            ui.horizontal(|ui| {
+                ui.label("Perspective angle");
+                if edited(&ui.add(egui::DragValue::new(&mut angle).range(1.0..=179.0).speed(0.5).suffix("°"))) {
+                    let vp = app.ed.doc.vanishing_point;
+                    app.ed.set_perspective(angle, vp);
+                }
+            });
+        }
+        Tool::Bone => {
+            section(ui, "Bones");
+            ui.checkbox(&mut app.topts.show_bones, "Show bones");
+            let l = app.ed.layer;
+            let n = app.ed.bones(l).len();
+            hint(ui, &format!("{n} bone(s) on the current layer. Drag from an object to another to link them; start on a joint to extend a chain."));
+            if ui.add_enabled(n > 0, egui::Button::new("Remove all bones on this layer")).clicked() {
+                app.ed.clear_bones(l);
+            }
+        }
+        Tool::Width => {
+            section(ui, "Width");
+            hint(ui, "Press on a shape's stroke and drag away from it (thicker) or towards it (thinner). Each drag adds a width point. Properties › Object › Reset width removes them.");
+        }
+        Tool::AssetWarp => {
+            section(ui, "Asset Warp");
+            hint(ui, "Click inside a shape to add pins; drag a pin to bend the shape around the others. Alt+click removes a pin. Properties › Object › Remove warp restores it.");
+        }
+        Tool::Camera => camera_properties(app, ui),
+        Tool::RotateView => {
+            section(ui, "View rotation");
+            let mut deg = app.view_rot.to_degrees();
+            ui.horizontal(|ui| {
+                if edited(&ui.add(egui::DragValue::new(&mut deg).range(-180.0..=180.0).speed(1.0).suffix("°"))) {
+                    let r = app.stage_rect;
+                    app.set_view_rot(r, deg.to_radians());
+                }
+                if ui.button("Reset").clicked() {
+                    let r = app.stage_rect;
+                    app.set_view_rot(r, 0.0);
+                }
+            });
+            hint(ui, "Only the view turns: the document is unchanged. Double-click the stage to reset.");
         }
         _ => {}
     }
-    if tool.is_drawing() || matches!(tool, Tool::InkBottle | Tool::Bucket) {
+    if tool.is_drawing() || matches!(tool, Tool::InkBottle | Tool::Bucket | Tool::FluidBrush) {
         section(ui, "Fill and stroke");
         ui.horizontal(|ui| {
             ui.checkbox(&mut app.fill_on, "Fill");
@@ -581,5 +1099,187 @@ fn tool_properties(app: &mut App, ui: &mut egui::Ui) {
             ui.color_edit_button_srgba(&mut app.stroke);
         });
         ui.add(egui::Slider::new(&mut app.stroke_w, 0.1..=50.0).text("Stroke size"));
+        ui.horizontal(|ui| {
+            ui.label("Fill type");
+            let o = &mut app.topts;
+            ui.selectable_value(&mut o.fill_gradient, None, "Solid");
+            ui.selectable_value(&mut o.fill_gradient, Some(GradientKind::Linear), "Linear");
+            ui.selectable_value(&mut o.fill_gradient, Some(GradientKind::Radial), "Radial");
+        });
+        if app.topts.fill_gradient.is_some() {
+            ui.horizontal(|ui| {
+                ui.label("Gradient");
+                ui.color_edit_button_srgba(&mut app.fill);
+                ui.label("→");
+                ui.color_edit_button_srgba(&mut app.topts.fill2);
+            });
+        }
+    }
+}
+
+fn camera_properties(app: &mut App, ui: &mut egui::Ui) {
+    section(ui, "Camera");
+    if app.ed.editing.is_some() {
+        hint(ui, "The camera belongs to the main scene. Leave symbol editing (Esc) to use it.");
+        return;
+    }
+    if app.ed.camera_layer().is_none() {
+        hint(ui, "No camera yet. Click the stage with this tool, or:");
+        if ui.button("Add camera layer").clicked() {
+            app.ed.add_camera();
+        }
+        return;
+    }
+    let cam = app.ed.camera_at(app.ed.frame).unwrap_or_else(|| ac_core::default_camera(&app.ed.doc).matrix);
+    let (c, rot, zoom) = Editor::camera_params(&cam);
+    let (mut x, mut y, mut r, mut z) = (c.x, c.y, rot, zoom * 100.0);
+    let mut changed = false;
+    egui::Grid::new("camprops").num_columns(4).show(ui, |ui| {
+        ui.label("X");
+        changed |= edited(&ui.add(egui::DragValue::new(&mut x).speed(1.0)));
+        ui.label("Y");
+        changed |= edited(&ui.add(egui::DragValue::new(&mut y).speed(1.0)));
+        ui.end_row();
+        ui.label("Zoom");
+        changed |= edited(&ui.add(egui::DragValue::new(&mut z).range(5.0..=5000.0).speed(1.0).suffix("%")));
+        ui.label("Rotate");
+        changed |= edited(&ui.add(egui::DragValue::new(&mut r).speed(0.5).suffix("°")));
+        ui.end_row();
+    });
+    if changed {
+        app.ed.begin_edit("Camera");
+        app.ed.set_camera(Editor::camera_from(pt(x, y), r, z / 100.0));
+    }
+    ui.horizontal(|ui| {
+        if ui.button("Reset").on_hover_text("Centre, 100%, no rotation (at this frame)").clicked() {
+            app.ed.begin_edit("Camera");
+            let d = ac_core::default_camera(&app.ed.doc).matrix;
+            app.ed.set_camera(d);
+        }
+        if ui.button("Remove camera").clicked() {
+            app.ed.remove_camera();
+        }
+    });
+    hint(ui, "Changes make a camera keyframe at the playhead; add a Classic tween on the Camera layer to animate it. The stage shows the camera view while this tool is active and during playback.");
+}
+
+/// Window › Transform (Ctrl+T): exact scale, rotation, skew, 3D, and
+/// copy-and-transform for building repeated patterns.
+pub fn transform_window(app: &mut App, ctx: &egui::Context) {
+    if !app.transform_open {
+        return;
+    }
+    let mut open = true;
+    egui::Window::new("Transform").open(&mut open).resizable(false).default_pos(app.stage_rect.right_top() + vec2(-300.0, 40.0)).show(ctx, |ui| {
+        let Some(el) = app.ed.selected_element() else {
+            hint(ui, "Select an object on the stage.");
+            return;
+        };
+        let editable = app.ed.selection.iter().all(|s| app.ed.layer_editable(s.layer));
+        ui.add_enabled_ui(editable, |ui| {
+            let d = el.matrix.decompose();
+            let (mut w, mut h) = (d.scale_x * 100.0, d.scale_y * 100.0);
+            ui.horizontal(|ui| {
+                ui.label("↔");
+                let r = ui.add(egui::DragValue::new(&mut w).speed(0.5).suffix(" %").max_decimals(1));
+                let (w0, h0, c) = (d.scale_x * 100.0, d.scale_y * 100.0, app.xf.constrain);
+                if w.abs() > 0.1 {
+                    apply_decomp(app, &r, "Scale", move |dd| {
+                        dd.scale_x = w / 100.0;
+                        if c && w0.abs() > 1e-3 {
+                            dd.scale_y = h0 / 100.0 * (w / w0);
+                        }
+                    });
+                }
+                ui.label("↕");
+                let r = ui.add(egui::DragValue::new(&mut h).speed(0.5).suffix(" %").max_decimals(1));
+                if h.abs() > 0.1 {
+                    apply_decomp(app, &r, "Scale", move |dd| {
+                        dd.scale_y = h / 100.0;
+                        if c && h0.abs() > 1e-3 {
+                            dd.scale_x = w0 / 100.0 * (h / h0);
+                        }
+                    });
+                }
+                ui.toggle_value(&mut app.xf.constrain, "🔗").on_hover_text("Constrain proportions");
+            });
+            ui.horizontal(|ui| {
+                ui.radio_value(&mut app.xf.skew, false, "Rotate");
+                let mut rot = d.skew_y.to_degrees();
+                let r = ui.add_enabled(!app.xf.skew, egui::DragValue::new(&mut rot).speed(0.5).suffix("°").max_decimals(1));
+                let delta = rot.to_radians() - d.skew_y;
+                apply_decomp(app, &r, "Rotate", move |dd| {
+                    dd.skew_x += delta;
+                    dd.skew_y += delta;
+                });
+            });
+            ui.horizontal(|ui| {
+                ui.radio_value(&mut app.xf.skew, true, "Skew");
+                let (mut sh, mut sv) = (d.skew_x.to_degrees(), d.skew_y.to_degrees());
+                let r = ui.add_enabled(app.xf.skew, egui::DragValue::new(&mut sh).speed(0.5).suffix("°").max_decimals(1)).on_hover_text("Skew H: angle of the vertical axis");
+                apply_decomp(app, &r, "Skew", move |dd| dd.skew_x = sh.to_radians());
+                let r = ui.add_enabled(app.xf.skew, egui::DragValue::new(&mut sv).speed(0.5).suffix("°").max_decimals(1)).on_hover_text("Skew V: angle of the horizontal axis");
+                apply_decomp(app, &r, "Skew", move |dd| dd.skew_y = sv.to_radians());
+            });
+            ui.separator();
+            ui.label(RichText::new("3D rotation").small().color(Color32::from_gray(170)));
+            let t = el.three_d.unwrap_or_default();
+            ui.horizontal(|ui| {
+                let (mut rx, mut ry, mut rz) = (t.rx, t.ry, t.rz);
+                ui.label("X");
+                let r = ui.add(egui::DragValue::new(&mut rx).speed(0.5).suffix("°").max_decimals(1));
+                apply_3d(app, &r, "3D Rotation", |t| t.rx = rx);
+                ui.label("Y");
+                let r = ui.add(egui::DragValue::new(&mut ry).speed(0.5).suffix("°").max_decimals(1));
+                apply_3d(app, &r, "3D Rotation", |t| t.ry = ry);
+                ui.label("Z");
+                let r = ui.add(egui::DragValue::new(&mut rz).speed(0.5).suffix("°").max_decimals(1));
+                apply_3d(app, &r, "3D Rotation", |t| t.rz = rz);
+            });
+            ui.label(RichText::new("3D centre point (object coordinates)").small().color(Color32::from_gray(170)));
+            ui.horizontal(|ui| {
+                let (mut cx, mut cy, mut z) = (t.center.x, t.center.y, t.z);
+                ui.label("X");
+                let r = ui.add_enabled(el.three_d.is_some(), egui::DragValue::new(&mut cx).speed(1.0).max_decimals(1));
+                apply_3d(app, &r, "3D Center", |t| t.center.x = cx);
+                ui.label("Y");
+                let r = ui.add_enabled(el.three_d.is_some(), egui::DragValue::new(&mut cy).speed(1.0).max_decimals(1));
+                apply_3d(app, &r, "3D Center", |t| t.center.y = cy);
+                ui.label("Depth");
+                let r = ui.add(egui::DragValue::new(&mut z).speed(1.0).max_decimals(0));
+                apply_3d(app, &r, "3D Translation", |t| t.z = z);
+            });
+            ui.separator();
+            ui.horizontal(|ui| {
+                if ui.button("Flip H").clicked() { app.flip(true); }
+                if ui.button("Flip V").clicked() { app.flip(false); }
+                if ui.button("Remove Transform").on_hover_text("Reset scale, rotation, skew and 3D (keeps position)").clicked() {
+                    app.ed.modify_selected("Remove Transform", |e| { let (x, y) = (e.matrix.tx, e.matrix.ty); e.matrix = Matrix::translate(x, y); e.three_d = None; });
+                }
+            });
+            ui.separator();
+            ui.label(RichText::new("Copy and transform (repeat patterns)").small().color(Color32::from_gray(170)));
+            ui.horizontal(|ui| {
+                ui.label("Rotate");
+                ui.add(egui::DragValue::new(&mut app.xf.step_rotate).range(-360.0..=360.0).speed(0.5).suffix("°"));
+                ui.label("Scale");
+                ui.add(egui::DragValue::new(&mut app.xf.step_scale).range(1.0..=1000.0).speed(0.5).suffix("%"));
+            });
+            if ui.button("Copy selection and apply transform").on_hover_text("Duplicates the selection and rotates/scales the copy about the transformation point").clicked() {
+                if let Some(c) = app.pivot() {
+                    let mark = app.ed.undo_depth();
+                    app.ed.duplicate_in_place();
+                    let k = app.xf.step_scale / 100.0;
+                    let m = Matrix::translate(c.x, c.y).concat(&Matrix::rotate(app.xf.step_rotate.to_radians())).concat(&Matrix::scale(k, k)).concat(&Matrix::translate(-c.x, -c.y));
+                    app.ed.modify_selected("Copy and Transform", |e| e.matrix = m.concat(&e.matrix));
+                    app.ed.squash_undo(mark, "Copy and Transform");
+                    // keep the same transformation point for the next copy
+                    app.ft_pivot = Some((app.ed.selection.clone(), c));
+                }
+            }
+        });
+    });
+    if !open {
+        app.transform_open = false;
     }
 }
