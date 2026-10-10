@@ -141,6 +141,9 @@ crates/
 
 ## 4. Roadmap
 
+The full feature-by-feature comparison with Animate and the current build order
+(Phases 1–5) live in `docs/ANIMATE-GAP-ANALYSIS.md`; it supersedes M1–M7 below.
+
 | Milestone | Goal |
 |---|---|
 | **M0 (done: demo)** | Model, classic + shape tweens, symbols, onion skin, egui editor, GIF/PNG/SVG export, CLI. M0.1: selection, frame ops, clipboard, library management; 24 tests |
