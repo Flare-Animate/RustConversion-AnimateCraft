@@ -22,24 +22,39 @@ Linux needs the usual X11/Wayland + OpenGL libraries (any desktop has them).
 ## Try this
 
 1. Press **Enter** to play; **,** and **.** step frames. Turn on **Onion skin**.
-2. Select the ball (**V**), drag it at a frame between keyframes: a keyframe is
-   added for you and the tween updates.
-3. Draw a shape with **R** or **O**, press **F8** to make it a symbol.
-4. Move to frame 20, press **F6**, move the shape, then right-click frame 1 in
-   the timeline → **Create Classic Tween**. Set **Ease** in Properties.
-5. Double-click a symbol in the Library to edit its own timeline; **Esc** to return.
-6. File → Export → Animated GIF / PNG / SVG.
+2. **Select objects**: click (Shift+click adds), or drag a box around them on
+   empty stage. Drag to move, drag a corner to scale (Shift keeps proportions);
+   with **Q** drag just outside a corner to rotate. Arrow keys nudge.
+3. **Remove objects**: **Delete**/**Backspace**, the 🗑 Delete button in
+   Properties, or right-click → Delete. Cut/Copy/Paste/Duplicate with
+   Ctrl+X/C/V/D; Ctrl+Z undoes.
+4. **Frames**: click a cell to select it, drag across cells/layers for a range,
+   Shift+click to extend, double-click to select a whole span, click a layer
+   name for all its frames. Drag a selection to move keyframes. Right-click for
+   F5/F6/F7, tweens, Clear Frames and Copy/Paste Frames. Delete clears frames.
+5. Draw with **R**, **O**, **N**, **Y**; press **F8** to make a symbol.
+   Double-click an instance (or a Library item) to edit its timeline; **Esc** returns.
+6. **Library**: drag an item onto the stage; right-click to rename, duplicate,
+   change type or delete.
+7. File → Export → Animated GIF / PNG / SVG.
 
 ## Keyboard
 
 | Key | Action | Key | Action |
 |---|---|---|---|
-| V | Selection | F5 / Shift+F5 | Insert / remove frame |
-| Q | Free Transform (drag outside a corner to rotate) | F6 / Shift+F6 | Insert / clear keyframe |
+| V | Selection | F5 / Shift+F5 | Insert / remove frames |
+| Q | Free Transform | F6 / Shift+F6 | Insert / clear keyframe |
 | R / O / N | Rectangle / Oval / Line | F7 | Blank keyframe |
 | Y | Pencil | F8 / Ctrl+F8 | Convert to / new symbol |
-| K | Paint Bucket | Enter | Play / stop |
-| H or Space | Hand | Ctrl+Z / Ctrl+Shift+Z | Undo / redo |
-| Shift (drag) | Constrain | Ctrl+1 / Ctrl+2 | 100% / fit |
+| K | Paint Bucket | Delete | Delete objects, or clear selected frames |
+| H or Space | Hand | Ctrl+X / C / V | Cut / copy / paste (Shift+V = in place) |
+| Arrows | Nudge (Shift = 10 px) | Ctrl+D / Ctrl+A / Ctrl+B | Duplicate / select all / break apart |
+| Enter | Play / stop | Ctrl+Z / Ctrl+Shift+Z | Undo / redo |
+| Esc | Deselect, then leave symbol | Ctrl+1 / Ctrl+2 | 100% / fit |
+
+## UI smoke testing
+
+`tools/ui_drive.py` drives the real app under Xvfb with synthetic mouse and
+keyboard input (needs `pip install python-xlib`). See `log/devlog.md`.
 
 See `CLAUDE.md` for the full feature map, architecture and roadmap.

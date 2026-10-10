@@ -1,13 +1,41 @@
 //! Editing session: every mutation goes through here so undo/redo, the UI,
 //! the CLI and (later) the MCP/scripting surface all share one command set.
 
-use crate::geom::{Matrix, Pt};
+use crate::frames::{self, FrameClip};
+use crate::geom::{pt, Matrix, Pt};
 use crate::model::*;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Selection {
     pub layer: usize,
     pub element: usize,
+}
+
+/// A rectangular block of timeline cells (inclusive on both axes).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FrameSel {
+    pub layer0: usize,
+    pub layer1: usize,
+    pub f0: u32,
+    pub f1: u32,
+}
+
+impl FrameSel {
+    pub fn cell(layer: usize, frame: u32) -> Self {
+        FrameSel { layer0: layer, layer1: layer, f0: frame, f1: frame }
+    }
+    pub fn between(a: (usize, u32), b: (usize, u32)) -> Self {
+        FrameSel { layer0: a.0.min(b.0), layer1: a.0.max(b.0), f0: a.1.min(b.1), f1: a.1.max(b.1) }
+    }
+    pub fn contains(&self, layer: usize, frame: u32) -> bool {
+        (self.layer0..=self.layer1).contains(&layer) && (self.f0..=self.f1).contains(&frame)
+    }
+    pub fn frames(&self) -> u32 {
+        self.f1 - self.f0 + 1
+    }
+    pub fn is_single(&self) -> bool {
+        self.layer0 == self.layer1 && self.f0 == self.f1
+    }
 }
 
 pub struct Editor {
@@ -16,10 +44,14 @@ pub struct Editor {
     pub editing: Option<SymbolId>,
     pub frame: u32,
     pub layer: usize,
-    pub selection: Option<Selection>,
+    /// Selected stage elements (sorted, unique).
+    pub selection: Vec<Selection>,
+    /// Selected timeline cells.
+    pub frame_sel: Option<FrameSel>,
     undo: Vec<Snapshot>,
     redo: Vec<Snapshot>,
-    pub dirty_label: String,
+    element_clip: Vec<(Element, usize)>,
+    frame_clip: Vec<FrameClip>,
 }
 
 #[derive(Clone)]
@@ -32,7 +64,18 @@ const UNDO_LIMIT: usize = 200;
 
 impl Editor {
     pub fn new(doc: Document) -> Self {
-        Editor { doc, editing: None, frame: 0, layer: 0, selection: None, undo: vec![], redo: vec![], dirty_label: String::new() }
+        Editor {
+            doc,
+            editing: None,
+            frame: 0,
+            layer: 0,
+            selection: vec![],
+            frame_sel: None,
+            undo: vec![],
+            redo: vec![],
+            element_clip: vec![],
+            frame_clip: vec![],
+        }
     }
 
     // ------------------------------------------------------------ plumbing
@@ -42,7 +85,6 @@ impl Editor {
             self.undo.remove(0);
         }
         self.redo.clear();
-        self.dirty_label = label.into();
     }
     pub fn undo(&mut self) -> Option<String> {
         let s = self.undo.pop()?;
@@ -73,7 +115,12 @@ impl Editor {
         }
         let n = self.timeline().layers.len();
         self.layer = self.layer.min(n.saturating_sub(1));
-        self.selection = None;
+        self.selection.clear();
+        if let Some(fs) = &mut self.frame_sel {
+            if fs.layer1 >= n {
+                self.frame_sel = None;
+            }
+        }
     }
 
     pub fn timeline(&self) -> &Timeline {
@@ -87,10 +134,6 @@ impl Editor {
             Some(id) if self.doc.symbol(id).is_some() => &mut self.doc.symbol_mut(id).unwrap().timeline,
             _ => &mut self.doc.scene,
         }
-    }
-    fn cur_layer_mut(&mut self) -> &mut Layer {
-        let i = self.layer;
-        &mut self.timeline_mut().layers[i]
     }
 
     pub fn breadcrumb(&self) -> Vec<String> {
@@ -113,36 +156,42 @@ impl Editor {
     pub fn frame_count(&self) -> u32 {
         self.timeline().frame_count()
     }
+    /// Move the playhead. Keeps the stage selection only if it stays valid.
     pub fn set_frame(&mut self, f: u32) {
-        self.frame = f;
-        self.selection = None;
+        if f != self.frame {
+            self.frame = f;
+            self.selection.clear();
+        }
     }
     pub fn enter_symbol(&mut self, id: SymbolId) {
         if self.doc.symbol(id).is_some() {
             self.editing = Some(id);
             self.frame = 0;
             self.layer = 0;
-            self.selection = None;
+            self.selection.clear();
+            self.frame_sel = None;
         }
     }
     pub fn exit_to_scene(&mut self) {
         self.editing = None;
         self.frame = 0;
         self.layer = 0;
-        self.selection = None;
+        self.selection.clear();
+        self.frame_sel = None;
     }
 
     // ------------------------------------------------------------ layers
     pub fn add_layer(&mut self) {
         self.checkpoint("New Layer");
-        let tl = self.timeline_mut();
-        let n = tl.layers.len();
-        let end = tl.frame_count();
+        let end = self.timeline().frame_count();
+        let n = self.timeline().layers.len();
         let mut l = Layer::new(&format!("Layer {}", n + 1), n);
         l.end = end;
-        let at = self.layer;
+        let at = self.layer.min(n);
         self.timeline_mut().layers.insert(at, l);
-        self.selection = None;
+        self.layer = at;
+        self.selection.clear();
+        self.frame_sel = None;
     }
     pub fn delete_layer(&mut self) {
         if self.timeline().layers.len() <= 1 {
@@ -151,7 +200,20 @@ impl Editor {
         self.checkpoint("Delete Layer");
         let i = self.layer;
         self.timeline_mut().layers.remove(i);
+        self.frame_sel = None;
         self.fix_indices();
+    }
+    pub fn move_layer(&mut self, from: usize, to: usize) {
+        let n = self.timeline().layers.len();
+        if from >= n || to >= n || from == to {
+            return;
+        }
+        self.checkpoint("Move Layer");
+        let l = self.timeline_mut().layers.remove(from);
+        self.timeline_mut().layers.insert(to, l);
+        self.layer = to;
+        self.selection.clear();
+        self.frame_sel = None;
     }
     pub fn rename_layer(&mut self, i: usize, name: &str) {
         self.checkpoint("Rename Layer");
@@ -164,109 +226,157 @@ impl Editor {
             LayerFlag::Locked => l.locked = !l.locked,
             LayerFlag::Outline => l.outline = !l.outline,
         }
+        // Hidden or locked layers can't keep selected objects.
+        let tl = self.timeline();
+        let keep: Vec<Selection> = self.selection.iter().copied().filter(|s| tl.layers.get(s.layer).map(|l| l.visible && !l.locked).unwrap_or(false)).collect();
+        self.selection = keep;
     }
 
-    // ------------------------------------------------------------ frames (F5/F6/F7)
-    /// F5 – Insert Frame: extend the span under the playhead by one frame.
+    // ------------------------------------------------------------ frame selection
+    /// The selected block, or the cell under the playhead on the current layer.
+    pub fn frame_target(&self) -> FrameSel {
+        self.frame_sel.unwrap_or(FrameSel::cell(self.layer, self.frame))
+    }
+    pub fn select_frames(&mut self, sel: FrameSel) {
+        let n = self.timeline().layers.len();
+        if n == 0 {
+            return;
+        }
+        let sel = FrameSel { layer0: sel.layer0.min(n - 1), layer1: sel.layer1.min(n - 1), ..sel };
+        self.frame_sel = Some(sel);
+        self.layer = sel.layer0;
+        if self.frame != sel.f0 {
+            self.frame = sel.f0;
+        }
+        self.selection.clear();
+    }
+    /// Double-click a frame: select the whole span it belongs to.
+    pub fn select_span(&mut self, layer: usize, frame: u32) {
+        let Some(l) = self.timeline().layers.get(layer) else { return };
+        let sel = match l.span_at(frame) {
+            Some((s, _, _)) => FrameSel { layer0: layer, layer1: layer, f0: s, f1: l.span_end(s) - 1 },
+            None => FrameSel::cell(layer, frame),
+        };
+        self.select_frames(sel);
+    }
+    /// Click a layer name: select all of that layer's frames.
+    pub fn select_layer_frames(&mut self, layer: usize) {
+        let Some(l) = self.timeline().layers.get(layer) else { return };
+        let end = l.end.max(1);
+        self.frame_sel = Some(FrameSel { layer0: layer, layer1: layer, f0: 0, f1: end - 1 });
+        self.layer = layer;
+        self.selection.clear();
+    }
+
+    fn for_each_layer(&mut self, label: &str, mut f: impl FnMut(&mut Layer, &FrameSel)) {
+        let sel = self.frame_target();
+        self.checkpoint(label);
+        let tl = self.timeline_mut();
+        for li in sel.layer0..=sel.layer1.min(tl.layers.len().saturating_sub(1)) {
+            f(&mut tl.layers[li], &sel);
+        }
+        self.selection.clear();
+    }
+
+    /// F5 – Insert Frame(s): as many frames as are selected.
     pub fn insert_frame(&mut self) {
-        self.checkpoint("Insert Frame");
-        let f = self.frame;
-        let layer = self.cur_layer_mut();
-        if f >= layer.end {
-            layer.end = f + 1;
-            return;
-        }
-        let moved: Vec<(u32, Keyframe)> = layer.keyframes.range(f + 1..).map(|(k, v)| (*k, v.clone())).collect();
-        for (k, _) in &moved {
-            layer.keyframes.remove(k);
-        }
-        for (k, v) in moved {
-            layer.keyframes.insert(k + 1, v);
-        }
-        layer.end += 1;
+        self.for_each_layer("Insert Frames", |l, s| frames::insert_frames(l, s.f1, s.frames()));
     }
-
-    /// Shift+F5 – Remove Frame.
+    /// Shift+F5 – Remove Frames.
     pub fn remove_frame(&mut self) {
-        let f = self.frame;
-        let layer = &self.timeline().layers[self.layer];
-        if f >= layer.end || layer.end <= 1 {
-            return;
+        self.for_each_layer("Remove Frames", |l, s| frames::remove_frames(l, s.f0, s.f1));
+        if let Some(s) = &mut self.frame_sel {
+            s.f1 = s.f0;
         }
-        self.checkpoint("Remove Frames");
-        let layer = self.cur_layer_mut();
-        if layer.keyframes.contains_key(&f) && f != 0 {
-            let next = layer.span_end(f);
-            if next - f == 1 {
-                layer.keyframes.remove(&f);
-            }
-        }
-        let moved: Vec<(u32, Keyframe)> = layer.keyframes.range(f + 1..).map(|(k, v)| (*k, v.clone())).collect();
-        for (k, _) in &moved {
-            layer.keyframes.remove(k);
-        }
-        for (k, v) in moved {
-            layer.keyframes.entry(k - 1).or_insert(v);
-        }
-        layer.end -= 1;
     }
-
-    /// F6 – Insert Keyframe: copies what is visible (including mid-tween state).
+    /// F6 – Insert Keyframe (copies what is visible, including mid-tween state).
     pub fn insert_keyframe(&mut self) {
-        let f = self.frame;
-        let layer = &self.timeline().layers[self.layer];
-        if layer.keyframes.contains_key(&f) {
-            return;
-        }
-        let (elements, prev_tween) = content_for(layer, f);
-        self.checkpoint("Insert Keyframe");
-        let layer = self.cur_layer_mut();
-        let mut kf = Keyframe::with(elements);
-        kf.tween = prev_tween; // splitting a tween keeps both halves tweened
-        layer.keyframes.insert(f, kf);
-        layer.end = layer.end.max(f + 1);
+        self.for_each_layer("Insert Keyframe", |l, s| frames::convert_to_keyframes(l, s.f0, s.f1, false));
     }
-
     /// F7 – Insert Blank Keyframe.
     pub fn insert_blank_keyframe(&mut self) {
-        let f = self.frame;
-        self.checkpoint("Insert Blank Keyframe");
-        let layer = self.cur_layer_mut();
-        layer.keyframes.insert(f, Keyframe::blank());
-        layer.end = layer.end.max(f + 1);
+        self.for_each_layer("Insert Blank Keyframe", |l, s| frames::convert_to_keyframes(l, s.f0, s.f1, true));
     }
-
     /// Shift+F6 – Clear Keyframe.
     pub fn clear_keyframe(&mut self) {
-        let f = self.frame;
-        if f == 0 || !self.timeline().layers[self.layer].keyframes.contains_key(&f) {
-            return;
-        }
-        self.checkpoint("Clear Keyframe");
-        self.cur_layer_mut().keyframes.remove(&f);
+        self.for_each_layer("Clear Keyframe", |l, s| frames::clear_keyframes(l, s.f0, s.f1));
     }
-
+    /// Delete/Backspace on selected frames – Clear Frames.
+    pub fn clear_frames(&mut self) {
+        self.for_each_layer("Clear Frames", |l, s| frames::clear_frames(l, s.f0, s.f1));
+    }
     pub fn set_tween(&mut self, tween: Tween) {
-        let f = self.frame;
-        let layer = &self.timeline().layers[self.layer];
-        let Some((start, _, _)) = layer.span_at(f) else { return };
         let label = match tween {
             Tween::None => "Remove Tween",
             Tween::Classic { .. } => "Create Classic Tween",
             Tween::Shape { .. } => "Create Shape Tween",
         };
-        self.checkpoint(label);
-        let layer = self.cur_layer_mut();
-        // Animate needs an end keyframe; create one at the span end if missing.
-        let end = layer.span_end(start);
-        if !matches!(tween, Tween::None) && !layer.keyframes.contains_key(&end) && end > start + 1 {
-            let last = end - 1;
-            let content = layer.keyframes[&start].elements.clone();
-            layer.keyframes.insert(last, Keyframe::with(content));
+        self.for_each_layer(label, |l, s| frames::set_tween(l, s.f0, s.f1, tween));
+    }
+    /// Change only the ease/rotation of existing tweens in the target.
+    pub fn set_tween_params(&mut self, ease: f32, turns: i32) {
+        self.for_each_layer("Tween Settings", |l, s| {
+            let starts: Vec<u32> = l.keyframes.keys().copied().filter(|&k| k <= s.f1 && l.span_end(k) > s.f0).collect();
+            for k in starts {
+                let kf = l.keyframes.get_mut(&k).unwrap();
+                kf.tween = match kf.tween {
+                    Tween::Classic { .. } => Tween::Classic { ease, rotate_turns: turns },
+                    Tween::Shape { .. } => Tween::Shape { ease },
+                    Tween::None => Tween::None,
+                };
+            }
+        });
+    }
+    pub fn copy_frames(&mut self) {
+        let s = self.frame_target();
+        let tl = self.timeline();
+        self.frame_clip = (s.layer0..=s.layer1).filter_map(|i| tl.layers.get(i)).map(|l| frames::copy_frames(l, s.f0, s.f1)).collect();
+    }
+    pub fn cut_frames(&mut self) {
+        self.copy_frames();
+        self.clear_frames();
+    }
+    pub fn can_paste_frames(&self) -> bool {
+        !self.frame_clip.is_empty()
+    }
+    pub fn paste_frames(&mut self) {
+        if self.frame_clip.is_empty() {
+            return;
         }
-        layer.keyframes.get_mut(&start).unwrap().tween = tween;
+        let s = self.frame_target();
+        let clips = self.frame_clip.clone();
+        self.checkpoint("Paste Frames");
+        let tl = self.timeline_mut();
+        for (i, clip) in clips.iter().enumerate() {
+            if let Some(l) = tl.layers.get_mut(s.layer0 + i) {
+                frames::paste_frames(l, s.f0, clip);
+            }
+        }
+        let len = clips[0].len;
+        self.frame_sel = Some(FrameSel { layer0: s.layer0, layer1: (s.layer0 + clips.len() - 1).min(self.timeline().layers.len() - 1), f0: s.f0, f1: s.f0 + len - 1 });
+        self.selection.clear();
+    }
+    /// Drag the selected frames left/right by `delta`.
+    pub fn move_frames(&mut self, delta: i64) {
+        let Some(s) = self.frame_sel else { return };
+        if delta == 0 {
+            return;
+        }
+        self.checkpoint("Move Frames");
+        let tl = self.timeline_mut();
+        for li in s.layer0..=s.layer1 {
+            if let Some(l) = tl.layers.get_mut(li) {
+                frames::move_frames(l, s.f0, s.f1, delta);
+            }
+        }
+        let d = delta.max(-(s.f0 as i64));
+        let f0 = (s.f0 as i64 + d) as u32;
+        self.frame_sel = Some(FrameSel { f0, f1: f0 + (s.f1 - s.f0), ..s });
+        self.frame = f0;
+        self.selection.clear();
     }
 
+    /// The keyframe governing the playhead on the current layer.
     pub fn current_keyframe(&self) -> Option<(u32, &Keyframe)> {
         let layer = self.timeline().layers.get(self.layer)?;
         layer.span_at(self.frame).map(|(s, k, _)| (s, k))
@@ -275,29 +385,45 @@ impl Editor {
     pub fn set_frame_label(&mut self, label: &str) {
         let Some((start, _)) = self.current_keyframe() else { return };
         self.checkpoint("Frame Label");
-        let l = self.cur_layer_mut();
+        let li = self.layer;
+        let l = &mut self.timeline_mut().layers[li];
         l.keyframes.get_mut(&start).unwrap().label = if label.is_empty() { None } else { Some(label.into()) };
     }
 
     // ------------------------------------------------------------ elements
-    /// Make sure the playhead sits on a keyframe of the current layer
-    /// (auto-keyframe, like editing on a motion-tween span) and return its start.
-    fn ensure_keyframe(&mut self) -> u32 {
+    /// Which keyframe an edit at the playhead lands in, creating one if needed:
+    /// - past the layer's end: a new keyframe (Animate inserts one for you)
+    /// - inside a static span: the span's keyframe (same object on every frame)
+    /// - inside a tween: a new keyframe here when `pose` (moving/scaling an object
+    ///   mid-tween sets a new pose), otherwise the span's keyframe
+    fn target_keyframe(&mut self, layer: usize, pose: bool) -> Option<u32> {
         let f = self.frame;
-        let layer = &self.timeline().layers[self.layer];
-        if !layer.keyframes.contains_key(&f) {
-            let (content, prev_tween) = content_for(layer, f);
-            let l = self.cur_layer_mut();
-            let mut kf = Keyframe::with(content);
-            kf.tween = prev_tween;
-            l.keyframes.insert(f, kf);
-            l.end = l.end.max(f + 1);
-        }
-        f
+        let l = self.timeline().layers.get(layer)?;
+        let key = match l.span_at(f) {
+            None => {
+                let l = &mut self.timeline_mut().layers[layer];
+                frames::convert_to_keyframes(l, f, f, false);
+                return Some(f);
+            }
+            Some((s, _, _)) if s == f => f,
+            Some((s, kf, _)) => {
+                if pose && !matches!(kf.tween, Tween::None) {
+                    let l = &mut self.timeline_mut().layers[layer];
+                    frames::convert_to_keyframes(l, f, f, false);
+                    f
+                } else {
+                    s
+                }
+            }
+        };
+        Some(key)
     }
 
+    pub fn layer_editable(&self, layer: usize) -> bool {
+        self.timeline().layers.get(layer).map(|l| !l.locked && l.visible).unwrap_or(false)
+    }
     pub fn layer_locked(&self) -> bool {
-        self.timeline().layers.get(self.layer).map(|l| l.locked || !l.visible).unwrap_or(true)
+        !self.layer_editable(self.layer)
     }
 
     pub fn add_element(&mut self, el: Element) -> Option<Selection> {
@@ -305,13 +431,13 @@ impl Editor {
             return None;
         }
         self.checkpoint(&format!("Add {}", el.name));
-        let start = self.ensure_keyframe();
         let li = self.layer;
-        let l = self.cur_layer_mut();
-        let kf = l.keyframes.get_mut(&start).unwrap();
+        let start = self.target_keyframe(li, false)?;
+        let kf = self.timeline_mut().layers[li].keyframes.get_mut(&start).unwrap();
         kf.elements.push(el);
         let sel = Selection { layer: li, element: kf.elements.len() - 1 };
-        self.selection = Some(sel);
+        self.selection = vec![sel];
+        self.frame_sel = None;
         Some(sel)
     }
 
@@ -328,107 +454,293 @@ impl Editor {
         })
     }
 
-    pub fn selected_element(&self) -> Option<Element> {
-        let s = self.selection?;
+    pub fn is_selected(&self, s: Selection) -> bool {
+        self.selection.contains(&s)
+    }
+    /// Click: replace selection. Shift-click: toggle.
+    pub fn select(&mut self, s: Option<Selection>, toggle: bool) {
+        match (s, toggle) {
+            (Some(s), true) => {
+                if let Some(i) = self.selection.iter().position(|x| *x == s) {
+                    self.selection.remove(i);
+                } else {
+                    self.selection.push(s);
+                    self.selection.sort();
+                }
+            }
+            (Some(s), false) => self.selection = vec![s],
+            (None, false) => self.selection.clear(),
+            (None, true) => {}
+        }
+        if let Some(s) = self.selection.first() {
+            self.layer = s.layer;
+            self.frame_sel = None;
+        }
+    }
+    pub fn select_all(&mut self) {
+        let items = self.evaluate_current(self.frame);
+        let mut v: Vec<Selection> = items.iter().filter_map(|it| it.src).filter(|(l, _)| self.layer_editable(*l)).map(|(layer, element)| Selection { layer, element }).collect();
+        v.sort();
+        v.dedup();
+        self.selection = v;
+        self.frame_sel = None;
+    }
+    /// Marquee: select elements whose bounds lie fully inside the rectangle.
+    pub fn select_in_rect(&mut self, a: Pt, b: Pt, add: bool) {
+        let (lo, hi) = (pt(a.x.min(b.x), a.y.min(b.y)), pt(a.x.max(b.x), a.y.max(b.y)));
+        let mut found: Vec<Selection> = Vec::new();
+        let items = self.evaluate_current(self.frame);
+        let mut bounds: std::collections::BTreeMap<(usize, usize), (Pt, Pt)> = Default::default();
+        for it in &items {
+            let Some(src) = it.src else { continue };
+            if !self.layer_editable(src.0) {
+                continue;
+            }
+            if let Some((l, h)) = it.path.transformed(&it.matrix).bounds() {
+                let e = bounds.entry(src).or_insert((l, h));
+                *e = (pt(e.0.x.min(l.x), e.0.y.min(l.y)), pt(e.1.x.max(h.x), e.1.y.max(h.y)));
+            }
+        }
+        for ((layer, element), (l, h)) in bounds {
+            if l.x >= lo.x && l.y >= lo.y && h.x <= hi.x && h.y <= hi.y {
+                found.push(Selection { layer, element });
+            }
+        }
+        if add {
+            self.selection.extend(found);
+            self.selection.sort();
+            self.selection.dedup();
+        } else {
+            self.selection = found;
+        }
+        self.frame_sel = None;
+    }
+
+    pub fn element_at(&self, s: Selection) -> Option<Element> {
         let layer = self.timeline().layers.get(s.layer)?;
         let (els, _) = layer_elements_at(layer, self.frame)?;
         els.get(s.element).cloned()
     }
+    /// The first selected element (drives the Properties panel).
+    pub fn selected_element(&self) -> Option<Element> {
+        self.element_at(*self.selection.first()?)
+    }
 
-    pub fn selection_bounds(&self) -> Option<(Pt, Pt)> {
-        let s = self.selection?;
+    pub fn bounds_of(&self, sels: &[Selection]) -> Option<(Pt, Pt)> {
         let items = self.evaluate_current(self.frame);
         let mut b: Option<(Pt, Pt)> = None;
-        for it in items.iter().filter(|it| it.src == Some((s.layer, s.element))) {
+        for it in items.iter().filter(|it| it.src.map(|(l, e)| sels.contains(&Selection { layer: l, element: e })).unwrap_or(false)) {
             if let Some((lo, hi)) = it.path.transformed(&it.matrix).bounds() {
                 b = Some(match b {
                     None => (lo, hi),
-                    Some((a, c)) => (crate::geom::pt(a.x.min(lo.x), a.y.min(lo.y)), crate::geom::pt(c.x.max(hi.x), c.y.max(hi.y))),
+                    Some((a, c)) => (pt(a.x.min(lo.x), a.y.min(lo.y)), pt(c.x.max(hi.x), c.y.max(hi.y))),
                 });
             }
         }
         b
     }
+    pub fn selection_bounds(&self) -> Option<(Pt, Pt)> {
+        self.bounds_of(&self.selection)
+    }
 
-    /// Apply `f` to the selected element (auto-keyframing). `label` names the undo step.
-    pub fn modify_selected(&mut self, label: &str, f: impl FnOnce(&mut Element)) {
-        let Some(s) = self.selection else { return };
-        self.layer = s.layer;
-        if self.layer_locked() {
+    /// Apply `f` to every selected element on editable layers. `label` names the undo step.
+    pub fn modify_selected(&mut self, label: &str, f: impl Fn(&mut Element)) {
+        if self.selection.is_empty() {
             return;
         }
         self.checkpoint(label);
-        let start = self.ensure_keyframe();
-        let l = self.cur_layer_mut();
-        if let Some(el) = l.keyframes.get_mut(&start).unwrap().elements.get_mut(s.element) {
-            f(el);
-        }
+        self.modify_selected_continuous(f);
     }
 
-    /// Same as `modify_selected` but merges into the previous undo step
-    /// (used while dragging so one drag = one undo).
-    pub fn modify_selected_continuous(&mut self, f: impl FnOnce(&mut Element)) {
-        let Some(s) = self.selection else { return };
-        let start = self.ensure_keyframe();
-        let li = s.layer;
-        let l = &mut self.timeline_mut().layers[li];
-        if let Some(el) = l.keyframes.get_mut(&start).and_then(|k| k.elements.get_mut(s.element)) {
-            f(el);
+    /// Like `modify_selected` without a new undo step (call `begin_drag` first).
+    pub fn modify_selected_continuous(&mut self, f: impl Fn(&mut Element)) {
+        let sels = self.selection.clone();
+        let mut layers: Vec<usize> = sels.iter().map(|s| s.layer).collect();
+        layers.dedup();
+        for li in layers {
+            if !self.layer_editable(li) {
+                continue;
+            }
+            let Some(start) = self.target_keyframe(li, true) else { continue };
+            let l = &mut self.timeline_mut().layers[li];
+            if let Some(kf) = l.keyframes.get_mut(&start) {
+                for s in sels.iter().filter(|s| s.layer == li) {
+                    if let Some(el) = kf.elements.get_mut(s.element) {
+                        f(el);
+                    }
+                }
+            }
         }
     }
     pub fn begin_drag(&mut self) {
         self.checkpoint("Move");
     }
 
-    pub fn delete_selected(&mut self) {
-        let Some(s) = self.selection else { return };
-        self.layer = s.layer;
-        self.checkpoint("Delete");
-        let start = self.ensure_keyframe();
-        let l = self.cur_layer_mut();
-        let els = &mut l.keyframes.get_mut(&start).unwrap().elements;
-        if s.element < els.len() {
-            els.remove(s.element);
+    /// Delete the selected elements from the keyframe they live in.
+    pub fn delete_selected(&mut self) -> usize {
+        let mut sels = self.selection.clone();
+        sels.retain(|s| self.layer_editable(s.layer));
+        if sels.is_empty() {
+            return 0;
         }
-        self.selection = None;
+        self.checkpoint(if sels.len() == 1 { "Delete" } else { "Delete Objects" });
+        sels.sort();
+        let mut removed = 0;
+        for s in sels.iter().rev() {
+            let Some(start) = self.target_keyframe(s.layer, false) else { continue };
+            let l = &mut self.timeline_mut().layers[s.layer];
+            if let Some(kf) = l.keyframes.get_mut(&start) {
+                if s.element < kf.elements.len() {
+                    kf.elements.remove(s.element);
+                    removed += 1;
+                }
+                // Keep a following tween's pairing intact: remove the same slot there too.
+                let next = l.keyframes.range(start + 1..).next().map(|(k, _)| *k);
+                let tweened = !matches!(l.keyframes[&start].tween, Tween::None);
+                if tweened {
+                    if let Some(n) = next {
+                        let nk = l.keyframes.get_mut(&n).unwrap();
+                        if s.element < nk.elements.len() {
+                            nk.elements.remove(s.element);
+                        }
+                    }
+                }
+            }
+        }
+        self.selection.clear();
+        removed
     }
 
+    pub fn copy_selected(&mut self) -> usize {
+        self.element_clip = self.selection.iter().filter_map(|s| self.element_at(*s).map(|e| (e, s.layer))).collect();
+        self.element_clip.len()
+    }
+    pub fn cut_selected(&mut self) {
+        if self.copy_selected() > 0 {
+            self.delete_selected();
+        }
+    }
+    pub fn can_paste(&self) -> bool {
+        !self.element_clip.is_empty()
+    }
+    /// Paste onto the current layer (offset unless `in_place`).
+    pub fn paste(&mut self, in_place: bool) {
+        if self.element_clip.is_empty() || self.layer_locked() {
+            return;
+        }
+        let clip = self.element_clip.clone();
+        self.checkpoint(if in_place { "Paste in Place" } else { "Paste" });
+        let li = self.layer;
+        let Some(start) = self.target_keyframe(li, false) else { return };
+        let kf = self.timeline_mut().layers[li].keyframes.get_mut(&start).unwrap();
+        let first = kf.elements.len();
+        for (mut el, _) in clip {
+            if !in_place {
+                el.matrix = Matrix::translate(10.0, 10.0).concat(&el.matrix);
+            }
+            kf.elements.push(el);
+        }
+        let n = kf.elements.len();
+        self.selection = (first..n).map(|element| Selection { layer: li, element }).collect();
+        self.frame_sel = None;
+    }
+    pub fn duplicate(&mut self) {
+        if self.copy_selected() > 0 {
+            if let Some(s) = self.selection.first() {
+                self.layer = s.layer;
+            }
+            self.paste(false);
+        }
+    }
+
+    /// Ctrl+Up/Down style arrange within one layer (first selected element).
     pub fn arrange(&mut self, to_front: bool) {
-        let Some(s) = self.selection else { return };
-        self.layer = s.layer;
+        let Some(&s) = self.selection.first() else { return };
+        if !self.layer_editable(s.layer) {
+            return;
+        }
         self.checkpoint(if to_front { "Bring to Front" } else { "Send to Back" });
-        let start = self.ensure_keyframe();
-        let l = self.cur_layer_mut();
-        let els = &mut l.keyframes.get_mut(&start).unwrap().elements;
+        let Some(start) = self.target_keyframe(s.layer, false) else { return };
+        let els = &mut self.timeline_mut().layers[s.layer].keyframes.get_mut(&start).unwrap().elements;
+        if s.element >= els.len() {
+            return;
+        }
         let e = els.remove(s.element);
         let idx = if to_front { els.len() } else { 0 };
         els.insert(idx, e);
-        self.selection = Some(Selection { layer: s.layer, element: idx });
+        self.selection = vec![Selection { layer: s.layer, element: idx }];
     }
 
-    /// F8 – Convert to Symbol. Registration point = centre of the element bounds.
+    /// F8 – Convert to Symbol. All selected objects on the first selected
+    /// layer go into the new symbol; registration point = centre of their bounds.
     pub fn convert_to_symbol(&mut self, name: &str, kind: SymbolKind) -> Option<SymbolId> {
-        let s = self.selection?;
-        let el = self.selected_element()?;
-        let (lo, hi) = self.selection_bounds()?;
-        let reg = crate::geom::pt((lo.x + hi.x) / 2.0, (lo.y + hi.y) / 2.0);
-        self.layer = s.layer;
+        let first = *self.selection.first()?;
+        let sels: Vec<Selection> = self.selection.iter().copied().filter(|s| s.layer == first.layer).collect();
+        let els: Vec<Element> = sels.iter().filter_map(|s| self.element_at(*s)).collect();
+        if els.is_empty() || !self.layer_editable(first.layer) {
+            return None;
+        }
+        let (lo, hi) = self.bounds_of(&sels)?;
+        let reg = pt((lo.x + hi.x) / 2.0, (lo.y + hi.y) / 2.0);
         self.checkpoint("Convert to Symbol");
-        let mut inner = el.clone();
-        inner.matrix = Matrix::translate(-reg.x, -reg.y).concat(&el.matrix);
-        inner.alpha = 1.0;
-        inner.tint = None;
+        let inner: Vec<Element> = els
+            .iter()
+            .map(|el| {
+                let mut e = el.clone();
+                e.matrix = Matrix::translate(-reg.x, -reg.y).concat(&el.matrix);
+                e
+            })
+            .collect();
         let mut tl = Timeline::new(name);
-        tl.layers[0].keyframes.insert(0, Keyframe::with(vec![inner]));
+        tl.layers[0].keyframes.insert(0, Keyframe::with(inner));
         let id = self.doc.add_symbol(name, kind, tl);
-        let start = self.ensure_keyframe();
-        let l = self.cur_layer_mut();
-        let slot = &mut l.keyframes.get_mut(&start).unwrap().elements[s.element];
-        let mut inst = Element::instance(name, id, Matrix::translate(reg.x, reg.y));
-        inst.alpha = el.alpha;
-        inst.tint = el.tint;
-        *slot = inst;
+        let start = self.target_keyframe(first.layer, false)?;
+        let kf = self.timeline_mut().layers[first.layer].keyframes.get_mut(&start).unwrap();
+        let slot = sels[0].element;
+        for s in sels.iter().skip(1).rev() {
+            if s.element < kf.elements.len() {
+                kf.elements.remove(s.element);
+            }
+        }
+        if slot < kf.elements.len() {
+            kf.elements[slot] = Element::instance(name, id, Matrix::translate(reg.x, reg.y));
+        }
+        self.selection = vec![Selection { layer: first.layer, element: slot }];
         Some(id)
+    }
+
+    /// Break Apart (Ctrl+B) for symbol instances: replace with the symbol's
+    /// current-frame content, keeping the visual result.
+    pub fn break_apart(&mut self) {
+        let Some(&s) = self.selection.first() else { return };
+        let Some(el) = self.element_at(s) else { return };
+        let ElementKind::Instance(inst) = &el.kind else { return };
+        let Some(sym) = self.doc.symbol(inst.symbol) else { return };
+        let mut parts: Vec<Element> = Vec::new();
+        for layer in sym.timeline.layers.iter().rev() {
+            if let Some((els, _)) = layer_elements_at(layer, inst.first_frame.min(sym.timeline.frame_count() - 1)) {
+                for mut e in els {
+                    e.matrix = el.matrix.concat(&e.matrix);
+                    e.alpha *= el.alpha;
+                    parts.push(e);
+                }
+            }
+        }
+        if !self.layer_editable(s.layer) {
+            return;
+        }
+        self.checkpoint("Break Apart");
+        let Some(start) = self.target_keyframe(s.layer, false) else { return };
+        let els = &mut self.timeline_mut().layers[s.layer].keyframes.get_mut(&start).unwrap().elements;
+        if s.element >= els.len() {
+            return;
+        }
+        els.remove(s.element);
+        let n = parts.len();
+        for (i, p) in parts.into_iter().enumerate() {
+            els.insert(s.element + i, p);
+        }
+        self.selection = (s.element..s.element + n).map(|element| Selection { layer: s.layer, element }).collect();
     }
 
     pub fn place_symbol(&mut self, id: SymbolId, at: Pt) {
@@ -455,6 +767,48 @@ impl Editor {
         }
     }
 
+    /// Number of instances of `id` anywhere in the document.
+    pub fn symbol_usage(&self, id: SymbolId) -> usize {
+        let count = |tl: &Timeline| {
+            tl.layers.iter().flat_map(|l| l.keyframes.values()).flat_map(|k| &k.elements).filter(|e| matches!(&e.kind, ElementKind::Instance(i) if i.symbol == id)).count()
+        };
+        count(&self.doc.scene) + self.doc.library.iter().map(|s| count(&s.timeline)).sum::<usize>()
+    }
+
+    /// Delete a library item and every instance of it.
+    pub fn delete_symbol(&mut self, id: SymbolId) {
+        self.checkpoint("Delete Library Item");
+        let strip = |tl: &mut Timeline| {
+            for l in &mut tl.layers {
+                for k in l.keyframes.values_mut() {
+                    k.elements.retain(|e| !matches!(&e.kind, ElementKind::Instance(i) if i.symbol == id));
+                }
+            }
+        };
+        strip(&mut self.doc.scene);
+        for s in &mut self.doc.library {
+            strip(&mut s.timeline);
+        }
+        self.doc.library.retain(|s| s.id != id);
+        if self.editing == Some(id) {
+            self.editing = None;
+        }
+        self.fix_indices();
+    }
+
+    pub fn duplicate_symbol(&mut self, id: SymbolId) -> Option<SymbolId> {
+        let s = self.doc.symbol(id)?.clone();
+        self.checkpoint("Duplicate Symbol");
+        Some(self.doc.add_symbol(&format!("{} copy", s.name), s.kind, s.timeline))
+    }
+
+    pub fn set_symbol_kind(&mut self, id: SymbolId, kind: SymbolKind) {
+        self.checkpoint("Symbol Type");
+        if let Some(s) = self.doc.symbol_mut(id) {
+            s.kind = kind;
+        }
+    }
+
     pub fn set_doc_props(&mut self, w: f32, h: f32, fps: f32, bg: Color) {
         self.checkpoint("Document Settings");
         self.doc.width = w;
@@ -465,23 +819,12 @@ impl Editor {
 
     /// Paint bucket on an element: sets fill (shapes) or tint (instances).
     pub fn paint_bucket(&mut self, sel: Selection, color: Color) {
-        self.selection = Some(sel);
+        self.selection = vec![sel];
         self.modify_selected("Paint Bucket", |el| match &mut el.kind {
             ElementKind::Shape(s) => s.fill = Some(color),
             ElementKind::Instance(_) => el.tint = Some((color, 0.6)),
         });
     }
-}
-
-/// What a new keyframe at `f` should contain: the visible (possibly tweened)
-/// content, or — past the layer's end — the last keyframe's content.
-fn content_for(layer: &Layer, f: u32) -> (Vec<Element>, Tween) {
-    if let Some((els, _)) = layer_elements_at(layer, f) {
-        let tween = layer.span_at(f).map(|(_, k, _)| k.tween).unwrap_or(Tween::None);
-        return (els, tween);
-    }
-    let last = layer.keyframes.values().next_back().map(|k| k.elements.clone()).unwrap_or_default();
-    (last, Tween::None)
 }
 
 #[derive(Clone, Copy, Debug)]

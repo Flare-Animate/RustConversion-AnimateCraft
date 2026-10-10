@@ -1,15 +1,32 @@
 //! Timeline panel: layer column + frame grid, styled after Animate's timeline
-//! (keyframe dots, purple classic-tween spans, green shape-tween spans, red playhead).
+//! (keyframe dots, purple classic-tween spans, green shape-tween spans, red
+//! playhead, blue frame selection).
 
 use crate::{c32, App, ACCENT};
-use ac_core::{LayerFlag, Tween};
+use ac_core::{FrameSel, LayerFlag, Tween};
 use eframe::egui::{self, pos2, vec2, Align2, Color32, FontId, Rect, Sense, Stroke};
 
 #[derive(Default)]
 pub struct TimelineState {
     /// First visible frame column.
     pub scroll: f32,
+    /// First visible layer row.
+    pub vscroll: usize,
     pub renaming: Option<(usize, String)>,
+    /// Cell where the current mouse gesture started.
+    anchor: Option<(usize, u32)>,
+    gesture: Gesture,
+    /// Layer being dragged in the layer column.
+    layer_drag: Option<usize>,
+}
+
+#[derive(Default, Clone, Copy, PartialEq, Debug)]
+enum Gesture {
+    #[default]
+    None,
+    Select,
+    /// Dragging selected frames; value = current frame offset.
+    Move(i64),
 }
 
 const LW: f32 = 230.0; // layer column width
@@ -21,18 +38,29 @@ const CLASSIC: Color32 = Color32::from_rgb(0x6E, 0x5B, 0xB0);
 const SHAPE: Color32 = Color32::from_rgb(0x4E, 0x8F, 0x57);
 const PLAYHEAD: Color32 = Color32::from_rgb(0xE5, 0x3B, 0x3B);
 
+/// Frame commands (Insert menu, Edit ▸ Timeline, and the right-click menu).
 pub fn frame_menu(app: &mut App, ui: &mut egui::Ui) {
-    let ed = &mut app.ed;
     let item = |ui: &mut egui::Ui, label: &str, sc: &str| ui.add(egui::Button::new(label).shortcut_text(sc)).clicked();
-    if item(ui, "Insert Frame", "F5") { ed.insert_frame(); ui.close_menu(); }
-    if item(ui, "Remove Frames", "Shift+F5") { ed.remove_frame(); ui.close_menu(); }
-    if item(ui, "Insert Keyframe", "F6") { ed.insert_keyframe(); ui.close_menu(); }
-    if item(ui, "Insert Blank Keyframe", "F7") { ed.insert_blank_keyframe(); ui.close_menu(); }
-    if item(ui, "Clear Keyframe", "Shift+F6") { ed.clear_keyframe(); ui.close_menu(); }
+    if item(ui, "Insert Frame", "F5") { app.ed.insert_frame(); ui.close_menu(); }
+    if item(ui, "Remove Frames", "Shift+F5") { app.ed.remove_frame(); ui.close_menu(); }
+    if item(ui, "Insert Keyframe", "F6") { app.ed.insert_keyframe(); ui.close_menu(); }
+    if item(ui, "Insert Blank Keyframe", "F7") { app.ed.insert_blank_keyframe(); ui.close_menu(); }
+    if item(ui, "Clear Keyframe", "Shift+F6") { app.ed.clear_keyframe(); ui.close_menu(); }
+    if item(ui, "Clear Frames", "Del") { app.ed.clear_frames(); ui.close_menu(); }
     ui.separator();
-    if item(ui, "Create Classic Tween", "") { ed.set_tween(Tween::Classic { ease: 0.0, rotate_turns: 0 }); ui.close_menu(); }
-    if item(ui, "Create Shape Tween", "") { ed.set_tween(Tween::Shape { ease: 0.0 }); ui.close_menu(); }
-    if item(ui, "Remove Tween", "") { ed.set_tween(Tween::None); ui.close_menu(); }
+    if item(ui, "Create Classic Tween", "") { app.ed.set_tween(Tween::Classic { ease: 0.0, rotate_turns: 0 }); ui.close_menu(); }
+    if item(ui, "Create Shape Tween", "") { app.ed.set_tween(Tween::Shape { ease: 0.0 }); ui.close_menu(); }
+    if item(ui, "Remove Tween", "") { app.ed.set_tween(Tween::None); ui.close_menu(); }
+    ui.separator();
+    if item(ui, "Cut Frames", "") { app.ed.cut_frames(); ui.close_menu(); }
+    if item(ui, "Copy Frames", "") { app.ed.copy_frames(); ui.close_menu(); }
+    if ui.add_enabled(app.ed.can_paste_frames(), egui::Button::new("Paste Frames")).clicked() { app.ed.paste_frames(); ui.close_menu(); }
+    if item(ui, "Select All Frames", "") {
+        let n = app.ed.timeline().layers.len();
+        let f = app.ed.frame_count();
+        app.ed.select_frames(FrameSel { layer0: 0, layer1: n.saturating_sub(1), f0: 0, f1: f.saturating_sub(1) });
+        ui.close_menu();
+    }
 }
 
 pub fn panel(app: &mut App, ctx: &egui::Context) {
@@ -46,12 +74,11 @@ fn toolbar(app: &mut App, ui: &mut egui::Ui) {
     ui.horizontal(|ui| {
         ui.label(egui::RichText::new("Timeline").strong());
         ui.separator();
-        let n = app.ed.frame_count();
-        if ui.button("⏮").on_hover_text("Go to first frame").clicked() { app.playing = false; app.ed.set_frame(0); }
-        if ui.button("◀").on_hover_text("Step back (,)").clicked() { app.playing = false; app.ed.set_frame(app.ed.frame.saturating_sub(1)); }
+        if ui.button("⏮").on_hover_text("First frame").clicked() { app.step(-100_000); }
+        if ui.button("◀").on_hover_text("Step back (,)").clicked() { app.step(-1); }
         if ui.button(if app.playing { "⏸" } else { "▶" }).on_hover_text("Play / stop (Enter)").clicked() { app.toggle_play(); }
-        if ui.button("▶|").on_hover_text("Step forward (.)").clicked() { app.playing = false; app.ed.set_frame((app.ed.frame + 1).min(n - 1)); }
-        if ui.button("⏭").on_hover_text("Go to last frame").clicked() { app.playing = false; app.ed.set_frame(n - 1); }
+        if ui.button("▶|").on_hover_text("Step forward (.)").clicked() { app.step(1); }
+        if ui.button("⏭").on_hover_text("Last frame").clicked() { app.step(100_000); }
         ui.toggle_value(&mut app.loop_play, "🔁").on_hover_text("Loop playback");
         ui.separator();
         ui.toggle_value(&mut app.onion, "Onion skin").on_hover_text("Show previous (blue) and next (green) frames");
@@ -59,6 +86,7 @@ fn toolbar(app: &mut App, ui: &mut egui::Ui) {
             ui.add(egui::DragValue::new(&mut app.onion_n).range(1..=10).prefix("±"));
         }
         ui.separator();
+        let n = app.ed.frame_count();
         ui.label(egui::RichText::new(format!("{}", app.ed.frame + 1)).monospace().color(ACCENT).size(15.0));
         ui.label(egui::RichText::new(format!("/ {n}")).monospace());
         ui.label(egui::RichText::new(format!("{:.2} fps", app.ed.doc.fps)).monospace().color(Color32::from_gray(160)));
@@ -66,8 +94,11 @@ fn toolbar(app: &mut App, ui: &mut egui::Ui) {
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             if ui.button("🗑").on_hover_text("Delete layer").clicked() { app.ed.delete_layer(); }
             if ui.button("➕ Layer").on_hover_text("New layer").clicked() { app.ed.add_layer(); }
+            ui.separator();
+            if ui.button("Clear").on_hover_text("Clear selected frames (Delete)").clicked() { app.ed.clear_frames(); }
             if ui.button("F7").on_hover_text("Insert blank keyframe").clicked() { app.ed.insert_blank_keyframe(); }
             if ui.button("F6").on_hover_text("Insert keyframe").clicked() { app.ed.insert_keyframe(); }
+            if ui.button("F5").on_hover_text("Insert frame").clicked() { app.ed.insert_frame(); }
         });
     });
 }
@@ -81,30 +112,50 @@ fn grid(app: &mut App, ui: &mut egui::Ui) {
     let grid_x0 = rect.left() + LW;
     let grid_w = (rect.right() - grid_x0).max(0.0);
     let visible_cols = (grid_w / CW).ceil() as u32 + 1;
+    let rows_top = rect.top() + HH;
+    let visible_rows = (((rect.bottom() - rows_top) / RH).floor() as usize).max(1);
     let n = app.ed.frame_count();
+    let layers = app.ed.timeline().layers.clone();
+    let nl = layers.len();
 
-    // Follow the playhead while playing; wheel scrolls horizontally.
-    let st = &mut app.tl_state;
+    // Follow the playhead while playing; wheel scrolls (horizontal over frames, vertical over layers).
     if app.playing {
         let f = app.ed.frame as f32;
-        if f < st.scroll || f >= st.scroll + visible_cols as f32 - 2.0 {
-            st.scroll = (f - 2.0).max(0.0);
+        if f < app.tl.scroll || f >= app.tl.scroll + visible_cols as f32 - 2.0 {
+            app.tl.scroll = (f - 2.0).max(0.0);
         }
     }
     let grid_rect = Rect::from_min_max(pos2(grid_x0, rect.top()), rect.max);
-    if ui.rect_contains_pointer(grid_rect) {
-        let d = ui.input(|i| i.raw_scroll_delta);
+    let layer_col = Rect::from_min_max(pos2(rect.left(), rows_top), pos2(grid_x0, rect.bottom()));
+    let d = ui.input(|i| i.raw_scroll_delta);
+    if ui.rect_contains_pointer(grid_rect) && (d.x != 0.0 || d.y != 0.0) {
         let delta = if d.x.abs() > d.y.abs() { -d.x } else { -d.y };
-        st.scroll = (st.scroll + delta / CW).clamp(0.0, (n as f32 + 200.0).max(0.0));
+        app.tl.scroll = (app.tl.scroll + delta / CW).clamp(0.0, n as f32 + 200.0);
     }
-    let scroll = st.scroll;
+    if ui.rect_contains_pointer(layer_col) && d.y != 0.0 {
+        let max = nl.saturating_sub(visible_rows);
+        app.tl.vscroll = if d.y < 0.0 { (app.tl.vscroll + 1).min(max) } else { app.tl.vscroll.saturating_sub(1) };
+    }
+    app.tl.vscroll = app.tl.vscroll.min(nl.saturating_sub(1));
+    let scroll = app.tl.scroll;
+    let vscroll = app.tl.vscroll;
     let first = scroll.floor() as u32;
     let x_of = |f: u32| grid_x0 + (f as f32 - scroll) * CW;
+    let row_y = |i: usize| rows_top + (i as f32 - vscroll as f32) * RH;
+    let cell_at = |pos: egui::Pos2| -> (usize, u32) {
+        let f = (((pos.x - grid_x0) / CW) + scroll).floor().max(0.0) as u32;
+        let r = (((pos.y - rows_top) / RH).floor().max(0.0) as usize + vscroll).min(nl.saturating_sub(1));
+        (r, f)
+    };
 
-    // --- header
+    // --- header (scrub)
     let header = Rect::from_min_size(pos2(grid_x0, rect.top()), vec2(grid_w, HH));
     p.rect_filled(header, 0.0, Color32::from_gray(0x33));
     p.rect_filled(Rect::from_min_size(rect.min, vec2(LW, HH)), 0.0, Color32::from_gray(0x33));
+    p.text(rect.min + vec2(8.0, HH / 2.0), Align2::LEFT_CENTER, "Layers", FontId::proportional(12.0), Color32::from_gray(160));
+    for (k, label) in ["👁", "🔒", "□"].iter().enumerate() {
+        p.text(pos2(rect.left() + LW - 70.0 + k as f32 * 22.0, rect.top() + HH / 2.0), Align2::CENTER_CENTER, *label, FontId::proportional(11.0), Color32::from_gray(140));
+    }
     for f in first..first + visible_cols {
         let x = x_of(f);
         let tick = if (f + 1) % 5 == 0 || f == 0 { 6.0 } else { 3.0 };
@@ -117,16 +168,89 @@ fn grid(app: &mut App, ui: &mut egui::Ui) {
     if let Some(pos) = hresp.interact_pointer_pos() {
         if hresp.clicked() || hresp.dragged() {
             app.playing = false;
-            let f = (((pos.x - grid_x0) / CW) + app.tl_state.scroll).floor().max(0.0) as u32;
+            let (_, f) = cell_at(pos);
             app.ed.set_frame(f.min(n + 200));
+            app.ed.frame_sel = None;
         }
     }
 
+    // --- frame cells: one interaction for the whole area (selection, drag-move, context menu)
+    let cells = Rect::from_min_max(pos2(grid_x0, rows_top), pos2(rect.right(), (rows_top + (nl - vscroll) as f32 * RH).min(rect.bottom())));
+    let cresp = ui.interact(cells, ui.id().with("tl-cells"), Sense::click_and_drag());
+    let shift = ui.input(|i| i.modifiers.shift);
+    if cresp.hovered() || cresp.dragged() {
+        // Clicking the timeline takes keyboard focus away from text fields.
+        if cresp.clicked() || cresp.drag_started() || cresp.secondary_clicked() {
+            if let Some(id) = ui.ctx().memory(|m| m.focused()) {
+                ui.ctx().memory_mut(|m| m.surrender_focus(id));
+            }
+        }
+    }
+    if let Some(pos) = cresp.interact_pointer_pos() {
+        let (l, f) = cell_at(pos);
+        let pressed = cresp.drag_started() || cresp.clicked() || cresp.secondary_clicked();
+        if std::env::var("AC_DEBUG").is_ok() && (pressed || cresp.dragged()) {
+            eprintln!("tl: pressed={pressed} drag_started={} clicked={} dbl={} dragged={} gesture={:?} sel={:?} cell={:?} origin={:?}", cresp.drag_started(), cresp.clicked(), cresp.double_clicked(), cresp.dragged(), app.tl.gesture, app.ed.frame_sel, (l, f), ui.input(|i| i.pointer.press_origin()));
+        }
+        if pressed && app.tl.gesture == Gesture::None {
+            // Gestures start where the button went down, not where the drag was detected.
+            let (l, f) = ui.input(|i| i.pointer.press_origin()).filter(|_| cresp.drag_started()).map(cell_at).unwrap_or((l, f));
+            app.playing = false;
+            let inside = app.ed.frame_sel.map(|s| s.contains(l, f)).unwrap_or(false);
+            if cresp.secondary_clicked() {
+                if !inside {
+                    app.ed.select_frames(FrameSel::cell(l, f));
+                }
+            } else if cresp.double_clicked() {
+                app.ed.select_span(l, f);
+            } else if shift {
+                let a = app.tl.anchor.unwrap_or((app.ed.layer, app.ed.frame));
+                app.ed.select_frames(FrameSel::between(a, (l, f)));
+                app.ed.frame = f;
+            } else if inside && cresp.drag_started() {
+                app.tl.anchor = Some((l, f));
+                app.tl.gesture = Gesture::Move(0);
+            } else {
+                app.tl.anchor = Some((l, f));
+                app.ed.select_frames(FrameSel::cell(l, f));
+                app.tl.gesture = if cresp.drag_started() { Gesture::Select } else { Gesture::None };
+            }
+        }
+        if cresp.dragged() {
+            match app.tl.gesture {
+                Gesture::Select => {
+                    if let Some(a) = app.tl.anchor {
+                        let sel = FrameSel::between(a, (l, f));
+                        app.ed.frame_sel = Some(sel);
+                        app.ed.layer = sel.layer0;
+                        app.ed.frame = f;
+                    }
+                }
+                Gesture::Move(_) => {
+                    if let Some(a) = app.tl.anchor {
+                        app.tl.gesture = Gesture::Move(f as i64 - a.1 as i64);
+                    }
+                }
+                Gesture::None => {}
+            }
+        }
+    }
+    if cresp.drag_stopped() {
+        if let Gesture::Move(delta) = app.tl.gesture {
+            if delta != 0 {
+                app.ed.move_frames(delta);
+                app.status = format!("Moved frames by {delta}");
+            }
+        }
+        app.tl.gesture = Gesture::None;
+    }
+    cresp.context_menu(|ui| frame_menu(app, ui));
+
     // --- rows
-    let layers = app.ed.timeline().layers.clone();
-    let rows_top = rect.top() + HH;
-    for (i, layer) in layers.iter().enumerate() {
-        let y = rows_top + i as f32 * RH;
+    let move_delta = if let Gesture::Move(d) = app.tl.gesture { d } else { 0 };
+    let sel = app.ed.frame_sel;
+    for (i, layer) in layers.iter().enumerate().skip(vscroll) {
+        let y = row_y(i);
         if y > rect.bottom() {
             break;
         }
@@ -135,29 +259,39 @@ fn grid(app: &mut App, ui: &mut egui::Ui) {
         p.rect_filled(row_left, 0.0, if selected { Color32::from_rgb(0x2B, 0x4F, 0x7A) } else { Color32::from_gray(0x30) });
         p.line_segment([pos2(rect.left(), y + RH), pos2(rect.right(), y + RH)], Stroke::new(1.0_f32, Color32::from_gray(0x22)));
 
-        // Name (click = select, double-click = rename)
+        // Name: click = select layer (+ its frames), double-click = rename, drag = reorder.
         let name_rect = Rect::from_min_size(pos2(rect.left() + 8.0, y), vec2(LW - 90.0, RH));
-        let renaming = matches!(&app.tl_state.renaming, Some((ri, _)) if *ri == i);
+        let renaming = matches!(&app.tl.renaming, Some((ri, _)) if *ri == i);
         if renaming {
-            let (_, buf) = app.tl_state.renaming.as_mut().unwrap();
+            let (_, buf) = app.tl.renaming.as_mut().unwrap();
             let r = ui.put(name_rect.shrink(2.0), egui::TextEdit::singleline(buf));
             r.request_focus();
             if r.lost_focus() {
-                let (_, name) = app.tl_state.renaming.take().unwrap();
+                let (_, name) = app.tl.renaming.take().unwrap();
                 if !name.trim().is_empty() {
                     app.ed.rename_layer(i, name.trim());
                 }
             }
         } else {
-            p.text(name_rect.left_center(), Align2::LEFT_CENTER, &layer.name, FontId::proportional(13.0), if layer.visible { Color32::from_gray(225) } else { Color32::from_gray(120) });
-            let r = ui.interact(name_rect, ui.id().with(("ln", i)), Sense::click());
+            let lock_note = if layer.locked { "  🔒" } else { "" };
+            p.text(name_rect.left_center(), Align2::LEFT_CENTER, format!("{}{lock_note}", layer.name), FontId::proportional(13.0), if layer.visible { Color32::from_gray(225) } else { Color32::from_gray(120) });
+            let r = ui.interact(name_rect, ui.id().with(("ln", i)), Sense::click_and_drag());
             if r.clicked() {
-                app.ed.layer = i;
-                app.ed.selection = None;
+                app.ed.select_layer_frames(i);
             }
             if r.double_clicked() {
-                app.tl_state.renaming = Some((i, layer.name.clone()));
+                app.tl.renaming = Some((i, layer.name.clone()));
             }
+            if r.drag_started() {
+                app.tl.layer_drag = Some(i);
+            }
+            if r.drag_stopped() {
+                if let (Some(from), Some(pos)) = (app.tl.layer_drag.take(), ui.input(|inp| inp.pointer.latest_pos())) {
+                    let to = (((pos.y - rows_top) / RH).floor().max(0.0) as usize + vscroll).min(nl - 1);
+                    app.ed.move_layer(from, to);
+                }
+            }
+            r.on_hover_text("Click: select layer · double-click: rename · drag: reorder");
         }
         // Eye / lock / outline toggles
         let icon = |k: usize| Rect::from_center_size(pos2(rect.left() + LW - 70.0 + k as f32 * 22.0, y + RH / 2.0), vec2(18.0, 18.0));
@@ -182,15 +316,15 @@ fn grid(app: &mut App, ui: &mut egui::Ui) {
         } else {
             p.rect_filled(sq, 0.0, c32(layer.color));
         }
-        for (k, flag) in [(0, LayerFlag::Visible), (1, LayerFlag::Locked), (2, LayerFlag::Outline)] {
-            if ui.interact(icon(k), ui.id().with(("lf", i, k)), Sense::click()).clicked() {
+        for (k, flag, tip) in [(0, LayerFlag::Visible, "Show / hide"), (1, LayerFlag::Locked, "Lock / unlock"), (2, LayerFlag::Outline, "Outline mode")] {
+            if ui.interact(icon(k), ui.id().with(("lf", i, k)), Sense::click()).on_hover_text(tip).clicked() {
                 app.ed.toggle_layer_flag(i, flag);
             }
         }
 
         // Frame cells
         let row = Rect::from_min_max(pos2(grid_x0, y), pos2(rect.right(), y + RH));
-        let rp = ui.painter_at(row);
+        let rp = ui.painter_at(row.intersect(rect));
         for f in first..first + visible_cols {
             let x = x_of(f);
             let cell = Rect::from_min_size(pos2(x, y), vec2(CW, RH));
@@ -205,7 +339,6 @@ fn grid(app: &mut App, ui: &mut egui::Ui) {
             rp.rect_filled(cell, 0.0, fill);
             rp.line_segment([pos2(x + CW, y), pos2(x + CW, y + RH)], Stroke::new(1.0_f32, Color32::from_gray(0x24)));
         }
-        // Spans, tweens and keyframes
         for (&start, kf) in &layer.keyframes {
             let end = layer.span_end(start);
             let (x0, x1) = (x_of(start), x_of(end));
@@ -222,7 +355,6 @@ fn grid(app: &mut App, ui: &mut egui::Ui) {
                         rp.line_segment([pos2(x1 - 6.0, ym - 3.0), pos2(x1 - 2.0, ym)], stroke);
                         rp.line_segment([pos2(x1 - 6.0, ym + 3.0), pos2(x1 - 2.0, ym)], stroke);
                     } else {
-                        // broken tween (no end keyframe): dashed line like Animate
                         let mut x = x0 + CW;
                         while x < x1 - 4.0 {
                             rp.line_segment([pos2(x, ym), pos2((x + 3.0).min(x1), ym)], stroke);
@@ -232,7 +364,6 @@ fn grid(app: &mut App, ui: &mut egui::Ui) {
                 }
                 Tween::None => {
                     if end > start + 1 {
-                        // end-of-span marker
                         let r = Rect::from_center_size(pos2(x1 - CW / 2.0, y + RH - 7.0), vec2(5.0, 7.0));
                         rp.rect_stroke(r, 0.0, Stroke::new(1.0_f32, Color32::from_gray(30)));
                     }
@@ -248,24 +379,31 @@ fn grid(app: &mut App, ui: &mut egui::Ui) {
                 rp.text(pos2(x0 + 2.0, y + 2.0), Align2::LEFT_TOP, format!("⚑{label}"), FontId::proportional(10.0), Color32::from_rgb(0xFF, 0x60, 0x60));
             }
         }
-        // Row interaction: click selects frame + layer, right-click opens frame menu.
-        let r = ui.interact(row, ui.id().with(("row", i)), Sense::click());
-        if let Some(pos) = r.interact_pointer_pos() {
-            if r.clicked() || r.secondary_clicked() {
-                app.playing = false;
-                let f = (((pos.x - grid_x0) / CW) + app.tl_state.scroll).floor().max(0.0) as u32;
-                app.ed.set_frame(f);
-                app.ed.layer = i;
+        // Frame selection highlight (and its ghost while dragging).
+        if let Some(s) = sel {
+            if (s.layer0..=s.layer1).contains(&i) {
+                let r = Rect::from_min_max(pos2(x_of(s.f0), y), pos2(x_of(s.f1 + 1), y + RH));
+                rp.rect_filled(r, 0.0, ACCENT.gamma_multiply(0.45));
+                rp.rect_stroke(r, 0.0, Stroke::new(1.0_f32, ACCENT));
+                if move_delta != 0 {
+                    let g = r.translate(vec2(move_delta as f32 * CW, 0.0));
+                    rp.rect_stroke(g, 0.0, Stroke::new(2.0_f32, Color32::WHITE));
+                }
             }
         }
-        r.context_menu(|ui| frame_menu(app, ui));
+    }
+    // Layer reorder indicator
+    if let (Some(_), Some(pos)) = (app.tl.layer_drag, ui.input(|i| i.pointer.latest_pos())) {
+        let to = (((pos.y - rows_top) / RH).floor().max(0.0) as usize + vscroll).min(nl - 1);
+        let y = row_y(to);
+        p.line_segment([pos2(rect.left(), y), pos2(grid_x0, y)], Stroke::new(2.0_f32, ACCENT));
     }
 
     // Playhead
     let x = x_of(app.ed.frame);
     if x >= grid_x0 - CW && x <= rect.right() {
         let gp = ui.painter_at(grid_rect);
-        let bottom = (rows_top + layers.len() as f32 * RH).min(rect.bottom());
+        let bottom = (rows_top + (nl - vscroll) as f32 * RH).min(rect.bottom());
         gp.line_segment([pos2(x + CW / 2.0, rect.top()), pos2(x + CW / 2.0, bottom)], Stroke::new(1.5_f32, PLAYHEAD));
         let tag = Rect::from_center_size(pos2(x + CW / 2.0, rect.top() + HH / 2.0), vec2(26.0, HH - 4.0));
         gp.rect_filled(tag, 3.0, PLAYHEAD);

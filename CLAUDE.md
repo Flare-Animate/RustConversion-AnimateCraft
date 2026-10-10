@@ -30,6 +30,9 @@ Status: ✅ in the demo · 🟡 partial · ⬜ planned
 - ✅ Stage with pasteboard, zoom/pan, document size, FPS, stage colour
 - ✅ Panels: Tools, Timeline, Properties (context-sensitive), Library w/ preview
 - ✅ Scenes breadcrumb + edit-symbol mode · ⬜ edit-in-place, multiple scenes
+- ✅ Multi-select (click, Shift+click, marquee, Select All), move/scale/rotate groups, arrow nudge,
+  cut/copy/paste/paste-in-place/duplicate, Delete, Break Apart, stage right-click menu
+- ✅ Library: drag to stage, rename, duplicate, change type, delete (removes instances)
 - ⬜ Rulers, guides, grid, snapping, Align panel, Info panel, workspaces
 
 **Drawing**
@@ -45,8 +48,11 @@ Status: ✅ in the demo · 🟡 partial · ⬜ planned
 **Timeline**
 - ✅ Layers (visible / lock / outline, colour), frames, keyframes, blank keyframes,
   F5/F6/F7 and Shift variants, frame labels, onion skin (prev/next tint), loop
+- ✅ Frame selection (click, drag range across layers, Shift+click, double-click span,
+  layer-name click), drag to move keyframes, Clear Frames, Copy/Cut/Paste Frames,
+  F5/F6/F7 on ranges, right-click frame menu, layer reorder by drag
 - ⬜ Layer folders, guide & motion-guide layers, masks, layer parenting,
-  layer depth (2.5D), Camera layer, frame-span drag/copy/paste, multi-frame edit,
+  layer depth (2.5D), Camera layer, multi-frame edit,
   audio layers with waveform + lip-sync
 
 **Symbols**
@@ -107,8 +113,8 @@ crates/
 
 | Milestone | Goal |
 |---|---|
-| **M0 (done: demo)** | Model, classic + shape tweens, symbols, onion skin, egui editor, GIF/PNG/SVG export, CLI, 14 tests |
-| **M1** | Command registry (every menu item a named command) + MCP/JSON control, matching ArtCraft's pattern. Copy/paste frames & elements, multi-select, snapping, rulers/guides |
+| **M0 (done: demo)** | Model, classic + shape tweens, symbols, onion skin, egui editor, GIF/PNG/SVG export, CLI. M0.1: selection, frame ops, clipboard, library management; 24 tests |
+| **M1** | Command registry (every menu item a named command) + MCP/JSON control, matching ArtCraft's pattern. Snapping, rulers/guides, Align panel, native file dialogs |
 | **M2** | Merge Drawing planar-map engine, Brush/Eraser/Pen/Subselection, gradients, Selection-tool edge bending |
 | **M3** | `.fla`/XFL import with a corpus of real files; XFL export; round-trip tests |
 | **M4** | Motion tweens + Motion Editor, custom eases, shape hints, masks, guide layers, layer parenting, camera |

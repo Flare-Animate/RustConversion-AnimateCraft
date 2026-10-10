@@ -3,11 +3,12 @@
 
 pub mod demo;
 pub mod editor;
+pub mod frames;
 pub mod geom;
 pub mod model;
 pub mod xfl;
 
-pub use editor::{Editor, LayerFlag, Selection};
+pub use editor::{Editor, FrameSel, LayerFlag, Selection};
 pub use geom::{pt, Matrix, Path, Pt, Seg};
 pub use model::*;
 
@@ -116,7 +117,7 @@ mod tests {
         ed.set_frame(9);
         ed.insert_keyframe();
         assert_eq!(ed.timeline().layers[0].end, 10);
-        ed.selection = Some(Selection { layer: 0, element: 0 });
+        ed.selection = vec![Selection { layer: 0, element: 0 }];
         ed.modify_selected("Move", |e| e.matrix = Matrix::translate(100.0, 0.0));
         ed.set_frame(0);
         ed.set_tween(Tween::Classic { ease: 0.0, rotate_turns: 0 });
@@ -151,6 +152,171 @@ mod tests {
         assert!(matches!(ed.selected_element().unwrap().kind, ElementKind::Instance(Instance { symbol, .. }) if symbol == id));
         assert!(ed.hit_test(pt(110.0, 60.0)).is_some());
         assert!(ed.hit_test(pt(10.0, 10.0)).is_none());
+    }
+
+
+    fn boxed(x: f32) -> Element {
+        Element::shape("box", Shape { path: Path::rect(x, 0., 10., 10.), fill: Some(Color::rgb(0, 0, 0)), stroke: None })
+    }
+    fn kfs(ed: &Editor, layer: usize) -> Vec<u32> {
+        ed.timeline().layers[layer].keyframes.keys().copied().collect()
+    }
+
+    #[test]
+    fn delete_removes_object_from_whole_span() {
+        let mut ed = Editor::new(Document::default());
+        ed.add_element(boxed(0.0));
+        ed.set_frame(9);
+        ed.insert_frame(); // static span 1..10
+        ed.set_frame(5);
+        assert_eq!(ed.evaluate_current(5).len(), 1);
+        ed.select(ed.hit_test(pt(5.0, 5.0)), false);
+        assert_eq!(ed.delete_selected(), 1);
+        for f in [0, 5, 9] {
+            assert!(ed.evaluate_current(f).is_empty(), "frame {f} still shows the box");
+        }
+        assert_eq!(kfs(&ed, 0), vec![0], "no stray keyframe created");
+    }
+
+    #[test]
+    fn delete_inside_tween_removes_both_ends() {
+        let mut doc = demo::demo_document();
+        doc.scene.layers[0].locked = false;
+        let mut ed = Editor::new(doc);
+        ed.set_frame(4);
+        let x = ed.evaluate_current(4).iter().find(|i| i.src == Some((0, 0))).unwrap().matrix.tx;
+        let y = ed.evaluate_current(4).iter().find(|i| i.src == Some((0, 0))).unwrap().matrix.ty;
+        ed.select(ed.hit_test(pt(x, y)), false);
+        assert_eq!(ed.selection, vec![Selection { layer: 0, element: 0 }]);
+        ed.delete_selected();
+        for f in 0..=9 {
+            assert!(ed.evaluate_current(f).iter().all(|i| i.src.map(|s| s.0) != Some(0)), "ball visible at {f}");
+        }
+        ed.undo();
+        assert!(ed.evaluate_current(4).iter().any(|i| i.src == Some((0, 0))));
+    }
+
+    #[test]
+    fn multi_select_marquee_move_delete() {
+        let mut ed = Editor::new(Document::default());
+        ed.add_element(boxed(0.0));
+        ed.add_element(boxed(50.0));
+        ed.add_element(boxed(200.0));
+        ed.select_in_rect(pt(-5.0, -5.0), pt(70.0, 20.0), false);
+        assert_eq!(ed.selection.len(), 2);
+        ed.modify_selected("Move", |e| e.matrix.ty += 30.0);
+        let (lo, _) = ed.selection_bounds().unwrap();
+        assert!(close(lo.y, 30.0));
+        ed.delete_selected();
+        assert_eq!(ed.evaluate_current(0).len(), 1);
+        ed.select_all();
+        assert_eq!(ed.selection.len(), 1);
+    }
+
+    #[test]
+    fn copy_paste_duplicate() {
+        let mut ed = Editor::new(Document::default());
+        ed.add_element(boxed(0.0));
+        ed.duplicate();
+        assert_eq!(ed.evaluate_current(0).len(), 2);
+        let (lo, _) = ed.selection_bounds().unwrap();
+        assert!(close(lo.x, 10.0), "duplicate is offset");
+        ed.copy_selected();
+        ed.paste(true);
+        assert_eq!(ed.evaluate_current(0).len(), 3);
+    }
+
+    #[test]
+    fn frame_selection_ops() {
+        let mut ed = Editor::new(Document::default());
+        ed.add_element(boxed(0.0));
+        ed.add_layer();
+        // two layers, select frames 5..=8 on both and convert to keyframes
+        ed.select_frames(FrameSel { layer0: 0, layer1: 1, f0: 4, f1: 7 });
+        ed.insert_keyframe();
+        assert_eq!(kfs(&ed, 0), vec![0, 4, 5, 6, 7]);
+        assert_eq!(kfs(&ed, 1), vec![0, 4, 5, 6, 7]);
+        ed.clear_keyframe();
+        assert_eq!(kfs(&ed, 1), vec![0]);
+        assert_eq!(ed.timeline().layers[1].end, 8);
+        // remove those frames again
+        ed.remove_frame();
+        assert_eq!(ed.timeline().layers[1].end, 4);
+    }
+
+    #[test]
+    fn clear_frames_keeps_later_content() {
+        let mut ed = Editor::new(Document::default());
+        ed.add_element(boxed(0.0));
+        ed.set_frame(9);
+        ed.insert_frame();
+        ed.select_frames(FrameSel::between((0, 2), (0, 4)));
+        ed.clear_frames();
+        assert_eq!(ed.evaluate_current(1).len(), 1);
+        assert!(ed.evaluate_current(3).is_empty());
+        assert_eq!(ed.evaluate_current(6).len(), 1, "frames after the cleared block keep their content");
+    }
+
+    #[test]
+    fn move_and_paste_frames() {
+        let mut ed = Editor::new(Document::default());
+        ed.set_frame(4);
+        ed.add_element(boxed(0.0)); // creates keyframe at 4 (past end)
+        assert_eq!(kfs(&ed, 0), vec![0, 4]);
+        ed.select_frames(FrameSel::cell(0, 4));
+        ed.move_frames(3);
+        assert_eq!(kfs(&ed, 0), vec![0, 7]);
+        assert!(ed.evaluate_current(4).is_empty());
+        assert_eq!(ed.evaluate_current(7).len(), 1);
+        ed.copy_frames();
+        ed.select_frames(FrameSel::cell(0, 12));
+        ed.paste_frames();
+        assert_eq!(ed.evaluate_current(12).len(), 1);
+        assert!(ed.timeline().layers[0].end >= 13);
+    }
+
+    #[test]
+    fn dragging_a_tween_keyframe_stretches_spans() {
+        let mut ed = Editor::new(demo::demo_document());
+        ed.select_frames(FrameSel::cell(0, 9));
+        ed.move_frames(4);
+        assert_eq!(kfs(&ed, 0), vec![0, 13, 18, 27, 36, 47], "no blank or pinned keyframes left behind");
+        let x = |f| ed.evaluate_current(f).iter().find(|i| i.src == Some((0, 0))).unwrap().matrix.tx;
+        assert!(x(11) > x(0) && x(11) < x(13), "frames 10-13 now belong to the first tween");
+        assert!(matches!(ed.timeline().layers[0].keyframes[&13].tween, Tween::Classic { .. }));
+    }
+
+    #[test]
+    fn tween_on_selection() {
+        let mut ed = Editor::new(Document::default());
+        ed.add_element(boxed(0.0));
+        ed.set_frame(10);
+        ed.insert_keyframe();
+        ed.select_all();
+        ed.modify_selected("Move", |e| e.matrix.tx = 100.0);
+        ed.select_frames(FrameSel::cell(0, 3));
+        ed.set_tween(Tween::Classic { ease: 0.0, rotate_turns: 0 });
+        assert!(ed.evaluate_current(5)[0].matrix.tx > 0.0);
+        ed.set_tween_params(100.0, 0);
+        assert!(matches!(ed.timeline().layers[0].keyframes[&0].tween, Tween::Classic { ease, .. } if ease == 100.0));
+        assert!(matches!(ed.timeline().layers[0].keyframes[&10].tween, Tween::None), "closing keyframe has no tween");
+    }
+
+    #[test]
+    fn library_delete_removes_instances() {
+        let mut ed = Editor::new(demo::demo_document());
+        let ball = ed.doc.library.iter().find(|s| s.name == "Ball").unwrap().id;
+        assert!(ed.symbol_usage(ball) > 0);
+        ed.delete_symbol(ball);
+        assert!(ed.doc.symbol(ball).is_none());
+        assert_eq!(ed.symbol_usage(ball), 0);
+        ac_core_render_smoke(&ed);
+    }
+
+    fn ac_core_render_smoke(ed: &Editor) {
+        for f in 0..ed.frame_count() {
+            let _ = ed.evaluate_current(f);
+        }
     }
 
     #[test]
