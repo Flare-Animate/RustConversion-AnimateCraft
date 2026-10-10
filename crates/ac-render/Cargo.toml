@@ -1,6 +1,6 @@
 [package]
 name = "ac-render"
-description = "AnimateCraft rendering: CPU rasterizer (tiny-skia), SVG and GIF export"
+description = "AnimationCraft rendering: CPU rasterizer (tiny-skia), SVG and GIF export"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -10,3 +10,4 @@ ac-core.workspace = true
 tiny-skia.workspace = true
 gif.workspace = true
 png.workspace = true
+fontdb = "0.22"

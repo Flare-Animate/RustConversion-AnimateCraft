@@ -38,7 +38,15 @@ for a in sys.argv[1:]:
     elif op=='rclick': click(*map(int,args), b=3)
     elif op=='key': key(args[0])
     elif op=='type':
-        for ch in args[0]: key(ch)
+        names = {'/':'slash','.':'period','-':'minus','_':'underscore',' ':'space',':':'colon','\\':'backslash'}
+        for ch in ':'.join(args):
+            shift = ch.isupper() or ch in '_:'
+            kc = d.keysym_to_keycode(XK.string_to_keysym(names.get(ch, ch)))
+            if shift: xtest.fake_input(d, X.KeyPress, d.keysym_to_keycode(XK.XK_Shift_L))
+            xtest.fake_input(d, X.KeyPress, kc); xtest.fake_input(d, X.KeyRelease, kc)
+            if shift: xtest.fake_input(d, X.KeyRelease, d.keysym_to_keycode(XK.XK_Shift_L))
+            d.sync(); time.sleep(0.02)
+        time.sleep(0.3)
     elif op=='shot': shot(args[0])
     elif op=='drag': drag(*map(int,args))
     elif op=='path':
@@ -54,3 +62,9 @@ for a in sys.argv[1:]:
         click(*map(int,args))
         xtest.fake_input(d, X.KeyRelease, d.keysym_to_keycode(XK.XK_Shift_L)); d.sync()
     elif op=='sleep': time.sleep(float(args[0]))
+    elif op=='scroll':
+        x, y, n = map(int, args); mv(x, y)
+        b = 5 if n > 0 else 4
+        for _ in range(abs(n)):
+            xtest.fake_input(d, X.ButtonPress, b); d.sync(); time.sleep(0.03); xtest.fake_input(d, X.ButtonRelease, b); d.sync(); time.sleep(0.03)
+        time.sleep(0.3)

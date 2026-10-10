@@ -1,12 +1,14 @@
-//! animatecraft-cli — headless access to the same engine the editor uses.
+//! animationcraft-cli — headless access to the same engine the editor uses.
 //!
-//!   animatecraft-cli info   <doc.acx.json | demo>
-//!   animatecraft-cli gif    <doc | demo> <out.gif> [scale]
-//!   animatecraft-cli png    <doc | demo> <frame> <out.png> [scale]
-//!   animatecraft-cli svg    <doc | demo> <frame> <out.svg>
-//!   animatecraft-cli save-demo <out.acx.json>
-//!   animatecraft-cli run <script.js|.py|.mjs|.rb> [--doc <doc|demo>] [--save out.acx.json] [--gif out.gif]
-//!   animatecraft-cli commands            (list scriptable commands)
+//!   animationcraft-cli info   <doc.acx.json | demo>
+//!   animationcraft-cli gif    <doc | demo> <out.gif> [scale]
+//!   animationcraft-cli png    <doc | demo> <frame> <out.png> [scale]
+//!   animationcraft-cli svg    <doc | demo> <frame> <out.svg>
+//!   animationcraft-cli png-seq <doc | demo> <out-dir> [scale]
+//!   animationcraft-cli video  <doc | demo> <out.mp4|.webm|.mov> [scale]   (needs ffmpeg)
+//!   animationcraft-cli save-demo <out.acx.json>
+//!   animationcraft-cli run <script.js|.py|.mjs|.rb> [--doc <doc|demo>] [--save out.acx.json] [--gif out.gif]
+//!   animationcraft-cli commands            (list scriptable commands)
 
 use ac_core::{demo::demo_document, Document, ElementKind, Tween};
 use std::path::Path;
@@ -43,6 +45,19 @@ fn run(args: &[String]) -> Result<(), String> {
             let d = load(arg(1)?)?;
             let scale = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(1.0);
             ac_render::export_gif(&d, scale, Path::new(arg(2)?))?;
+            println!("wrote {}", arg(2)?);
+        }
+        "png-seq" => {
+            let d = load(arg(1)?)?;
+            let o = ac_render::ExportOpts { scale: args.get(3).and_then(|s| s.parse().ok()).unwrap_or(1.0), ..Default::default() };
+            let n = ac_render::export_png_sequence(&d, &o, Path::new(arg(2)?), "frame", &mut |_, _| true)?;
+            println!("wrote {n} frames to {}", arg(2)?);
+        }
+        "video" => {
+            let d = load(arg(1)?)?;
+            let o = ac_render::ExportOpts { scale: args.get(3).and_then(|s| s.parse().ok()).unwrap_or(1.0), ..Default::default() };
+            ac_render::export_video(&d, &o, Path::new(arg(2)?), "ffmpeg", &mut |a, b| { eprint!("\rframe {a}/{b}"); true })?;
+            eprintln!();
             println!("wrote {}", arg(2)?);
         }
         "png" => {
@@ -99,7 +114,7 @@ fn run(args: &[String]) -> Result<(), String> {
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.is_empty() {
-        eprintln!("usage: animatecraft-cli <info|gif|png|svg|save-demo|run|commands> ...  (use 'demo' as the document for the built-in scene)");
+        eprintln!("usage: animationcraft-cli <info|gif|png|png-seq|video|svg|save-demo|run|commands> ...  (use 'demo' as the document for the built-in scene)");
         std::process::exit(2);
     }
     if let Err(e) = run(&args) {

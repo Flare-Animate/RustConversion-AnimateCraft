@@ -73,7 +73,7 @@ fn python_bridge() {
     assert_eq!(ed.timeline().layers.len(), 2);
     assert!(r.commands >= 9);
     // Python exceptions come back as an error with the traceback in the log
-    let r = run_code(&mut ed, Language::Python, "import animatecraft as ac\nac.draw.rect(x=1)\n", &opts());
+    let r = run_code(&mut ed, Language::Python, "import animationcraft as ac\nac.draw.rect(x=1)\n", &opts());
     assert!(r.error.is_some());
     assert!(r.log.iter().any(|l| l.contains("missing number")), "{:?}", r.log);
 }
@@ -138,4 +138,17 @@ fn frame_scripts_are_sandboxed() {
     assert!(fp.run("for(;;){}", 0, 1, &[]).unwrap_err().contains("stopped"));
     assert!(fp.run("let a = []; for(;;) a.push(new Array(100000).fill(1));", 0, 1, &[]).is_err());
     assert_eq!(fp.run("stop()", 0, 1, &[]).unwrap(), vec![PlayAction::Stop]);
+}
+
+#[test]
+fn frame_scripts_see_named_instances() {
+    let mut fp = FramePlayer::new().unwrap();
+    let ball = Instance { name: "ball".into(), x: 10.0, y: 20.0, rotation: 0.0, scale_x: 1.0, scale_y: 1.0, alpha: 1.0, visible: true };
+    let (_, changed) = fp.run_with("this.ball.x += 5; this.getChildByName('ball').alpha = 0.5; trace(this.ball.y);", 0, 10, &[], std::slice::from_ref(&ball)).unwrap();
+    assert_eq!(changed.len(), 1);
+    assert_eq!(changed[0].x, 15.0);
+    assert_eq!(changed[0].alpha, 0.5);
+    assert_eq!(fp.take_log(), vec!["20".to_string()]);
+    let (_, none) = fp.run_with("var y = this.ball.y;", 1, 10, &[], &[ball]).unwrap();
+    assert!(none.is_empty());
 }

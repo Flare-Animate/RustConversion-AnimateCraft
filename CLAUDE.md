@@ -1,4 +1,4 @@
-# AnimateCraft — project brief
+# AnimationCraft — project brief
 
 Open-source 2D animation authoring in Rust, modelled on the Adobe Animate
 (formerly Flash Professional) workflow. Read this file at the start of every
@@ -17,7 +17,7 @@ session; record progress in `log/devlog.md`.
   browser under a source-available BSL licence. Its HN thread asked for a native
   app, Rust, merge-drawing, real tools beyond onion skin, and colour management.
 - ArtCraft (PhotoCraft, VectorCraft, FilmCraft, EffectCraft, SoundCraft, …) has
-  no animation app. AnimateCraft fills that gap and follows the same playbook:
+  no animation app. AnimationCraft fills that gap and follows the same playbook:
   native Rust, one command registry, CLI + agent control. Note "Craft" names and
   logos are ArtCraft's trademarks: talk to that team before shipping under this
   name, or pick our own.
@@ -34,7 +34,8 @@ Status: ✅ in the demo · 🟡 partial · ⬜ planned
 - ✅ Multi-select (click, Shift+click, marquee, Select All), move/scale/rotate groups, arrow nudge,
   cut/copy/paste/paste-in-place/duplicate, Delete, Break Apart, stage right-click menu
 - ✅ Library: drag to stage, rename, duplicate, change type, delete (removes instances)
-- ⬜ Rulers, guides, grid, snapping, Align panel, Info panel, workspaces
+- ✅ Rulers, guides, grid + snapping, Align panel, Info panel; native file dialogs, recent files, autosave + crash recovery
+- ⬜ Docking/workspaces, Color & Swatches, History, preferences
 
 **Drawing**
 - ✅ Object Drawing model (each shape its own object)
@@ -64,7 +65,8 @@ Status: ✅ in the demo · 🟡 partial · ⬜ planned
 - ⬜ **Merge Drawing** model: Flash's planar map where shapes cut/merge, fill
   styles left/right of each edge, Selection-tool edge bending. This is the core
   engine milestone; nothing else in open source does it well.
-- ⬜ Bitmap fills, dynamic/input text, system fonts
+- ✅ Groups, bitmaps (PNG/JPG/GIF/BMP, animated GIF, sequences), SVG import, system fonts
+- ⬜ Bitmap fills, dynamic/input text
 
 **Timeline**
 - ✅ Layers (visible / lock / outline, colour), frames, keyframes, blank keyframes,
@@ -73,16 +75,16 @@ Status: ✅ in the demo · 🟡 partial · ⬜ planned
   layer-name click), drag to move keyframes, Clear Frames, Copy/Cut/Paste Frames,
   F5/F6/F7 on ranges, right-click frame menu, layer reorder by drag
 - ✅ Camera layer (pan / zoom / rotate, keyframed + classic-tweened)
-- ⬜ Layer folders, guide & motion-guide layers, masks, layer parenting,
-  layer depth (2.5D), multi-frame edit,
+- ✅ Layer folders (collapse, drag in/out), mask layers, guide + classic motion guide (orient to path), Layer Properties, duplicate layer
+- ⬜ Layer parenting, layer depth (2.5D), multi-frame edit,
   audio layers with waveform + lip-sync
 
 **Symbols**
 - ✅ Graphic (synced to parent timeline: Loop / Play Once / Single Frame,
   first frame), Movie Clip (own clock), Button (static for now)
 - ✅ Convert to Symbol (F8), New Symbol (Ctrl+F8), nested symbols, Library
-- ⬜ Button states (Up/Over/Down/Hit), 9-slice scaling, swap symbol, filters
-  (blur, drop shadow, glow, bevel), blend modes, cache-as-bitmap
+- ✅ Filters (drop shadow, blur, glow, bevel, adjust color; tweenable) and all 14 blend modes; instance names readable/settable from frame scripts
+- ⬜ Button states (Up/Over/Down/Hit), 9-slice scaling, swap symbol, cache-as-bitmap
 
 **Animation**
 - ✅ Classic tween: Animate-style matrix decomposition (scale, skew, rotation
@@ -96,7 +98,8 @@ Status: ✅ in the demo · 🟡 partial · ⬜ planned
 
 **Output**
 - ✅ Animated GIF, PNG frame, SVG frame (same rasteriser as the stage)
-- ⬜ PNG sequence, MP4/WebM via ffmpeg, sprite sheet + texture atlas, HTML5
+- ✅ PNG sequence, MP4/WebM/MOV via ffmpeg, GIF options, Publish Settings, background export jobs
+- ⬜ Sprite sheet + texture atlas, HTML5
   Canvas runtime, Lottie JSON, SWF (Ruffle's MIT/Apache SWF crates), animated SVG
 
 **Interchange**
@@ -119,7 +122,8 @@ Status: ✅ in the demo · 🟡 partial · ⬜ planned
 ```
 crates/
   ac-core    model, timeline evaluation, tweens, editor commands, XFL bits   (no UI, wasm-portable)
-  ac-render  tiny-skia rasteriser shared by stage + exports; SVG, GIF, PNG
+  ac-render  tiny-skia rasteriser shared by stage + exports (filters, blend modes, masks);
+             SVG, GIF, PNG, PNG sequence, video via ffmpeg; system fonts
   ac-script  scripting: sandboxed frame scripts (QuickJS), authoring scripts (JS embedded, others via JSON bridge)
   ac-cli     headless: info / gif / png / svg / save-demo / run / commands
   ac-app     egui desktop editor (Animate "Essentials" layout)
@@ -149,6 +153,7 @@ The full feature-by-feature comparison with Animate and the current build order
 | **M0 (done: demo)** | Model, classic + shape tweens, symbols, onion skin, egui editor, GIF/PNG/SVG export, CLI. M0.1: selection, frame ops, clipboard, library management; 24 tests |
 | **M0.2 (done)** | Toolbar overhaul (17 working tools), command registry, multi-language scripting, frame scripts; 40 tests |
 | **M0.3 (done)** | Every toolbar tool works (31): skew/distort/envelope, Transform panel, 3D tools, gradients, Fluid Brush, Width, Bone/IK, Asset Warp, Camera, view rotation; Library fills the panel / docks left; 48 tests |
+| **Phase 1 (done)** | Native file dialogs, recent files, autosave/recovery; groups, Align/Info; folders, masks, motion guides; filters + blend modes; bitmaps + SVG import; system fonts; PNG sequence + video export; rulers/guides/grid; frame-script instance access; 59 tests |
 | **M1** | Route every menu item through the registry; MCP server; rulers/guides, Align panel, native file dialogs |
 | **M2** | Merge Drawing planar-map engine, Brush/Eraser/Pen/Subselection, gradients, Selection-tool edge bending |
 | **M3** | `.fla`/XFL import with a corpus of real files; XFL export; round-trip tests |

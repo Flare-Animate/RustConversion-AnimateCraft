@@ -32,6 +32,10 @@ pub enum Drag {
     WarpPin { sel: Selection, pin: usize, started: bool },
     CameraPan { last: Pos2, rotate: bool, started: bool },
     RotView { start: f32, base: f32 },
+    /// A guide being dragged out of a ruler.
+    GuideNew { vertical: bool, pos: f32 },
+    /// An existing guide being moved (drop it on a ruler to remove it).
+    Guide { vertical: bool, index: usize, pos: f32, started: bool },
 }
 
 #[derive(Clone, Copy)]
@@ -599,7 +603,9 @@ pub fn stage(app: &mut App, ctx: &egui::Context) {
                 });
             });
         });
-        let (rect, resp) = ui.allocate_exact_size(ui.available_size(), Sense::click_and_drag());
+        let (full, _) = ui.allocate_exact_size(ui.available_size(), Sense::hover());
+        let (rul, rect) = crate::rulers::layout(app, full);
+        let resp = ui.interact(rect, ui.id().with("stage-area"), Sense::click_and_drag());
         app.stage_rect = rect;
         if app.fit_pending {
             app.fit(rect);
@@ -637,6 +643,14 @@ pub fn stage(app: &mut App, ctx: &egui::Context) {
                 _ => CursorIcon::Crosshair,
             };
             ui.ctx().set_cursor_icon(icon);
+        }
+        if let Some((top, left)) = rul {
+            crate::rulers::rulers(app, ui, top, left, rect);
+        }
+        if resp.hovered() && matches!(app.tool, Tool::Select | Tool::FreeTransform) {
+            if let Some((v, _)) = resp.hover_pos().and_then(|h| app.guide_at(rect, h)).filter(|_| matches!(app.drag, Drag::None)) {
+                ui.ctx().set_cursor_icon(if v { CursorIcon::ResizeHorizontal } else { CursorIcon::ResizeVertical });
+            }
         }
         stage_input(app, ui, rect, &resp);
         resp.context_menu(|ui| app.object_menu(ui));
@@ -804,6 +818,11 @@ fn press(app: &mut App, rect: Rect, tool: Tool, origin: Pos2, p0: Pt, shift: boo
                 app.drag = Drag::Transform { mode, applied: Matrix::IDENTITY, started: false };
                 return;
             }
+            if let Some((vertical, index)) = app.guide_at(rect, origin) {
+                let pos = if vertical { app.ed.doc.guides.x[index] } else { app.ed.doc.guides.y[index] };
+                app.drag = Drag::Guide { vertical, index, pos, started: false };
+                return;
+            }
             select_press(app, p0, shift);
         }
         Tool::Subselect => {
@@ -868,8 +887,9 @@ fn press(app: &mut App, rect: Rect, tool: Tool, origin: Pos2, p0: Pt, shift: boo
                     return;
                 }
             }
+            let sp = app.snap_pt(p0);
             let pen = app.pen.get_or_insert_with(Default::default);
-            pen.pts.push((p0, pt(0.0, 0.0)));
+            pen.pts.push((sp, pt(0.0, 0.0)));
             pen.dragging = true;
         }
         Tool::Lasso => app.drag = Drag::Freehand { pts: vec![p0] },
@@ -903,7 +923,10 @@ fn press(app: &mut App, rect: Rect, tool: Tool, origin: Pos2, p0: Pt, shift: boo
                 None => app.locked_msg(),
             }
         }
-        Tool::Rect | Tool::Oval | Tool::Line | Tool::PolyStar => app.drag = Drag::Draw { start: p0, cur: p0 },
+        Tool::Rect | Tool::Oval | Tool::Line | Tool::PolyStar => {
+            let s = app.snap_pt(p0);
+            app.drag = Drag::Draw { start: s, cur: s }
+        }
         Tool::Pencil | Tool::Brush => app.drag = Drag::Freehand { pts: vec![p0] },
         Tool::FluidBrush => app.drag = Drag::Fluid { pts: vec![(p0, app.ctx.input(|i| i.time))] },
         Tool::Eraser => {
@@ -1032,8 +1055,10 @@ fn select_press(app: &mut App, p0: Pt, shift: bool) {
             }
         }
         if app.ed.is_selected(hit) {
-            let targets = if app.topts.snap { app.snap_targets() } else { (vec![], vec![]) };
-            app.drag = Drag::Move { last: p0, moved: false, raw: pt(0.0, 0.0), applied: pt(0.0, 0.0), start: app.ed.selection_bounds(), targets };
+            let mut targets = if app.topts.snap { app.snap_targets() } else { (vec![], vec![]) };
+            let b = app.ed.selection_bounds();
+            app.guide_grid_targets(&mut targets.0, &mut targets.1, b);
+            app.drag = Drag::Move { last: p0, moved: false, raw: pt(0.0, 0.0), applied: pt(0.0, 0.0), start: b, targets };
         }
     } else {
         if !shift {
@@ -1166,7 +1191,7 @@ fn gradient_press(app: &mut App, rect: Rect, origin: Pos2, p0: Pt) {
 fn drag(app: &mut App, ui: &egui::Ui, rect: Rect, pos: Pos2, p: Pt, shift: bool, alt: bool) {
     let zoom = app.zoom;
     let tool_now = app.tool;
-    let snap_on = app.topts.snap && !alt;
+    let snap_on = !alt;
     if let Some(pen) = app.pen.as_mut().filter(|pn| pn.dragging) {
         if let Some(last) = pen.pts.last_mut() {
             last.1 = pt(p.x - last.0.x, p.y - last.0.y);
@@ -1456,9 +1481,23 @@ fn drag(app: &mut App, ui: &egui::Ui, rect: Rect, pos: Pos2, p: Pt, shift: bool,
             };
             app.ed.set_camera(new);
         }
+        Drag::Guide { vertical, index, pos, started } => {
+            let (v, i) = (*vertical, *index);
+            let first = !*started;
+            *started = true;
+            let np = app_snap(&app.view, &Default::default(), if v { p.x } else { p.y }, v, zoom).round();
+            *pos = np;
+            if first {
+                app.ed.begin_edit("Move Guide");
+            }
+            app.ed.move_guide(v, i, np);
+        }
+        Drag::GuideNew { .. } => {}
         Drag::Marquee { cur, .. } => *cur = p,
         Drag::Draw { start, cur } => {
-            *cur = p;
+            let sp = pt(app_snap(&app.view, &app.ed.doc.guides, p.x, true, zoom), app_snap(&app.view, &app.ed.doc.guides, p.y, false, zoom));
+            *cur = sp;
+            let p = sp;
             if shift {
                 if tool_now == Tool::Line {
                     let (dx, dy) = (p.x - start.x, p.y - start.y);
@@ -1516,6 +1555,13 @@ fn release(app: &mut App, rect: Rect, p: Pt, shift: bool, alt: bool) {
     app.snap_guides = (None, None);
     let drag = std::mem::replace(&mut app.drag, Drag::None);
     match drag {
+        Drag::Guide { vertical, index, started: true, .. } => {
+            let off = app.ctx.input(|i| i.pointer.latest_pos()).map(|h| !rect.contains(h)).unwrap_or(false);
+            if off {
+                app.ed.remove_guide(vertical, index);
+                app.status = "Guide removed".into();
+            }
+        }
         Drag::Move { moved: false, .. } => {
             if !shift && app.ed.selection.len() > 1 {
                 if let Some(hit) = app.ed.hit_test(p) {
@@ -1714,7 +1760,8 @@ fn render_stage(app: &mut App, ui: &egui::Ui, rect: Rect) {
             }
         }
     }
-    let items = app.ed.evaluate_current(app.ed.frame);
+    let mut items = app.ed.evaluate_current(app.ed.frame);
+    crate::scripting::apply_overrides(app, &mut items);
     ac_render::draw_items(&mut pix.as_mut(), &items, &ac_render::RenderOpts { view: content_view, ..Default::default() });
 
     let img = egui::ColorImage::from_rgba_premultiplied([pw as usize, ph as usize], pix.data());
@@ -1748,6 +1795,7 @@ fn overlays(app: &App, ui: &egui::Ui, rect: Rect) {
         painter.line_segment([c - vec2(9.0, 0.0), c + vec2(9.0, 0.0)], s);
         painter.line_segment([c - vec2(0.0, 9.0), c + vec2(0.0, 9.0)], s);
     }
+    crate::rulers::draw(app, &painter, rect);
     // Camera frame
     if app.ed.camera_view {
         let cam_col = Color32::from_rgb(0xFF, 0xA0, 0x30);
@@ -2164,4 +2212,25 @@ fn text_editor(app: &mut App, ui: &mut egui::Ui, rect: Rect) {
     if done {
         app.finish_text();
     }
+}
+
+/// Guide/grid snap of one coordinate without borrowing the whole app (used mid-drag).
+fn app_snap(view: &crate::rulers::ViewOpts, guides: &ac_core::Guides, v: f32, vertical: bool, zoom: f32) -> f32 {
+    let thr = 6.0 / zoom;
+    let mut best: Option<f32> = None;
+    let mut consider = |t: f32| {
+        if (t - v).abs() <= thr && best.map(|b| (t - v).abs() < (b - v).abs()).unwrap_or(true) {
+            best = Some(t);
+        }
+    };
+    if view.snap_guides && view.guides {
+        for t in if vertical { &guides.x } else { &guides.y } {
+            consider(*t);
+        }
+    }
+    if view.snap_grid {
+        let g = view.grid_size.max(1.0);
+        consider((v / g).round() * g);
+    }
+    best.unwrap_or(v)
 }

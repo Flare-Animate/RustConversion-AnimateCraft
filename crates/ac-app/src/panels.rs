@@ -6,7 +6,7 @@ use crate::{c32, from32, App, Dialog, PropsTab, ACCENT};
 use ac_core::deform::Transform3D;
 use ac_core::geom::Decomposed;
 use ac_core::text::{Align, FontFace};
-use ac_core::{pt, Editor, Element, ElementKind, Gradient, GradientKind, LoopMode, Matrix, Pt, Stroke, SymbolKind, Tween};
+use ac_core::{pt, BlendMode, Editor, Element, ElementKind, Filter, Gradient, GradientKind, LoopMode, Matrix, Pt, Stroke, SymbolKind, Tween};
 use eframe::egui::{self, pos2, vec2, Align2, Color32, FontId, Rect, RichText, Sense, Stroke as EStroke};
 use tiny_skia as sk;
 
@@ -20,11 +20,14 @@ pub struct LibraryState {
     pub frame: u32,
     accum: f64,
     sort: (u8, bool),
+    /// Selected / dragged library bitmap (symbols use `App::lib_selected` / `lib_drag`).
+    pub bitmap: Option<u32>,
+    pub drag_bitmap: Option<u32>,
 }
 
 impl Default for LibraryState {
     fn default() -> Self {
-        LibraryState { open: true, left: false, search: String::new(), play: false, frame: 0, accum: 0.0, sort: (0, true) }
+        LibraryState { open: true, left: false, search: String::new(), play: false, frame: 0, accum: 0.0, sort: (0, true), bitmap: None, drag_bitmap: None }
     }
 }
 
@@ -180,6 +183,8 @@ fn object_properties(app: &mut App, ui: &mut egui::Ui) {
                 let kind = s.map(|s| match s.kind { SymbolKind::Graphic => "Graphic", SymbolKind::MovieClip => "Movie Clip", SymbolKind::Button => "Button" }).unwrap_or("?");
                 format!("{kind} instance of “{}”", s.map(|s| s.name.as_str()).unwrap_or("?"))
             }
+            ElementKind::Group(c) => format!("Group ({} objects)", c.len()),
+            ElementKind::Bitmap(b) => app.ed.doc.bitmap(b.bitmap).map(|a| format!("Bitmap “{}” {}×{}", a.name, a.width, a.height)).unwrap_or("Bitmap (missing)".into()),
         }
     };
     ui.horizontal(|ui| {
@@ -194,6 +199,17 @@ fn object_properties(app: &mut App, ui: &mut egui::Ui) {
         ui.label(RichText::new("On a locked or hidden layer: unlock it in the timeline to edit.").small().color(Color32::from_rgb(0xFF, 0xB0, 0x40)));
     }
     ui.add_enabled_ui(editable, |ui| {
+        if n == 1 && !matches!(el.kind, ElementKind::Shape(_)) {
+            let mut name = el.name.clone();
+            ui.horizontal(|ui| {
+                ui.label("Instance name");
+                let r = ui.add(egui::TextEdit::singleline(&mut name).hint_text("<none>").desired_width(f32::INFINITY));
+                if r.lost_focus() && name != el.name {
+                    let v = name.trim().to_string();
+                    app.ed.modify_selected("Instance Name", move |e| e.name = v.clone());
+                }
+            });
+        }
         section(ui, "Position and size");
         let (lo, hi) = app.ed.selection_bounds().unwrap_or((pt(0.0, 0.0), pt(0.0, 0.0)));
         let (w0, h0) = (hi.x - lo.x, hi.y - lo.y);
@@ -377,7 +393,7 @@ fn object_properties(app: &mut App, ui: &mut egui::Ui) {
                 }
                 let mut size = t.size;
                 let mut col = c32(t.color);
-                let mut font = t.font;
+                let font = t.font;
                 let mut align = t.align;
                 let mut spacing = t.letter_spacing;
                 egui::Grid::new("textprops").num_columns(4).show(ui, |ui| {
@@ -396,12 +412,12 @@ fn object_properties(app: &mut App, ui: &mut egui::Ui) {
                     ui.end_row();
                 });
                 ui.horizontal(|ui| {
-                    for (f, l) in [(FontFace::Sans, "Sans"), (FontFace::Mono, "Mono")] {
-                        if ui.selectable_value(&mut font, f, l).changed() {
-                            app.ed.modify_selected("Font", move |e| if let ElementKind::Text(t) = &mut e.kind { t.font = font });
-                        }
+                    ui.label("Font");
+                    if let Some((fam, face)) = font_picker(ui, &mut app.font_search, t.family.as_deref(), font) {
+                        app.ed.modify_selected("Font", move |e| if let ElementKind::Text(t) = &mut e.kind { t.family = fam.clone(); t.font = face });
                     }
-                    ui.separator();
+                });
+                ui.horizontal(|ui| {
                     for (a, l) in [(Align::Left, "⬅"), (Align::Center, "↔"), (Align::Right, "➡")] {
                         if ui.selectable_value(&mut align, a, l).changed() {
                             app.ed.modify_selected("Align", move |e| if let ElementKind::Text(t) = &mut e.kind { t.align = align });
@@ -447,8 +463,29 @@ fn object_properties(app: &mut App, ui: &mut egui::Ui) {
                     if ui.button("Break Apart").on_hover_text("Ctrl+B").clicked() { app.ed.break_apart(); }
                 });
             }
+            ElementKind::Group(_) if n == 1 => {
+                section(ui, "Group");
+                ui.horizontal(|ui| {
+                    if ui.button("Ungroup (Ctrl+Shift+G)").clicked() { app.ed.ungroup_selected(); }
+                });
+            }
+            ElementKind::Bitmap(b) if n == 1 => {
+                section(ui, "Bitmap");
+                let id = b.bitmap;
+                if let Some(a) = app.ed.doc.bitmap(id) {
+                    let mut smooth = a.smoothing;
+                    ui.horizontal(|ui| {
+                        if ui.checkbox(&mut smooth, "Allow smoothing").on_hover_text("Off = sharp pixels when scaled (pixel art)").changed() {
+                            app.ed.set_bitmap_smoothing(id, smooth);
+                        }
+                        hint(ui, &format!("used {}×", app.ed.bitmap_usage(id)));
+                    });
+                }
+            }
             _ => {}
         }
+
+        filters_section(app, ui, &el);
 
         // Bones (IK)
         let bones = app.ed.bones(sel0.layer).to_vec();
@@ -613,6 +650,12 @@ fn frame_properties(app: &mut App, ui: &mut egui::Ui) {
             changed |= ui.add(egui::Slider::new(&mut e, -100.0..=100.0).step_by(1.0)).changed();
         });
         ui.label(RichText::new("−100 = ease in (slow start) · +100 = ease out (slow end)").small().color(Color32::from_gray(140)));
+        if kind == 1 && ac_core::layer_effect_parent(app.ed.timeline(), target.layer0, ac_core::LayerKind::Guide).is_some() {
+            let mut orient = kf.orient_to_path;
+            if ui.checkbox(&mut orient, "Orient to path").on_hover_text("Rotate with the motion guide's direction").changed() {
+                app.ed.set_orient_to_path(orient);
+            }
+        }
         if kind == 1 {
             ui.horizontal(|ui| {
                 ui.label("Rotate");
@@ -710,6 +753,36 @@ fn document_properties(app: &mut App, ui: &mut egui::Ui) {
 /// Render the selected library item at `frame` into the preview texture.
 fn library_preview(app: &mut App, ui: &mut egui::Ui, prev_rect: Rect) {
     ui.painter().rect_filled(prev_rect, 3.0, Color32::from_gray(0x26));
+    if let Some(asset) = app.lib.bitmap.and_then(|id| app.ed.doc.bitmap(id)) {
+        // bitmap preview: fit inside the box, checkerboard behind transparency
+        let (w, h) = (asset.width as f32, asset.height as f32);
+        let k = ((prev_rect.width() - 16.0) / w).min((prev_rect.height() - 16.0) / h).min(4.0);
+        let r = Rect::from_center_size(prev_rect.center(), vec2(w * k, h * k));
+        let ppp = ui.ctx().pixels_per_point();
+        let (pw, ph) = ((r.width() * ppp).max(1.0) as u32, (r.height() * ppp).max(1.0) as u32);
+        if let Some(mut pix) = sk::Pixmap::new(pw, ph) {
+            for y in (0..ph).step_by(8) {
+                for x in (0..pw).step_by(8) {
+                    if (x / 8 + y / 8) % 2 == 0 {
+                        if let Some(rr) = sk::Rect::from_xywh(x as f32, y as f32, 8.0, 8.0) {
+                            let mut paint = sk::Paint::default();
+                            paint.set_color_rgba8(0x3A, 0x3A, 0x3A, 255);
+                            pix.fill_rect(rr, &paint, sk::Transform::identity(), None);
+                        }
+                    }
+                }
+            }
+            let el = Element::bitmap("", asset.id, Matrix::IDENTITY);
+            let mut items = Vec::new();
+            ac_core::eval_element(&ac_core::EvalCtx::new(&app.ed.doc, 0), &el, &Matrix::IDENTITY, 1.0, 0, None, 0, &mut items);
+            ac_render::draw_items(&mut pix.as_mut(), &items, &ac_render::RenderOpts { view: Matrix::scale(pw as f32 / w, ph as f32 / h), ..Default::default() });
+            let img = egui::ColorImage::from_rgba_premultiplied([pw as usize, ph as usize], pix.data());
+            let tex = ui.ctx().load_texture("lib-bitmap", img, egui::TextureOptions::LINEAR);
+            ui.painter().image(tex.id(), r, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
+            app.lib_tex = Some(tex);
+        }
+        return;
+    }
     let Some(sym) = app.lib.selected_symbol(app) else {
         ui.painter().text(prev_rect.center(), Align2::CENTER_CENTER, "Select an item to preview", FontId::proportional(12.0), Color32::from_gray(120));
         return;
@@ -766,7 +839,7 @@ fn library(app: &mut App, ui: &mut egui::Ui) {
     let total_h = ui.available_height();
     ui.horizontal(|ui| {
         ui.add(egui::TextEdit::singleline(&mut app.lib.search).hint_text("🔍 Search library").desired_width(ui.available_width() - 70.0));
-        ui.label(RichText::new(format!("{} items", app.ed.doc.library.len())).small().color(Color32::from_gray(150)));
+        ui.label(RichText::new(format!("{} items", app.ed.doc.library.len() + app.ed.doc.bitmaps.len())).small().color(Color32::from_gray(150)));
     });
     // Preview with play controls
     let prev_h = (total_h * 0.32).clamp(90.0, 260.0);
@@ -841,8 +914,40 @@ fn library(app: &mut App, ui: &mut egui::Ui) {
     }
     let list_h = (ui.available_height() - 34.0).max(60.0);
     egui::ScrollArea::vertical().id_salt("lib-list").max_height(list_h).auto_shrink([false, false]).show(ui, |ui| {
-        if syms.is_empty() {
+        if syms.is_empty() && app.ed.doc.bitmaps.is_empty() {
             hint(ui, if app.ed.doc.library.is_empty() { "Empty. Select objects and press F8 to make a symbol." } else { "No items match the search." });
+        }
+        let bitmaps: Vec<(u32, String, u32, u32, usize)> = app.ed.doc.bitmaps.iter().filter(|b| q.is_empty() || b.name.to_lowercase().contains(&q)).map(|b| (b.id, b.name.clone(), b.width, b.height, app.ed.bitmap_usage(b.id))).collect();
+        for (id, name, bw, bh, uses) in bitmaps {
+            let (r, resp) = ui.allocate_exact_size(vec2(w, 22.0), Sense::click_and_drag());
+            if app.lib.bitmap == Some(id) {
+                ui.painter().rect_filled(r, 2.0, ACCENT.gamma_multiply(0.55));
+            } else if resp.hovered() {
+                ui.painter().rect_filled(r, 2.0, Color32::from_gray(0x3A));
+            }
+            let clip = ui.painter().with_clip_rect(Rect::from_min_max(r.min, pos2(r.left() + cols[1].1 - 6.0, r.bottom())));
+            clip.text(pos2(r.left() + 6.0, r.center().y), Align2::LEFT_CENTER, format!("🖼 {name}"), FontId::proportional(12.5), Color32::from_gray(230));
+            ui.painter().text(pos2(r.left() + cols[1].1, r.center().y), Align2::LEFT_CENTER, "Bitmap", FontId::proportional(11.5), Color32::from_gray(180));
+            ui.painter().text(pos2(r.left() + cols[2].1 + 24.0, r.center().y), Align2::RIGHT_CENTER, uses.to_string(), FontId::proportional(11.5), Color32::from_gray(180));
+            ui.painter().text(pos2(r.left() + cols[3].1 + 36.0, r.center().y), Align2::RIGHT_CENTER, "–", FontId::proportional(11.5), Color32::from_gray(180));
+            if resp.clicked() || resp.drag_started() {
+                app.lib.bitmap = Some(id);
+                app.lib_selected = None;
+            }
+            if resp.drag_started() {
+                app.lib.drag_bitmap = Some(id);
+            }
+            let center_place = pt((stage_center.x - bw as f32 / 2.0).max(0.0), (stage_center.y - bh as f32 / 2.0).max(0.0));
+            if resp.double_clicked() {
+                app.ed.place_bitmap(id, center_place);
+            }
+            let resp = resp.on_hover_text(format!("{name}\nBitmap {bw}×{bh} · used {uses}×\nDrag onto the stage to place"));
+            resp.context_menu(|ui| {
+                if ui.button("Place on Stage").clicked() { app.ed.place_bitmap(id, center_place); ui.close_menu(); }
+                if ui.button("Rename…").clicked() { app.dialog = Dialog::RenameBitmap { id, name: name.clone() }; ui.close_menu(); }
+                ui.separator();
+                if ui.button("Delete").clicked() { app.dialog = Dialog::DeleteBitmap { id, uses }; ui.close_menu(); }
+            });
         }
         for (id, name, kind, frames, uses) in syms {
             let (r, resp) = ui.allocate_exact_size(vec2(w, 22.0), Sense::click_and_drag());
@@ -865,6 +970,7 @@ fn library(app: &mut App, ui: &mut egui::Ui) {
                     app.lib.frame = 0;
                 }
                 app.lib_selected = Some(id);
+                app.lib.bitmap = None;
             }
             if resp.drag_started() {
                 app.lib_drag = Some(id);
@@ -914,6 +1020,28 @@ fn library(app: &mut App, ui: &mut egui::Ui) {
 }
 /// Ghost label under the cursor while a library item is dragged, and the drop.
 pub fn library_drag_ghost(app: &mut App, ctx: &egui::Context) {
+    if let Some(id) = app.lib.drag_bitmap {
+        let (pos, released) = ctx.input(|i| (i.pointer.latest_pos(), i.pointer.any_released()));
+        if let Some(p) = pos {
+            let name = app.ed.doc.bitmap(id).map(|b| b.name.clone()).unwrap_or_default();
+            let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Tooltip, egui::Id::new("libdrag")));
+            let r = painter.text(p + vec2(14.0, 8.0), Align2::LEFT_TOP, format!("🖼 {name}"), FontId::proportional(13.0), Color32::WHITE);
+            painter.rect_stroke(r.expand(4.0), 3.0, EStroke::new(1.0_f32, ACCENT));
+            if released {
+                if app.stage_rect.contains(p) {
+                    let at = app.to_doc(app.stage_rect, p);
+                    if app.ed.place_bitmap(id, at).is_none() {
+                        app.status = "The current layer is locked or hidden.".into();
+                    }
+                }
+                app.lib.drag_bitmap = None;
+            }
+        } else if released {
+            app.lib.drag_bitmap = None;
+        }
+        ctx.request_repaint();
+        return;
+    }
     let Some(id) = app.lib_drag else { return };
     let (pos, released) = ctx.input(|i| (i.pointer.latest_pos(), i.pointer.any_released()));
     if let Some(p) = pos {
@@ -1282,4 +1410,214 @@ pub fn transform_window(app: &mut App, ctx: &egui::Context) {
     if !open {
         app.transform_open = false;
     }
+}
+
+/// Font family picker: built-in faces plus installed system fonts (searchable).
+/// Returns the new (family, built-in fallback face) when the user picks one.
+fn font_picker(ui: &mut egui::Ui, search: &mut String, family: Option<&str>, face: FontFace) -> Option<(Option<String>, FontFace)> {
+    let current = family.map(|f| f.to_string()).unwrap_or_else(|| match face { FontFace::Sans => "Sans (built-in)".into(), FontFace::Mono => "Mono (built-in)".into() });
+    let mut picked = None;
+    egui::ComboBox::from_id_salt("font-family").width(180.0).selected_text(current).height(320.0).show_ui(ui, |ui| {
+        let r = ui.add(egui::TextEdit::singleline(search).hint_text("🔍 Search fonts").desired_width(170.0));
+        if !r.has_focus() {
+            r.request_focus(); // type straight away to filter
+        }
+        if ui.selectable_label(family.is_none() && face == FontFace::Sans, "Sans (built-in)").clicked() {
+            picked = Some((None, FontFace::Sans));
+        }
+        if ui.selectable_label(family.is_none() && face == FontFace::Mono, "Mono (built-in)").clicked() {
+            picked = Some((None, FontFace::Mono));
+        }
+        ui.separator();
+        let q = search.to_lowercase();
+        let mut shown = 0;
+        for f in ac_render::fonts::families() {
+            if !q.is_empty() && !f.to_lowercase().contains(&q) {
+                continue;
+            }
+            shown += 1;
+            if shown > 300 {
+                ui.label(RichText::new("… type to narrow the list").small());
+                break;
+            }
+            if ui.selectable_label(family == Some(f.as_str()), f).clicked() {
+                picked = Some((Some(f.clone()), face));
+            }
+        }
+        if shown == 0 {
+            ui.label(RichText::new("No installed font matches").small().color(Color32::from_gray(150)));
+        }
+    });
+    picked
+}
+
+/// Properties › Filters and Blending (applies to all selected objects).
+fn filters_section(app: &mut App, ui: &mut egui::Ui, el: &Element) {
+    section(ui, "Filters and blending");
+    let mut list = el.filters.clone();
+    let mut changed = false;
+    let mut dragging = false;
+    let mut stopped = false;
+    let mut remove = None;
+    let mut track = |r: egui::Response, changed: &mut bool| {
+        if r.drag_stopped() {
+            stopped = true;
+        }
+        if edited(&r) || (r.changed() && r.clicked()) {
+            *changed = true;
+            dragging |= r.dragged();
+        }
+    };
+    for (k, f) in list.iter_mut().enumerate() {
+        egui::CollapsingHeader::new(RichText::new(f.name()).color(Color32::from_gray(220))).id_salt(("filter", k)).default_open(true).show(ui, |ui| {
+            let dv = |ui: &mut egui::Ui, label: &str, v: &mut f32, lo: f32, hi: f32, suffix: &str| {
+                ui.label(label);
+                let r = ui.add(egui::DragValue::new(v).range(lo..=hi).speed(0.5).suffix(suffix).max_decimals(1));
+                ui.end_row();
+                r
+            };
+            let col = |ui: &mut egui::Ui, c: &mut ac_core::Color| -> bool {
+                let mut c32v = c32(*c);
+                let ch = ui.color_edit_button_srgba(&mut c32v).changed();
+                if ch {
+                    *c = from32(c32v);
+                }
+                ch
+            };
+            egui::Grid::new(("fgrid", k)).num_columns(2).spacing([6.0, 3.0]).show(ui, |ui| match f {
+                Filter::Blur { blur_x, blur_y, quality } => {
+                    track(dv(ui, "Blur X", blur_x, 0.0, 255.0, " px"), &mut changed);
+                    track(dv(ui, "Blur Y", blur_y, 0.0, 255.0, " px"), &mut changed);
+                    quality_row(ui, quality, &mut changed);
+                }
+                Filter::DropShadow { blur_x, blur_y, strength, quality, angle, distance, color, knockout, inner, hide_object } => {
+                    track(dv(ui, "Blur X", blur_x, 0.0, 255.0, " px"), &mut changed);
+                    track(dv(ui, "Blur Y", blur_y, 0.0, 255.0, " px"), &mut changed);
+                    track(dv(ui, "Strength", strength, 0.0, 1000.0, "%"), &mut changed);
+                    track(dv(ui, "Angle", angle, -360.0, 360.0, "°"), &mut changed);
+                    track(dv(ui, "Distance", distance, -255.0, 255.0, " px"), &mut changed);
+                    ui.label("Colour");
+                    changed |= col(ui, color);
+                    ui.end_row();
+                    ui.label("");
+                    ui.horizontal_wrapped(|ui| {
+                        changed |= ui.checkbox(knockout, "Knockout").changed();
+                        changed |= ui.checkbox(inner, "Inner").changed();
+                        changed |= ui.checkbox(hide_object, "Hide object").changed();
+                    });
+                    ui.end_row();
+                    quality_row(ui, quality, &mut changed);
+                }
+                Filter::Glow { blur_x, blur_y, strength, quality, color, knockout, inner } => {
+                    track(dv(ui, "Blur X", blur_x, 0.0, 255.0, " px"), &mut changed);
+                    track(dv(ui, "Blur Y", blur_y, 0.0, 255.0, " px"), &mut changed);
+                    track(dv(ui, "Strength", strength, 0.0, 1000.0, "%"), &mut changed);
+                    ui.label("Colour");
+                    changed |= col(ui, color);
+                    ui.end_row();
+                    ui.label("");
+                    ui.horizontal(|ui| {
+                        changed |= ui.checkbox(knockout, "Knockout").changed();
+                        changed |= ui.checkbox(inner, "Inner glow").changed();
+                    });
+                    ui.end_row();
+                    quality_row(ui, quality, &mut changed);
+                }
+                Filter::Bevel { blur_x, blur_y, strength, quality, shadow, highlight, angle, distance, knockout, kind } => {
+                    track(dv(ui, "Blur X", blur_x, 0.0, 255.0, " px"), &mut changed);
+                    track(dv(ui, "Blur Y", blur_y, 0.0, 255.0, " px"), &mut changed);
+                    track(dv(ui, "Strength", strength, 0.0, 1000.0, "%"), &mut changed);
+                    track(dv(ui, "Angle", angle, -360.0, 360.0, "°"), &mut changed);
+                    track(dv(ui, "Distance", distance, -255.0, 255.0, " px"), &mut changed);
+                    ui.label("");
+                    changed |= ui.checkbox(knockout, "Knockout").changed();
+                    ui.end_row();
+                    ui.label("Shadow / light");
+                    ui.horizontal(|ui| {
+                        changed |= col(ui, shadow);
+                        changed |= col(ui, highlight);
+                    });
+                    ui.end_row();
+                    ui.label("Type");
+                    ui.horizontal(|ui| {
+                        for (b, l) in [(ac_core::BevelType::Inner, "Inner"), (ac_core::BevelType::Outer, "Outer"), (ac_core::BevelType::Full, "Full")] {
+                            changed |= ui.selectable_value(kind, b, l).changed();
+                        }
+                    });
+                    ui.end_row();
+                    quality_row(ui, quality, &mut changed);
+                }
+                Filter::AdjustColor { brightness, contrast, saturation, hue } => {
+                    track(dv(ui, "Brightness", brightness, -100.0, 100.0, ""), &mut changed);
+                    track(dv(ui, "Contrast", contrast, -100.0, 100.0, ""), &mut changed);
+                    track(dv(ui, "Saturation", saturation, -100.0, 100.0, ""), &mut changed);
+                    track(dv(ui, "Hue", hue, -180.0, 180.0, "°"), &mut changed);
+                }
+            });
+            if ui.small_button("Remove filter").clicked() {
+                remove = Some(k);
+            }
+        });
+    }
+    let mut label = "Filter";
+    if let Some(k) = remove {
+        list.remove(k);
+        changed = true;
+        label = "Remove Filter";
+    }
+    ui.horizontal(|ui| {
+        ui.menu_button("➕ Add filter", |ui| {
+            for name in Filter::NAMES {
+                if ui.button(name).clicked() {
+                    if let Some(f) = Filter::default_of(name) {
+                        list.push(f);
+                        changed = true;
+                        label = "Add Filter";
+                    }
+                    ui.close_menu();
+                }
+            }
+        });
+        if ui.add_enabled(!list.is_empty(), egui::Button::new("Remove all")).clicked() {
+            list.clear();
+            changed = true;
+            label = "Remove Filters";
+        }
+    });
+    if stopped {
+        app.prop_dragging = false;
+    }
+    if changed {
+        if dragging {
+            if !app.prop_dragging {
+                app.ed.begin_edit("Filter");
+                app.prop_dragging = true;
+            }
+            app.ed.modify_selected_continuous(|e| e.filters = list.clone());
+        } else {
+            app.ed.modify_selected(label, |e| e.filters = list.clone());
+        }
+    }
+    let mut blend = el.blend;
+    ui.horizontal(|ui| {
+        ui.label("Blending");
+        egui::ComboBox::from_id_salt("blend").selected_text(blend.name()).show_ui(ui, |ui| {
+            for b in BlendMode::ALL {
+                ui.selectable_value(&mut blend, b, b.name());
+            }
+        });
+    });
+    if blend != el.blend {
+        app.ed.modify_selected("Blending", move |e| e.blend = blend);
+    }
+}
+
+fn quality_row(ui: &mut egui::Ui, q: &mut u8, changed: &mut bool) {
+    ui.label("Quality");
+    ui.horizontal(|ui| {
+        for (v, l) in [(1u8, "Low"), (2, "Medium"), (3, "High")] {
+            *changed |= ui.selectable_value(q, v, l).changed();
+        }
+    });
+    ui.end_row();
 }

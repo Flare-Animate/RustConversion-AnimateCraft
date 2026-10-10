@@ -3,7 +3,7 @@
 Run from the app (Commands > Run Script...) or headless:
     cargo run -p ac-cli -- run examples/scripts/stars.py --gif stars.gif
 """
-import animatecraft as ac
+import animationcraft as ac
 
 ac.doc.set(width=550, height=400, background="#14213D")
 ac.layer.set(name="Stars")

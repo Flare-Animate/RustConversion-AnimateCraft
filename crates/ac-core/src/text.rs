@@ -3,7 +3,9 @@
 //! exports exactly like shapes.
 
 use crate::geom::{pt, Path, Seg};
-use ab_glyph::{Font, FontRef, OutlineCurve, ScaleFont};
+use ab_glyph::{Font, FontRef, FontVec, OutlineCurve, ScaleFont};
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 use serde::{Deserialize, Serialize};
 use std::sync::OnceLock;
 
@@ -33,9 +35,42 @@ fn font(face: FontFace) -> &'static FontRef<'static> {
     }
 }
 
+type Loader = fn(&str) -> Option<Vec<u8>>;
+static LOADER: OnceLock<Loader> = OnceLock::new();
+
+/// Let the host provide font files by family name (the desktop app and CLI
+/// install a system-font loader; the core stays free of OS font code).
+pub fn set_font_loader(f: Loader) {
+    let _ = LOADER.set(f);
+}
+
+/// A font by family name: explicitly registered, or found by the loader.
+pub fn family_font(family: &str) -> Option<Arc<FontVec>> {
+    static CACHE: OnceLock<Mutex<HashMap<String, Option<Arc<FontVec>>>>> = OnceLock::new();
+    let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Some(f) = cache.lock().ok()?.get(family) {
+        return f.clone();
+    }
+    let f = LOADER.get().and_then(|l| l(family)).and_then(|b| FontVec::try_from_vec(b).ok()).map(Arc::new);
+    cache.lock().ok()?.insert(family.to_string(), f.clone());
+    f
+}
+
 /// Outline `text` with its top-left at (0, 0). Lines split on '\n'.
 pub fn text_path(text: &str, size: f32, face: FontFace, align: Align, letter_spacing: f32) -> Path {
-    let f = font(face).as_scaled(size.max(1.0));
+    outline_with(font(face), text, size, align, letter_spacing)
+}
+
+/// Like `text_path`, using a named (system) font family when available.
+pub fn text_path_family(text: &str, size: f32, family: Option<&str>, face: FontFace, align: Align, letter_spacing: f32) -> Path {
+    match family.and_then(family_font) {
+        Some(f) => outline_with(&*f, text, size, align, letter_spacing),
+        None => text_path(text, size, face, align, letter_spacing),
+    }
+}
+
+fn outline_with<F: Font>(font: &F, text: &str, size: f32, align: Align, letter_spacing: f32) -> Path {
+    let f = font.as_scaled(size.max(1.0));
     let scale = f.scale_factor();
     let line_h = f.height() + f.line_gap();
     let lines: Vec<&str> = text.split('\n').collect();

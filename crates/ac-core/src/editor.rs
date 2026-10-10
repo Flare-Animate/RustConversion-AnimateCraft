@@ -54,6 +54,8 @@ pub struct Editor {
     frame_clip: Vec<FrameClip>,
     /// Show the scene through the camera layer (playback, Camera tool).
     pub camera_view: bool,
+    /// Bumped on every undoable change, undo and redo (dirty tracking, autosave).
+    pub revision: u64,
 }
 
 #[derive(Clone)]
@@ -78,11 +80,13 @@ impl Editor {
             element_clip: vec![],
             frame_clip: vec![],
             camera_view: false,
+            revision: 0,
         }
     }
 
     // ------------------------------------------------------------ plumbing
     fn checkpoint(&mut self, label: &str) {
+        self.revision += 1;
         self.undo.push(Snapshot { doc: self.doc.clone(), label: label.into() });
         if self.undo.len() > UNDO_LIMIT {
             self.undo.remove(0);
@@ -91,6 +95,7 @@ impl Editor {
     }
     pub fn undo(&mut self) -> Option<String> {
         let s = self.undo.pop()?;
+        self.revision += 1;
         let cur = std::mem::replace(&mut self.doc, s.doc);
         self.redo.push(Snapshot { doc: cur, label: s.label.clone() });
         self.fix_indices();
@@ -98,6 +103,7 @@ impl Editor {
     }
     pub fn redo(&mut self) -> Option<String> {
         let s = self.redo.pop()?;
+        self.revision += 1;
         let cur = std::mem::replace(&mut self.doc, s.doc);
         self.undo.push(Snapshot { doc: cur, label: s.label.clone() });
         self.fix_indices();
@@ -196,6 +202,9 @@ impl Editor {
         let mut l = Layer::new(&format!("Layer {}", n + 1), n);
         l.end = end;
         let at = self.layer.min(n);
+        // a new layer joins the folder/mask of the layer it's inserted above
+        l.parent = self.timeline().layers.get(at).and_then(|c| c.parent);
+        self.remap_layer_parents(|i| Some(if i >= at { i + 1 } else { i }));
         self.timeline_mut().layers.insert(at, l);
         self.layer = at;
         self.selection.clear();
@@ -207,7 +216,15 @@ impl Editor {
         }
         self.checkpoint("Delete Layer");
         let i = self.layer;
+        let up = self.timeline().layers[i].parent;
+        // children of a deleted folder/mask move up one level
+        for l in &mut self.timeline_mut().layers {
+            if l.parent == Some(i) {
+                l.parent = up;
+            }
+        }
         self.timeline_mut().layers.remove(i);
+        self.remap_layer_parents(|p| Some(if p > i { p - 1 } else { p }));
         self.frame_sel = None;
         self.fix_indices();
     }
@@ -217,8 +234,22 @@ impl Editor {
             return;
         }
         self.checkpoint("Move Layer");
+        // old index → new index after moving `from` to `to`
+        let map = move |i: usize| {
+            Some(if i == from {
+                to
+            } else if from < to && i > from && i <= to {
+                i - 1
+            } else if to < from && i >= to && i < from {
+                i + 1
+            } else {
+                i
+            })
+        };
+        self.remap_layer_parents(map);
         let l = self.timeline_mut().layers.remove(from);
         self.timeline_mut().layers.insert(to, l);
+        self.fix_layer_tree();
         self.layer = to;
         self.selection.clear();
         self.frame_sel = None;
@@ -785,6 +816,10 @@ impl Editor {
     pub fn break_apart(&mut self) {
         let Some(&s) = self.selection.first() else { return };
         let Some(el) = self.element_at(s) else { return };
+        if matches!(el.kind, ElementKind::Group(_)) {
+            self.ungroup_selected();
+            return;
+        }
         let ElementKind::Instance(inst) = &el.kind else { return };
         let Some(sym) = self.doc.symbol(inst.symbol) else { return };
         let mut parts: Vec<Element> = Vec::new();
@@ -821,8 +856,93 @@ impl Editor {
         if self.editing == Some(id) {
             return; // can't place a symbol inside itself
         }
-        let el = Element::instance(&sym.name.clone(), id, Matrix::translate(at.x, at.y));
+        // like Animate, new instances have no instance name until you give one
+        let _ = sym;
+        let el = Element::instance("", id, Matrix::translate(at.x, at.y));
         self.add_element(el);
+    }
+
+    // ---- bitmaps (File › Import)
+    /// Add an imported bitmap to the library; returns its id.
+    pub fn add_bitmap(&mut self, mut asset: crate::bitmap::BitmapAsset) -> crate::bitmap::BitmapId {
+        self.checkpoint("Import");
+        asset.id = self.doc.next_bitmap_id();
+        let id = asset.id;
+        self.doc.bitmaps.push(asset);
+        id
+    }
+    /// Place a bitmap with its top-left at `at`.
+    pub fn place_bitmap(&mut self, id: crate::bitmap::BitmapId, at: Pt) -> Option<Selection> {
+        self.doc.bitmap(id)?;
+        self.add_element(Element::bitmap("", id, Matrix::translate(at.x, at.y)))
+    }
+    pub fn rename_bitmap(&mut self, id: crate::bitmap::BitmapId, name: &str) {
+        if self.doc.bitmap(id).is_some() {
+            self.checkpoint("Rename Library Item");
+            if let Some(b) = self.doc.bitmaps.iter_mut().find(|b| b.id == id) {
+                b.name = name.into();
+            }
+        }
+    }
+    fn timelines_mut(&mut self) -> Vec<&mut Timeline> {
+        let mut v = vec![&mut self.doc.scene];
+        v.extend(self.doc.library.iter_mut().map(|s| &mut s.timeline));
+        v
+    }
+    pub fn bitmap_usage(&self, id: crate::bitmap::BitmapId) -> usize {
+        fn count(els: &[Element], id: crate::bitmap::BitmapId) -> usize {
+            els.iter().map(|e| match &e.kind {
+                ElementKind::Bitmap(b) if b.bitmap == id => 1,
+                ElementKind::Group(c) => count(c, id),
+                _ => 0,
+            }).sum()
+        }
+        std::iter::once(&self.doc.scene).chain(self.doc.library.iter().map(|s| &s.timeline)).flat_map(|t| t.layers.iter()).flat_map(|l| l.keyframes.values()).map(|k| count(&k.elements, id)).sum()
+    }
+    /// Delete a library bitmap and every placed copy of it.
+    pub fn delete_bitmap(&mut self, id: crate::bitmap::BitmapId) {
+        self.checkpoint("Delete Library Item");
+        fn strip(els: &mut Vec<Element>, id: crate::bitmap::BitmapId) {
+            els.retain(|e| !matches!(&e.kind, ElementKind::Bitmap(b) if b.bitmap == id));
+            for e in els {
+                if let ElementKind::Group(c) = &mut e.kind {
+                    strip(c, id);
+                }
+            }
+        }
+        for tl in self.timelines_mut() {
+            for l in &mut tl.layers {
+                let before: Vec<usize> = l.keyframes.values().map(|k| k.elements.len()).collect();
+                for k in l.keyframes.values_mut() {
+                    strip(&mut k.elements, id);
+                }
+                let after: Vec<usize> = l.keyframes.values().map(|k| k.elements.len()).collect();
+                if before != after {
+                    l.bones.clear(); // indices changed; bones on that layer can't be trusted
+                }
+            }
+        }
+        self.doc.bitmaps.retain(|b| b.id != id);
+        self.selection.clear();
+    }
+
+    pub fn set_bitmap_smoothing(&mut self, id: crate::bitmap::BitmapId, on: bool) {
+        if self.doc.bitmap(id).map(|b| b.smoothing != on).unwrap_or(false) {
+            self.checkpoint("Bitmap Properties");
+            if let Some(b) = self.doc.bitmaps.iter_mut().find(|b| b.id == id) {
+                b.smoothing = on;
+            }
+        }
+    }
+
+    /// Classic tween option: rotate with the motion guide's direction.
+    pub fn set_orient_to_path(&mut self, on: bool) {
+        self.for_each_layer("Orient to Path", |l, s| {
+            let starts: Vec<u32> = l.keyframes.keys().copied().filter(|&k| k <= s.f1 && l.span_end(k) > s.f0).collect();
+            for k in starts {
+                l.keyframes.get_mut(&k).unwrap().orient_to_path = on;
+            }
+        });
     }
 
     pub fn new_symbol(&mut self, name: &str, kind: SymbolKind) -> SymbolId {
@@ -842,19 +962,32 @@ impl Editor {
 
     /// Number of instances of `id` anywhere in the document.
     pub fn symbol_usage(&self, id: SymbolId) -> usize {
-        let count = |tl: &Timeline| {
-            tl.layers.iter().flat_map(|l| l.keyframes.values()).flat_map(|k| &k.elements).filter(|e| matches!(&e.kind, ElementKind::Instance(i) if i.symbol == id)).count()
-        };
+        fn n(els: &[Element], id: SymbolId) -> usize {
+            els.iter().map(|e| match &e.kind {
+                ElementKind::Instance(i) if i.symbol == id => 1,
+                ElementKind::Group(c) => n(c, id),
+                _ => 0,
+            }).sum()
+        }
+        let count = |tl: &Timeline| tl.layers.iter().flat_map(|l| l.keyframes.values()).map(|k| n(&k.elements, id)).sum::<usize>();
         count(&self.doc.scene) + self.doc.library.iter().map(|s| count(&s.timeline)).sum::<usize>()
     }
 
     /// Delete a library item and every instance of it.
     pub fn delete_symbol(&mut self, id: SymbolId) {
         self.checkpoint("Delete Library Item");
+        fn strip_els(els: &mut Vec<Element>, id: SymbolId) {
+            els.retain(|e| !matches!(&e.kind, ElementKind::Instance(i) if i.symbol == id));
+            for e in els {
+                if let ElementKind::Group(c) = &mut e.kind {
+                    strip_els(c, id);
+                }
+            }
+        }
         let strip = |tl: &mut Timeline| {
             for l in &mut tl.layers {
                 for k in l.keyframes.values_mut() {
-                    k.elements.retain(|e| !matches!(&e.kind, ElementKind::Instance(i) if i.symbol == id));
+                    strip_els(&mut k.elements, id);
                 }
             }
         };
@@ -902,7 +1035,7 @@ impl Editor {
         self.selection = vec![sel];
         self.modify_selected("Paint Bucket", |el| match &mut el.kind {
             ElementKind::Shape(s) => s.fill = Some(color),
-            ElementKind::Instance(_) => el.tint = Some((color, 0.6)),
+            ElementKind::Instance(_) | ElementKind::Bitmap(_) | ElementKind::Group(_) => el.tint = Some((color, 0.6)),
             ElementKind::Text(t) => t.color = color,
         });
     }
@@ -1134,6 +1267,460 @@ impl Editor {
     }
     pub fn camera_from(center: Pt, rotation_deg: f32, zoom: f32) -> Matrix {
         Matrix::translate(center.x, center.y).concat(&Matrix::rotate(rotation_deg.to_radians())).concat(&Matrix::scale(zoom.max(0.01), zoom.max(0.01)))
+    }
+}
+
+/// Align panel operations (Modify › Align, Ctrl+K).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AlignOp {
+    Left,
+    HCenter,
+    Right,
+    Top,
+    VCenter,
+    Bottom,
+    DistLeft,
+    DistHCenter,
+    DistRight,
+    DistTop,
+    DistVCenter,
+    DistBottom,
+    MatchWidth,
+    MatchHeight,
+    MatchSize,
+    SpaceH,
+    SpaceV,
+}
+
+// ------------------------------------------------------------ groups, align, layer tree
+impl Editor {
+    /// Modify › Group (Ctrl+G): selected objects on each layer become one group.
+    pub fn group_selected(&mut self) -> usize {
+        let sels: Vec<Selection> = self.selection.iter().copied().filter(|s| self.layer_editable(s.layer)).collect();
+        if sels.is_empty() {
+            return 0;
+        }
+        self.checkpoint("Group");
+        let mut layers: Vec<usize> = sels.iter().map(|s| s.layer).collect();
+        layers.sort();
+        layers.dedup();
+        let mut new_sel = Vec::new();
+        for li in layers {
+            let Some(start) = self.target_keyframe(li, true) else { continue };
+            let mut idx: Vec<usize> = sels.iter().filter(|s| s.layer == li).map(|s| s.element).collect();
+            idx.sort();
+            let els = &mut self.timeline_mut().layers[li].keyframes.get_mut(&start).unwrap().elements;
+            idx.retain(|i| *i < els.len());
+            if idx.is_empty() {
+                continue;
+            }
+            let at = idx[0];
+            let mut children = Vec::new();
+            for i in idx.iter().rev() {
+                children.push(els.remove(*i));
+            }
+            children.reverse();
+            els.insert(at, Element::group(children));
+            let gone = idx.clone();
+            self.remap_bones(li, move |i| if gone.contains(&i) { None } else { Some(i - gone.iter().filter(|g| **g < i).count() + usize::from(i > at)) });
+            new_sel.push(Selection { layer: li, element: at });
+        }
+        let n = new_sel.len();
+        self.selection = new_sel;
+        n
+    }
+
+    /// Modify › Ungroup (Ctrl+Shift+G); Break Apart also ungroups.
+    pub fn ungroup_selected(&mut self) -> usize {
+        let mut sels: Vec<Selection> = self.selection.iter().copied().filter(|s| self.layer_editable(s.layer) && matches!(self.element_at(*s).map(|e| e.kind), Some(ElementKind::Group(_)))).collect();
+        if sels.is_empty() {
+            return 0;
+        }
+        self.checkpoint("Ungroup");
+        sels.sort_by(|a, b| b.cmp(a)); // last first so indices stay valid
+        let mut new_sel = Vec::new();
+        let mut count = 0;
+        for s in sels {
+            let Some(start) = self.target_keyframe(s.layer, true) else { continue };
+            let els = &mut self.timeline_mut().layers[s.layer].keyframes.get_mut(&start).unwrap().elements;
+            let Some(g) = els.get(s.element).cloned() else { continue };
+            let ElementKind::Group(children) = g.kind else { continue };
+            els.remove(s.element);
+            let n = children.len();
+            for (i, mut c) in children.into_iter().enumerate() {
+                c.matrix = g.matrix.concat(&c.matrix);
+                c.alpha *= g.alpha;
+                if c.tint.is_none() {
+                    c.tint = g.tint;
+                }
+                els.insert(s.element + i, c);
+            }
+            let at = s.element;
+            self.remap_bones(s.layer, move |i| if i == at { None } else if i > at { Some(i + n - 1) } else { Some(i) });
+            for sel in &mut new_sel {
+                let sel: &mut Selection = sel;
+                if sel.layer == s.layer && sel.element > at {
+                    sel.element += n - 1;
+                }
+            }
+            new_sel.extend((at..at + n).map(|element| Selection { layer: s.layer, element }));
+            count += 1;
+        }
+        new_sel.sort();
+        self.selection = new_sel;
+        count
+    }
+
+    /// Align panel. `to_stage` aligns to the stage instead of the selection.
+    pub fn align(&mut self, op: AlignOp, to_stage: bool) {
+        let sels: Vec<Selection> = self.selection.iter().copied().filter(|s| self.layer_editable(s.layer)).collect();
+        let boxes: Vec<(Selection, Pt, Pt)> = sels.iter().filter_map(|s| self.bounds_of(&[*s]).map(|(lo, hi)| (*s, lo, hi))).collect();
+        if boxes.is_empty() || (!to_stage && boxes.len() < 2 && !matches!(op, AlignOp::MatchWidth | AlignOp::MatchHeight | AlignOp::MatchSize)) {
+            return;
+        }
+        let (rlo, rhi) = if to_stage {
+            if self.editing.is_some() {
+                (pt(0.0, 0.0), pt(0.0, 0.0))
+            } else {
+                (pt(0.0, 0.0), pt(self.doc.width, self.doc.height))
+            }
+        } else {
+            boxes.iter().fold((pt(f32::MAX, f32::MAX), pt(f32::MIN, f32::MIN)), |(a, b), (_, lo, hi)| (pt(a.x.min(lo.x), a.y.min(lo.y)), pt(b.x.max(hi.x), b.y.max(hi.y))))
+        };
+        let n = boxes.len();
+        // per object: (dx, dy, sx, sy) — scale is about the object's top-left
+        let mut ops: Vec<(Selection, Pt, f32, f32, Pt)> = boxes.iter().map(|(s, lo, _)| (*s, pt(0.0, 0.0), 1.0, 1.0, *lo)).collect();
+        let cx = |lo: Pt, hi: Pt| (lo.x + hi.x) / 2.0;
+        let cy = |lo: Pt, hi: Pt| (lo.y + hi.y) / 2.0;
+        let distribute = |key: &dyn Fn(Pt, Pt) -> f32, horizontal: bool, ops: &mut Vec<(Selection, Pt, f32, f32, Pt)>| {
+            let mut order: Vec<usize> = (0..n).collect();
+            order.sort_by(|a, b| key(boxes[*a].1, boxes[*a].2).total_cmp(&key(boxes[*b].1, boxes[*b].2)));
+            let (k0, k1) = if to_stage {
+                if horizontal { (rlo.x, rhi.x) } else { (rlo.y, rhi.y) }
+            } else {
+                (key(boxes[order[0]].1, boxes[order[0]].2), key(boxes[order[n - 1]].1, boxes[order[n - 1]].2))
+            };
+            for (rank, i) in order.iter().enumerate() {
+                let want = if n > 1 { k0 + (k1 - k0) * rank as f32 / (n - 1) as f32 } else { (k0 + k1) / 2.0 };
+                let d = want - key(boxes[*i].1, boxes[*i].2);
+                if horizontal { ops[*i].1.x = d } else { ops[*i].1.y = d }
+            }
+        };
+        match op {
+            AlignOp::Left => ops.iter_mut().zip(&boxes).for_each(|(o, b)| o.1.x = rlo.x - b.1.x),
+            AlignOp::Right => ops.iter_mut().zip(&boxes).for_each(|(o, b)| o.1.x = rhi.x - b.2.x),
+            AlignOp::HCenter => ops.iter_mut().zip(&boxes).for_each(|(o, b)| o.1.x = (rlo.x + rhi.x) / 2.0 - cx(b.1, b.2)),
+            AlignOp::Top => ops.iter_mut().zip(&boxes).for_each(|(o, b)| o.1.y = rlo.y - b.1.y),
+            AlignOp::Bottom => ops.iter_mut().zip(&boxes).for_each(|(o, b)| o.1.y = rhi.y - b.2.y),
+            AlignOp::VCenter => ops.iter_mut().zip(&boxes).for_each(|(o, b)| o.1.y = (rlo.y + rhi.y) / 2.0 - cy(b.1, b.2)),
+            AlignOp::DistLeft => distribute(&|lo, _| lo.x, true, &mut ops),
+            AlignOp::DistHCenter => distribute(&|lo, hi| (lo.x + hi.x) / 2.0, true, &mut ops),
+            AlignOp::DistRight => distribute(&|_, hi| hi.x, true, &mut ops),
+            AlignOp::DistTop => distribute(&|lo, _| lo.y, false, &mut ops),
+            AlignOp::DistVCenter => distribute(&|lo, hi| (lo.y + hi.y) / 2.0, false, &mut ops),
+            AlignOp::DistBottom => distribute(&|_, hi| hi.y, false, &mut ops),
+            AlignOp::MatchWidth | AlignOp::MatchHeight | AlignOp::MatchSize => {
+                let (tw, th) = if to_stage { (rhi.x - rlo.x, rhi.y - rlo.y) } else { boxes.iter().fold((0.0f32, 0.0f32), |(w, h), (_, lo, hi)| (w.max(hi.x - lo.x), h.max(hi.y - lo.y))) };
+                for (o, (_, lo, hi)) in ops.iter_mut().zip(&boxes) {
+                    let (w, h) = ((hi.x - lo.x).max(1e-3), (hi.y - lo.y).max(1e-3));
+                    if op != AlignOp::MatchHeight && tw > 0.0 {
+                        o.2 = tw / w;
+                    }
+                    if op != AlignOp::MatchWidth && th > 0.0 {
+                        o.3 = th / h;
+                    }
+                }
+            }
+            AlignOp::SpaceH | AlignOp::SpaceV => {
+                let h = op == AlignOp::SpaceH;
+                let mut order: Vec<usize> = (0..n).collect();
+                order.sort_by(|a, b| if h { boxes[*a].1.x.total_cmp(&boxes[*b].1.x) } else { boxes[*a].1.y.total_cmp(&boxes[*b].1.y) });
+                let total: f32 = boxes.iter().map(|(_, lo, hi)| if h { hi.x - lo.x } else { hi.y - lo.y }).sum();
+                let (a, b) = if h { (rlo.x, rhi.x) } else { (rlo.y, rhi.y) };
+                let gap = if n > 1 { ((b - a) - total) / (n - 1) as f32 } else { 0.0 };
+                let mut cur = a;
+                for i in order {
+                    let (lo, hi) = (boxes[i].1, boxes[i].2);
+                    if h {
+                        ops[i].1.x = cur - lo.x;
+                        cur += hi.x - lo.x + gap;
+                    } else {
+                        ops[i].1.y = cur - lo.y;
+                        cur += hi.y - lo.y + gap;
+                    }
+                }
+            }
+        }
+        self.checkpoint("Align");
+        let keep = self.selection.clone();
+        for (s, d, sx, sy, anchor) in ops {
+            if d.x.abs() < 1e-4 && d.y.abs() < 1e-4 && (sx - 1.0).abs() < 1e-5 && (sy - 1.0).abs() < 1e-5 {
+                continue;
+            }
+            let m = Matrix::translate(d.x, d.y).concat(&Matrix::translate(anchor.x, anchor.y)).concat(&Matrix::scale(sx, sy)).concat(&Matrix::translate(-anchor.x, -anchor.y));
+            self.selection = vec![s];
+            self.modify_selected_continuous(|e| e.matrix = m.concat(&e.matrix));
+        }
+        self.selection = keep;
+    }
+
+    // ---- layer tree (folders, masks, guides)
+    fn remap_layer_parents(&mut self, f: impl Fn(usize) -> Option<usize>) {
+        for l in &mut self.timeline_mut().layers {
+            l.parent = l.parent.and_then(&f);
+        }
+    }
+
+    /// Parents must be above their children and be a folder, mask or guide.
+    fn fix_layer_tree(&mut self) {
+        let kinds: Vec<LayerKind> = self.timeline().layers.iter().map(|l| l.kind).collect();
+        for (i, l) in self.timeline_mut().layers.iter_mut().enumerate() {
+            if let Some(p) = l.parent {
+                if p >= i || !matches!(kinds[p], LayerKind::Folder | LayerKind::Mask | LayerKind::Guide) {
+                    l.parent = None;
+                }
+            }
+        }
+    }
+
+    /// How deep a layer is nested (for indenting the Timeline).
+    pub fn layer_depth(&self, i: usize) -> usize {
+        let tl = self.timeline();
+        let mut d = 0;
+        let mut cur = tl.layers.get(i).and_then(|l| l.parent);
+        while let Some(p) = cur {
+            d += 1;
+            if d > 32 {
+                break;
+            }
+            cur = tl.layers.get(p).and_then(|l| l.parent);
+        }
+        d
+    }
+
+    /// Is layer `i` inside a collapsed folder (hidden from the Timeline list)?
+    pub fn layer_collapsed_away(&self, i: usize) -> bool {
+        let tl = self.timeline();
+        let mut cur = tl.layers.get(i).and_then(|l| l.parent);
+        let mut guard = 0;
+        while let Some(p) = cur {
+            if tl.layers.get(p).map(|l| l.kind == LayerKind::Folder && l.collapsed).unwrap_or(false) {
+                return true;
+            }
+            cur = tl.layers.get(p).and_then(|l| l.parent);
+            guard += 1;
+            if guard > 32 {
+                break;
+            }
+        }
+        false
+    }
+
+    pub fn set_layer_kind(&mut self, i: usize, kind: LayerKind) {
+        if self.timeline().layers.get(i).map(|l| l.kind == kind || l.kind == LayerKind::Camera).unwrap_or(true) {
+            return;
+        }
+        self.checkpoint("Layer Type");
+        let was = self.timeline().layers[i].kind;
+        self.timeline_mut().layers[i].kind = kind;
+        if was != LayerKind::Normal && kind == LayerKind::Normal {
+            // children are released
+            for l in &mut self.timeline_mut().layers {
+                if l.parent == Some(i) {
+                    l.parent = None;
+                }
+            }
+        }
+        self.fix_layer_tree();
+        self.selection.retain(|s| s.layer != i);
+    }
+
+    /// Put layer `i` under `parent` (a folder, mask or guide above it), or at top level.
+    pub fn set_layer_parent(&mut self, i: usize, parent: Option<usize>) {
+        let n = self.timeline().layers.len();
+        if i >= n || parent == self.timeline().layers[i].parent {
+            return;
+        }
+        if let Some(p) = parent {
+            if p >= i || !matches!(self.timeline().layers[p].kind, LayerKind::Folder | LayerKind::Mask | LayerKind::Guide) {
+                return;
+            }
+        }
+        self.checkpoint("Layer Parent");
+        self.timeline_mut().layers[i].parent = parent;
+    }
+
+    /// Insert a new folder/mask/guide layer above the current one and put the
+    /// current layer inside it (Insert › Timeline › Layer Folder, Add Classic
+    /// Motion Guide, …). Returns the new layer's index.
+    pub fn wrap_layer(&mut self, kind: LayerKind, name: &str) -> usize {
+        let cur = self.layer.min(self.timeline().layers.len().saturating_sub(1));
+        let outer = self.timeline().layers.get(cur).and_then(|l| l.parent);
+        self.add_layer();
+        let at = self.layer; // == cur; the old layer is now at cur + 1
+        let l = &mut self.timeline_mut().layers[at];
+        l.kind = kind;
+        l.name = name.into();
+        l.parent = outer;
+        if kind != LayerKind::Folder {
+            l.keyframes.clear();
+            l.keyframes.insert(0, Keyframe::blank());
+        }
+        self.timeline_mut().layers[at + 1].parent = Some(at);
+        self.squash_undo(self.undo_depth() - 1, match kind { LayerKind::Folder => "New Folder", LayerKind::Mask => "Add Mask", LayerKind::Guide => "Add Motion Guide", _ => "New Layer" });
+        at
+    }
+
+    /// Layer › Mask: the layer becomes a mask for the layer right below it.
+    pub fn make_mask(&mut self, i: usize) {
+        let n = self.timeline().layers.len();
+        if i + 1 >= n {
+            return;
+        }
+        self.checkpoint("Mask");
+        let parent = self.timeline().layers[i].parent;
+        let tl = self.timeline_mut();
+        tl.layers[i].kind = LayerKind::Mask;
+        if tl.layers[i + 1].kind == LayerKind::Normal {
+            tl.layers[i + 1].parent = Some(i);
+        }
+        tl.layers[i].parent = parent;
+        // Animate locks both so the mask effect shows while authoring
+        tl.layers[i].locked = true;
+        tl.layers[i + 1].locked = true;
+        self.selection.retain(|s| s.layer != i && s.layer != i + 1);
+    }
+
+    /// Is `anc` an ancestor (folder/mask/guide chain) of layer `i`?
+    fn layer_is_under(&self, i: usize, anc: usize) -> bool {
+        let tl = self.timeline();
+        let mut cur = tl.layers.get(i).and_then(|l| l.parent);
+        let mut guard = 0;
+        while let Some(p) = cur {
+            if p == anc {
+                return true;
+            }
+            cur = tl.layers.get(p).and_then(|l| l.parent);
+            guard += 1;
+            if guard > 32 {
+                break;
+            }
+        }
+        false
+    }
+
+    /// Timeline drag-and-drop: move layer `from` (with everything inside it)
+    /// to row `to`; it joins the folder/mask/guide it lands in.
+    pub fn drop_layer(&mut self, from: usize, to: usize) {
+        let n = self.timeline().layers.len();
+        if from >= n || to >= n || from == to {
+            return;
+        }
+        // the block: `from` and the run of its descendants right below it
+        let mut end = from + 1;
+        while end < n && self.layer_is_under(end, from) {
+            end += 1;
+        }
+        if (from..end).contains(&to) {
+            return; // can't drop a folder into itself
+        }
+        self.checkpoint("Move Layer");
+        let mut order: Vec<usize> = (0..n).filter(|i| !(from..end).contains(i)).collect();
+        // insert position in the reduced list: before the target row
+        let pos = order.iter().position(|&i| i == to).unwrap_or(order.len());
+        let pos = if to > from { pos + 1 } else { pos };
+        let block: Vec<usize> = (from..end).collect();
+        order.splice(pos..pos, block);
+        let mut new_of = vec![0usize; n];
+        for (new, &old) in order.iter().enumerate() {
+            new_of[old] = new;
+        }
+        let old_layers = std::mem::take(&mut self.timeline_mut().layers);
+        let mut slots: Vec<Option<Layer>> = old_layers.into_iter().map(Some).collect();
+        let mut layers: Vec<Layer> = order.iter().map(|&o| slots[o].take().unwrap()).collect();
+        for l in &mut layers {
+            l.parent = l.parent.map(|p| new_of[p]);
+        }
+        // nesting of the dropped layer: into the container right above, or a sibling of the layer below
+        let head = new_of[from];
+        let above = head.checked_sub(1).and_then(|a| layers.get(a).map(|l| (a, l.kind, l.collapsed)));
+        let below_parent = layers.get(head + (end - from)).and_then(|l| l.parent).filter(|p| *p < head);
+        layers[head].parent = match above {
+            Some((a, LayerKind::Folder, false)) | Some((a, LayerKind::Mask, _)) | Some((a, LayerKind::Guide, _)) => Some(a),
+            _ => below_parent,
+        };
+        self.timeline_mut().layers = layers;
+        self.fix_layer_tree();
+        self.layer = head;
+        self.selection.clear();
+        self.frame_sel = None;
+    }
+
+    /// Duplicate a layer (and its content) above itself.
+    pub fn duplicate_layer(&mut self) {
+        let i = self.layer;
+        let Some(mut l) = self.timeline().layers.get(i).cloned() else { return };
+        if l.kind == LayerKind::Camera {
+            return;
+        }
+        self.checkpoint("Duplicate Layer");
+        l.name = format!("{} copy", l.name);
+        self.remap_layer_parents(|p| Some(if p >= i { p + 1 } else { p }));
+        self.timeline_mut().layers.insert(i, l);
+        self.selection.clear();
+        self.frame_sel = None;
+    }
+
+    /// Layer Properties: colour and flags in one undo step.
+    pub fn set_layer_look(&mut self, i: usize, color: Color, visible: bool, locked: bool, outline: bool) {
+        let Some(l) = self.timeline().layers.get(i) else { return };
+        if (l.color, l.visible, l.locked, l.outline) == (color, visible, locked, outline) {
+            return;
+        }
+        self.checkpoint("Layer Properties");
+        let l = &mut self.timeline_mut().layers[i];
+        l.color = color;
+        l.visible = visible;
+        l.locked = locked;
+        l.outline = outline;
+        let tl = self.timeline();
+        let keep: Vec<Selection> = self.selection.iter().copied().filter(|s| tl.layers.get(s.layer).map(|l| l.visible && !l.locked).unwrap_or(false)).collect();
+        self.selection = keep;
+    }
+
+    // ---- ruler guides
+    /// Add a guide (vertical = at x). Returns its index.
+    pub fn add_guide(&mut self, vertical: bool, pos: f32) -> usize {
+        self.checkpoint("Add Guide");
+        let v = if vertical { &mut self.doc.guides.x } else { &mut self.doc.guides.y };
+        v.push(pos);
+        v.len() - 1
+    }
+    /// Move a guide during a drag (call `begin_edit` first).
+    pub fn move_guide(&mut self, vertical: bool, i: usize, pos: f32) {
+        let v = if vertical { &mut self.doc.guides.x } else { &mut self.doc.guides.y };
+        if let Some(g) = v.get_mut(i) {
+            *g = pos;
+        }
+    }
+    pub fn remove_guide(&mut self, vertical: bool, i: usize) {
+        self.checkpoint("Remove Guide");
+        let v = if vertical { &mut self.doc.guides.x } else { &mut self.doc.guides.y };
+        if i < v.len() {
+            v.remove(i);
+        }
+    }
+    pub fn clear_guides(&mut self) {
+        if !self.doc.guides.is_empty() {
+            self.checkpoint("Clear Guides");
+            self.doc.guides = Default::default();
+        }
+    }
+
+    pub fn toggle_folder(&mut self, i: usize) {
+        if let Some(l) = self.timeline_mut().layers.get_mut(i) {
+            l.collapsed = !l.collapsed;
+        }
     }
 }
 

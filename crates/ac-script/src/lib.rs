@@ -1,4 +1,4 @@
-//! AnimateCraft scripting.
+//! AnimationCraft scripting.
 //!
 //! Two kinds of script, deliberately kept apart:
 //!
@@ -35,11 +35,11 @@ pub const MAX_LINE: usize = 1 << 20;
 pub const MAX_COMMANDS: usize = 200_000;
 
 pub const PROTOCOL: &str = "\
-AnimateCraft script protocol (any language)
+AnimationCraft script protocol (any language)
 -------------------------------------------
 The script is started with its folder as the working directory and these
 environment variables: ANIMATECRAFT=1, ANIMATECRAFT_HELPERS=<folder with
-animatecraft.py / animatecraft.js / animatecraft.rb>.
+animationcraft.py / animationcraft.js / animationcraft.rb>.
 
 To call a command, write ONE line to stdout and flush:
     \\x1eAC {\"id\": 1, \"cmd\": \"draw.rect\", \"args\": {\"x\": 10, \"y\": 10, \"w\": 50, \"h\": 50}}
@@ -123,9 +123,9 @@ impl Language {
     pub fn example(self) -> &'static str {
         match self {
             Language::Js => "// Draw a row of stars on a new layer, then tween them.\nac.layer.add({ name: \"Stars\" });\nfor (let i = 0; i < 5; i++) {\n  ac.draw.polystar({ cx: 60 + i * 100, cy: 200, r: 30, star: true, fill: \"#FFC41F\" });\n}\nac.timeline.insert_keyframe({ layer: \"Stars\", frame: 24 });\nconst n = ac.select.layer({ layer: \"Stars\" });\nac.selection.rotate({ degrees: 72 });\nac.timeline.set_tween({ kind: \"classic\", layer: \"Stars\", frame: 1 });\nprint(\"Stars:\", n);\n",
-            Language::Python => "import animatecraft as ac\n\n# Draw a row of stars on a new layer, then tween them.\nac.layer.add(name=\"Stars\")\nfor i in range(5):\n    ac.draw.polystar(cx=60 + i * 100, cy=200, r=30, star=True, fill=\"#FFC41F\")\nac.timeline.insert_keyframe(layer=\"Stars\", frame=24)\nn = ac.select.layer(layer=\"Stars\")\nac.selection.rotate(degrees=72)\nac.timeline.set_tween(kind=\"classic\", layer=\"Stars\", frame=1)\nprint(\"Stars:\", n)\n",
-            Language::Node => "import ac from \"./animatecraft.mjs\";\n\nac.layer.add({ name: \"Stars\" });\nfor (let i = 0; i < 5; i++) {\n  ac.draw.polystar({ cx: 60 + i * 100, cy: 200, r: 30, star: true, fill: \"#FFC41F\" });\n}\nconsole.log(\"Layers:\", ac.layer.list().length);\n",
-            Language::Ruby => "require \"animatecraft\"\n\nac = AnimateCraft\nac.call(\"layer.add\", name: \"Stars\")\n5.times do |i|\n  ac.call(\"draw.polystar\", cx: 60 + i * 100, cy: 200, r: 30, star: true, fill: \"#FFC41F\")\nend\nputs \"Layers: #{ac.call('layer.list').length}\"\n",
+            Language::Python => "import animationcraft as ac\n\n# Draw a row of stars on a new layer, then tween them.\nac.layer.add(name=\"Stars\")\nfor i in range(5):\n    ac.draw.polystar(cx=60 + i * 100, cy=200, r=30, star=True, fill=\"#FFC41F\")\nac.timeline.insert_keyframe(layer=\"Stars\", frame=24)\nn = ac.select.layer(layer=\"Stars\")\nac.selection.rotate(degrees=72)\nac.timeline.set_tween(kind=\"classic\", layer=\"Stars\", frame=1)\nprint(\"Stars:\", n)\n",
+            Language::Node => "import ac from \"./animationcraft.mjs\";\n\nac.layer.add({ name: \"Stars\" });\nfor (let i = 0; i < 5; i++) {\n  ac.draw.polystar({ cx: 60 + i * 100, cy: 200, r: 30, star: true, fill: \"#FFC41F\" });\n}\nconsole.log(\"Layers:\", ac.layer.list().length);\n",
+            Language::Ruby => "require \"animationcraft\"\n\nac = AnimationCraft\nac.call(\"layer.add\", name: \"Stars\")\n5.times do |i|\n  ac.call(\"draw.polystar\", cx: 60 + i * 100, cy: 200, r: 30, star: true, fill: \"#FFC41F\")\nend\nputs \"Layers: #{ac.call('layer.list').length}\"\n",
         }
     }
 }
@@ -297,9 +297,9 @@ fn finish(ed: &mut Editor, mark: usize, label: &str) {
 
 // ------------------------------------------------------------------ authoring: external processes
 
-const PY_HELPER: &str = r##""""AnimateCraft scripting helper for Python.
+const PY_HELPER: &str = r##""""AnimationCraft scripting helper for Python.
 
-    import animatecraft as ac
+    import animationcraft as ac
     ac.draw.rect(x=10, y=10, w=100, h=50, fill="#FF0000")
     info = ac.doc.info()
 
@@ -317,7 +317,7 @@ except Exception:
     pass
 
 
-class AnimateCraftError(RuntimeError):
+class AnimationCraftError(RuntimeError):
     pass
 
 
@@ -329,10 +329,10 @@ def call(cmd, args=None, **kw):
     _sys.stdout.flush()
     line = _sys.stdin.readline()
     if not line:
-        raise AnimateCraftError("AnimateCraft closed the connection")
+        raise AnimationCraftError("AnimationCraft closed the connection")
     reply = _json.loads(line)
     if "error" in reply:
-        raise AnimateCraftError(cmd + ": " + reply["error"])
+        raise AnimationCraftError(cmd + ": " + reply["error"])
     return reply.get("result")
 
 
@@ -355,8 +355,8 @@ def __getattr__(name):  # module-level: ac.draw, ac.layer, ...
     return _Group(name)
 "##;
 
-const NODE_HELPER: &str = r##"// AnimateCraft scripting helper for Node.js (ES module).
-//   import ac from "./animatecraft.mjs";   // copied next to your script while it runs
+const NODE_HELPER: &str = r##"// AnimationCraft scripting helper for Node.js (ES module).
+//   import ac from "./animationcraft.mjs";   // copied next to your script while it runs
 //   ac.draw.rect({ x: 10, y: 10, w: 100, h: 50 });
 import fs from "node:fs";
 const MARK = "\x1eAC ";
@@ -369,7 +369,7 @@ function readLine() {
     let read = 0;
     try { read = fs.readSync(0, buf, 0, buf.length, null); }
     catch (e) { if (e.code === "EAGAIN") continue; throw e; }
-    if (read === 0) throw new Error("AnimateCraft closed the connection");
+    if (read === 0) throw new Error("AnimationCraft closed the connection");
     pending += buf.toString("utf8", 0, read);
   }
 }
@@ -388,18 +388,18 @@ const ac = new Proxy({ call }, { get: (t, k) => (k in t ? t[k] : group(String(k)
 export default ac;
 "##;
 
-const RUBY_HELPER: &str = r##"# AnimateCraft scripting helper for Ruby.
-#   require "animatecraft"
-#   AnimateCraft.call("draw.rect", x: 10, y: 10, w: 100, h: 50)
+const RUBY_HELPER: &str = r##"# AnimationCraft scripting helper for Ruby.
+#   require "animationcraft"
+#   AnimationCraft.call("draw.rect", x: 10, y: 10, w: 100, h: 50)
 require "json"
 $stdout.sync = true
-module AnimateCraft
+module AnimationCraft
   MARK = "\x1eAC "
   @n = 0
   def self.call(cmd, args = {})
     @n += 1
     $stdout.write(MARK + JSON.generate({ id: @n, cmd: cmd, args: args }) + "\n")
-    line = $stdin.gets or raise "AnimateCraft closed the connection"
+    line = $stdin.gets or raise "AnimationCraft closed the connection"
     reply = JSON.parse(line)
     raise "#{cmd}: #{reply['error']}" if reply.key?("error")
     reply["result"]
@@ -409,9 +409,9 @@ end
 
 /// Write the language helpers into a folder and return it.
 pub fn helper_dir() -> std::io::Result<PathBuf> {
-    let dir = std::env::temp_dir().join(format!("animatecraft-helpers-{}", env!("CARGO_PKG_VERSION")));
+    let dir = std::env::temp_dir().join(format!("animationcraft-helpers-{}", env!("CARGO_PKG_VERSION")));
     std::fs::create_dir_all(&dir)?;
-    for (name, body) in [("animatecraft.py", PY_HELPER), ("animatecraft.mjs", NODE_HELPER), ("animatecraft.rb", RUBY_HELPER)] {
+    for (name, body) in [("animationcraft.py", PY_HELPER), ("animationcraft.mjs", NODE_HELPER), ("animationcraft.rb", RUBY_HELPER)] {
         let p = dir.join(name);
         if std::fs::read_to_string(&p).map(|s| s != body).unwrap_or(true) {
             std::fs::write(&p, body)?;
@@ -486,7 +486,7 @@ fn run_external_in(ed: &mut Editor, script: &Path, candidates: &[Vec<String>], o
     // Node resolves relative imports from the script, so put the helper beside it too.
     if script.extension().map(|e| e == "mjs").unwrap_or(false) {
         if let Some(dir) = script.parent() {
-            let _ = std::fs::write(dir.join("animatecraft.mjs"), NODE_HELPER);
+            let _ = std::fs::write(dir.join("animationcraft.mjs"), NODE_HELPER);
         }
     }
     let script_abs = std::fs::canonicalize(script).unwrap_or_else(|_| script.to_path_buf());
@@ -630,6 +630,21 @@ pub enum PlayAction {
     Goto { frame: u32, play: bool },
 }
 
+/// A named instance as frame scripts see it (`this.ball.x`), CreateJS-style.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Instance {
+    pub name: String,
+    pub x: f32,
+    pub y: f32,
+    /// degrees
+    pub rotation: f32,
+    pub scale_x: f32,
+    pub scale_y: f32,
+    pub alpha: f32,
+    pub visible: bool,
+}
+
 const FRAME_PRELUDE: &str = r##"
 var __tl = {
   stop() { __ac_act("stop", ""); },
@@ -639,6 +654,19 @@ var __tl = {
   nextFrame() { __ac_act("goto_stop", String(this.currentFrame + 1)); },
   prevFrame() { __ac_act("goto_stop", String(Math.max(0, this.currentFrame - 1))); },
 };
+__tl.getChildByName = function(n) { return this[n] || null; };
+var __ac_before = [];
+function __ac_bind(json) {
+  __ac_before = JSON.parse(json);
+  for (const o of __ac_before) { __tl[o.name] = Object.assign({}, o); }
+}
+function __ac_dump() {
+  return JSON.stringify(__ac_before.map(o => {
+    const c = __tl[o.name];
+    if (!c) return o;
+    return { name: o.name, x: +c.x, y: +c.y, rotation: +c.rotation, scaleX: +c.scaleX, scaleY: +c.scaleY, alpha: +c.alpha, visible: !!c.visible };
+  }));
+}
 var stop = () => __tl.stop(), play = () => __tl.play();
 var gotoAndPlay = (f) => __tl.gotoAndPlay(f), gotoAndStop = (f) => __tl.gotoAndStop(f);
 "##;
@@ -676,6 +704,28 @@ impl FramePlayer {
     /// Run one frame's script. `frame` is 0-based; `labels` maps frame labels
     /// to 0-based frames. Returns the playhead actions the script requested.
     pub fn run(&mut self, code: &str, frame: u32, total: u32, labels: &[(String, u32)]) -> Result<Vec<PlayAction>, String> {
+        self.run_with(code, frame, total, labels, &[]).map(|r| r.0)
+    }
+
+    /// Like `run`, exposing named instances as `this.<name>` (x, y, rotation,
+    /// scaleX, scaleY, alpha, visible). Returns the instances the script changed.
+    pub fn run_with(&mut self, code: &str, frame: u32, total: u32, labels: &[(String, u32)], instances: &[Instance]) -> Result<(Vec<PlayAction>, Vec<Instance>), String> {
+        let json = serde_json::to_string(instances).map_err(|e| e.to_string())?;
+        self.ctx.with(|ctx| -> Result<(), String> {
+            let f: Function = ctx.globals().get("__ac_bind").map_err(|e| e.to_string())?;
+            f.call::<_, ()>((json,)).map_err(|e| js_error(&ctx, e))
+        })?;
+        let actions = self.run_inner(code, frame, total, labels)?;
+        let after: String = self.ctx.with(|ctx| -> Result<String, String> {
+            let f: Function = ctx.globals().get("__ac_dump").map_err(|e| e.to_string())?;
+            f.call::<_, String>(()).map_err(|e| js_error(&ctx, e))
+        })?;
+        let after: Vec<Instance> = serde_json::from_str(&after).map_err(|e| format!("instance values must be numbers: {e}"))?;
+        let changed = after.into_iter().zip(instances).filter(|(a, b)| a != *b).map(|(a, _)| a).collect();
+        Ok((actions, changed))
+    }
+
+    fn run_inner(&mut self, code: &str, frame: u32, total: u32, labels: &[(String, u32)]) -> Result<Vec<PlayAction>, String> {
         self.actions.borrow_mut().clear();
         *self.deadline.borrow_mut() = Instant::now() + self.frame_budget;
         let budget = self.frame_budget;

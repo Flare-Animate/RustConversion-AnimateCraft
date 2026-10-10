@@ -1,6 +1,6 @@
-# Scripting AnimateCraft
+# Scripting AnimationCraft
 
-AnimateCraft has two kinds of script. They look similar but have very
+AnimationCraft has two kinds of script. They look similar but have very
 different jobs and safety rules, so they are kept apart on purpose.
 
 | | Frame scripts | Authoring scripts |
@@ -32,6 +32,22 @@ files, cannot reach the network, and cannot change the document. A runaway
 loop is stopped after 100 ms and memory is capped at 32 MB. That is what makes
 it safe to open files other people send you.
 
+### Instances in frame scripts
+
+Give a symbol instance (or text, bitmap or group) an **instance name** in
+Properties, and frame scripts can read and change it while the movie plays,
+CreateJS-style:
+
+```js
+this.ball.x += 10;
+this.getChildByName("ball").alpha = 0.5;
+if (this.ball.x > 500) this.ball.visible = false;
+```
+
+Supported properties: `x`, `y`, `rotation` (degrees), `scaleX`, `scaleY`,
+`alpha`, `visible`. Changes last until playback stops; the document itself is
+never modified.
+
 ## Authoring scripts (Commands ▸ Script Console)
 
 Pick a language, write or load a script, press **Run**. A whole run is **one
@@ -49,7 +65,7 @@ ac.export.gif({ path: "out.gif" });
 
 ```python
 # Python — uses the Python installed on your computer
-import animatecraft as ac
+import animationcraft as ac
 ac.layer.add(name="Stars")
 ac.draw.polystar(cx=100, cy=100, r=30, star=True, fill="#FFC41F")
 info = ac.doc.info()
@@ -58,14 +74,14 @@ print(info["frames"], "frames")
 
 ```js
 // Node.js (.mjs)
-import ac from "./animatecraft.mjs";
+import ac from "./animationcraft.mjs";
 ac.draw.rect({ x: 10, y: 10, w: 80, h: 40, radius: 8 });
 ```
 
 ```ruby
 # Ruby
-require "animatecraft"
-AnimateCraft.call("draw.text", x: 20, y: 20, text: "Hello", size: 32)
+require "animationcraft"
+AnimationCraft.call("draw.text", x: 20, y: 20, text: "Hello", size: 32)
 ```
 
 Run a file from the console's **Script file** box, or headless:
@@ -94,6 +110,22 @@ ac.selection.set_gradient({ kind: "radial", colors: ["#FFFFFF", "#2D8CEB"] }); /
 ac.bone.add({ x1: 100, y1: 100, x2: 180, y2: 100 });   // from the object at (x1,y1) to the one at (x2,y2)
 ac.bone.drag({ x: 260, y: 100, to_x: 220, to_y: 180 }); // pose with inverse kinematics
 ac.camera.set({ x: 275, y: 200, zoom: 1.5, rotation: 10, frame: 24 });
+```
+
+### Layers, groups, alignment, filters, import
+
+```js
+ac.layer.wrap({ kind: "mask", layer: "Photo" });       // a mask above "Photo"
+ac.layer.wrap({ kind: "guide", layer: "Ball" });       // classic motion guide
+ac.layer.set({ layer: "Sun", parent: "Sky" });          // put a layer in a folder
+ac.timeline.set_tween({ kind: "classic", orient: true, layer: "Ball" });
+ac.select.all();
+ac.selection.group();                                   // ungroup: selection.ungroup
+ac.selection.align({ op: "hcenter", to_stage: true });
+ac.selection.add_filter({ type: "drop_shadow", distance: 8, color: "#203040" });
+ac.selection.set_blend({ mode: "multiply" });
+ac.import.image({ path: "badge.png", x: 20, y: 20 });  // PNG into the library + stage
+ac.draw.text({ x: 40, y: 40, text: "Hi", font: "DejaVu Serif" }); // any installed font
 ```
 
 ### Any other language

@@ -1,6 +1,6 @@
 [package]
 name = "ac-script"
-description = "AnimateCraft scripting: sandboxed frame scripts (JS) and authoring scripts in JS, Python or any language"
+description = "AnimationCraft scripting: sandboxed frame scripts (JS) and authoring scripts in JS, Python or any language"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -10,3 +10,4 @@ ac-core.workspace = true
 ac-render.workspace = true
 serde_json.workspace = true
 rquickjs = "0.14"
+serde.workspace = true

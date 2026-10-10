@@ -1,16 +1,21 @@
-//! AnimateCraft desktop editor. Layout follows Adobe Animate's default
+//! AnimationCraft desktop editor. Layout follows Adobe Animate's default
 //! "Essentials" workspace: menu bar, Tools (left), Stage (centre),
 //! Properties + Library (right), Timeline (bottom).
 
+mod files;
+mod import;
 mod panels;
+mod publish;
+mod rulers;
 mod scripting;
 mod stage;
 mod timeline;
 mod toolbar;
+mod windows;
 
 use toolbar::Tool;
 
-use ac_core::{demo::demo_document, Color, Document, Editor, ElementKind, Matrix, Pt, SymbolId, SymbolKind};
+use ac_core::{demo::demo_document, Color, Editor, ElementKind, Matrix, Pt, SymbolId, SymbolKind};
 use eframe::egui::{self, vec2, Align2, Color32, Key, Modifiers, Rect, RichText, Stroke as EStroke, Vec2};
 
 pub(crate) const ACCENT: Color32 = Color32::from_rgb(0x2D, 0x8C, 0xEB);
@@ -29,18 +34,16 @@ pub(crate) enum Dialog {
     Symbol { convert: bool, name: String, kind: SymbolKind },
     RenameSymbol { id: SymbolId, name: String },
     DeleteSymbol { id: SymbolId, uses: usize },
+    RenameBitmap { id: u32, name: String },
+    DeleteBitmap { id: u32, uses: usize },
+    Unsaved(files::Pending),
+    Recover { original: Option<String>, age_secs: u64 },
     ScaleRotate { scale: f32, rotate: f32 },
+    LayerProps { i: usize, name: String, kind: ac_core::LayerKind, parent: Option<usize>, color: Color32, visible: bool, locked: bool, outline: bool },
     About,
 }
 
-#[derive(Clone, Copy)]
-pub(crate) enum FileAction {
-    Open,
-    Save,
-    ExportGif,
-    ExportPng,
-    ExportSvg,
-}
+pub(crate) use files::FileAction;
 
 pub struct App {
     pub(crate) ctx: egui::Context,
@@ -69,7 +72,16 @@ pub struct App {
     pub(crate) prop_dragging: bool,
     pub(crate) dialog: Dialog,
     pub(crate) status: String,
-    file_path: Option<String>,
+    pub(crate) file_path: Option<String>,
+    pub(crate) settings: files::Settings,
+    /// Editor revision at the last save/open (dirty = different).
+    pub(crate) saved_rev: u64,
+    pub(crate) autosave_rev: u64,
+    pub(crate) dirty_since: Option<f64>,
+    pub(crate) quit_confirmed: bool,
+    /// Run after the next successful save (Save in the unsaved-changes prompt).
+    pub(crate) after_save: Option<files::Pending>,
+    title_shown: String,
     pub(crate) tl: timeline::TimelineState,
     pub(crate) topts: toolbar::ToolOpts,
     pub(crate) pen: Option<stage::PenState>,
@@ -85,6 +97,13 @@ pub struct App {
     pub(crate) transform_open: bool,
     pub(crate) xf: panels::TransformPanel,
     pub(crate) lib: panels::LibraryState,
+    pub(crate) publish: publish::PublishSettings,
+    pub(crate) font_search: String,
+    pub(crate) view: rulers::ViewOpts,
+    pub(crate) align_open: bool,
+    pub(crate) align_to_stage: bool,
+    pub(crate) info_open: bool,
+    pub(crate) info_cache: Option<((u64, u32), tiny_skia::Pixmap)>,
     last_sel: (Vec<ac_core::Selection>, Option<ac_core::FrameSel>),
     screenshot: Option<(String, u32)>,
 }
@@ -108,6 +127,7 @@ impl App {
         cc.egui_ctx.set_visuals(v);
         cc.egui_ctx.style_mut(|s| s.spacing.item_spacing = vec2(6.0, 5.0));
 
+        ac_render::fonts::install_system_fonts();
         let mut app = App {
             ctx: cc.egui_ctx.clone(),
             ed: Editor::new(demo_document()),
@@ -135,6 +155,13 @@ impl App {
             dialog: Dialog::None,
             status: "Demo loaded. Enter = play · click frames to select · Delete removes the selection · right-click for menus".into(),
             file_path: None,
+            settings: files::Settings::load(),
+            saved_rev: 0,
+            autosave_rev: 0,
+            dirty_since: None,
+            quit_confirmed: false,
+            after_save: None,
+            title_shown: String::new(),
             tl: Default::default(),
             topts: Default::default(),
             pen: None,
@@ -148,9 +175,20 @@ impl App {
             transform_open: false,
             xf: Default::default(),
             lib: Default::default(),
+            publish: Default::default(),
+            font_search: String::new(),
+            view: Default::default(),
+            align_open: false,
+            align_to_stage: false,
+            info_open: false,
+            info_cache: None,
             last_sel: (vec![], None),
             screenshot: None,
         };
+        app.lib.left = app.settings.library_left;
+        if std::env::var_os("AC_SCREENSHOT").is_none() {
+            app.check_recovery();
+        }
         // Headless screenshot hook used by CI/docs: AC_SCREENSHOT=out.png [AC_SCREENSHOT_FRAME=n]
         if let Ok(p) = std::env::var("AC_SCREENSHOT") {
             let frame: u32 = std::env::var("AC_SCREENSHOT_FRAME").ok().and_then(|s| s.parse().ok()).unwrap_or(14);
@@ -238,7 +276,7 @@ impl App {
     /// Put a marker on the system clipboard: platforms only deliver a Paste
     /// event when the system clipboard isn't empty.
     fn mark_clipboard(&self) {
-        self.ctx.copy_text("AnimateCraft clipboard".into());
+        self.ctx.copy_text("AnimationCraft clipboard".into());
     }
     pub(crate) fn cut(&mut self) {
         if !self.ed.selection.is_empty() {
@@ -281,32 +319,6 @@ impl App {
         self.status = "Editing symbol. Press Esc or click the scene name to go back.".into();
     }
 
-    fn do_file(&mut self, action: FileAction, path: &str) {
-        let p = std::path::Path::new(path);
-        let res: Result<String, String> = match action {
-            FileAction::Open => std::fs::read_to_string(p).map_err(|e| e.to_string()).and_then(|s| {
-                Document::from_json(&s).map_err(|e| e.to_string()).map(|d| {
-                    self.ed = Editor::new(d);
-                    self.fit_pending = true;
-                    self.file_path = Some(path.into());
-                    format!("Opened {path}")
-                })
-            }),
-            FileAction::Save => std::fs::write(p, self.ed.doc.to_json()).map_err(|e| e.to_string()).map(|_| {
-                self.file_path = Some(path.into());
-                format!("Saved {}", std::fs::canonicalize(p).map(|c| c.display().to_string()).unwrap_or(path.into()))
-            }),
-            FileAction::ExportGif => ac_render::export_gif(&self.ed.doc, 1.0, p).map(|_| format!("Exported animated GIF to {path}")),
-            FileAction::ExportPng => ac_render::export_png(&self.ed.doc, self.ed.frame, 2.0, p).map(|_| format!("Exported frame {} to {path}", self.ed.frame + 1)),
-            FileAction::ExportSvg => std::fs::write(p, ac_render::export_svg(&self.ed.doc, self.ed.frame)).map_err(|e| e.to_string()).map(|_| format!("Exported SVG to {path}")),
-        };
-        self.status = res.unwrap_or_else(|e| format!("Error: {e}"));
-    }
-
-    pub(crate) fn open_path_dialog(&mut self, title: &str, default: &str, action: FileAction) {
-        self.dialog = Dialog::Path { title: title.into(), path: default.into(), action };
-    }
-
     fn shortcuts(&mut self, ctx: &egui::Context) {
         if ctx.memory(|m| m.focused().is_some()) || !matches!(self.dialog, Dialog::None) {
             return;
@@ -347,13 +359,25 @@ impl App {
         if k(cmd, Key::A) { self.ed.select_all(); }
         if k(cmd, Key::B) { self.ed.break_apart(); }
         if k(cmd, Key::T) { self.transform_open = !self.transform_open; }
+        if k(cmd, Key::K) { self.align_open = !self.align_open; }
+        if k(cmd | sh | Modifiers::ALT, Key::R) { self.view.rulers = !self.view.rulers; }
+        if k(cmd | sh, Key::Quote) { self.view.snap_grid = !self.view.snap_grid; }
+        if k(cmd, Key::Quote) { self.view.grid = !self.view.grid; }
+        if k(cmd | Modifiers::ALT, Key::Semicolon) { self.view.lock_guides = !self.view.lock_guides; }
+        if k(cmd | sh, Key::Semicolon) { self.view.snap_guides = !self.view.snap_guides; }
+        if k(cmd, Key::Semicolon) { self.view.guides = !self.view.guides; }
+        if k(cmd, Key::I) { self.info_open = !self.info_open; }
+        if k(cmd | sh, Key::G) { let n = self.ed.ungroup_selected(); if n > 0 { self.status = format!("Ungrouped {n} group(s)"); } }
+        if k(cmd, Key::G) { let n = self.ed.group_selected(); if n > 0 { self.status = "Grouped".into(); } }
         if k(cmd, Key::L) { self.lib.open = !self.lib.open; }
         if k(cmd | Modifiers::ALT, Key::S) { self.open_scale_rotate(); }
-        if k(cmd, Key::S) {
-            let p = self.file_path.clone().unwrap_or_else(|| "untitled.acx.json".into());
-            self.do_file(FileAction::Save, &p);
-        }
-        if k(cmd, Key::O) { self.open_path_dialog("Open document", "untitled.acx.json", FileAction::Open); }
+        if k(cmd | sh, Key::S) { self.file(FileAction::Save); }
+        if k(cmd, Key::S) { self.save(); }
+        if k(cmd, Key::O) { self.guarded(files::Pending::Open); }
+        if k(cmd, Key::N) { self.guarded(files::Pending::New); }
+        if k(cmd, Key::Q) { self.guarded(files::Pending::Quit); }
+        if k(cmd | sh, Key::F12) { self.publish.open = true; }
+        if k(cmd, Key::R) { self.file(FileAction::ImportImage); }
         if k(cmd, Key::Equals) || k(cmd, Key::Plus) { self.zoom *= 1.25; }
         if k(cmd, Key::Minus) { self.zoom /= 1.25; }
         if k(cmd, Key::Num1) { self.zoom = 1.0; }
@@ -410,6 +434,23 @@ impl App {
         if let Some(id) = inst {
             if ui.button("Edit Symbol").clicked() { self.edit_symbol(id); ui.close_menu(); }
         }
+        if ui.add_enabled(has_sel, egui::Button::new("Group").shortcut_text("Ctrl+G")).clicked() { self.ed.group_selected(); ui.close_menu(); }
+        let has_group = self.ed.selection.iter().any(|s| matches!(self.ed.element_at(*s).map(|e| e.kind), Some(ElementKind::Group(_))));
+        if ui.add_enabled(has_group, egui::Button::new("Ungroup").shortcut_text("Ctrl+Shift+G")).clicked() { self.ed.ungroup_selected(); ui.close_menu(); }
+        ui.menu_button("Align", |ui| {
+            use ac_core::editor::AlignOp::*;
+            ui.checkbox(&mut self.align_to_stage, "To Stage");
+            ui.separator();
+            for (l, o) in [("Left", Left), ("Horizontal Center", HCenter), ("Right", Right), ("Top", Top), ("Vertical Center", VCenter), ("Bottom", Bottom)] {
+                if ui.button(l).clicked() { self.ed.align(o, self.align_to_stage); ui.close_menu(); }
+            }
+            ui.separator();
+            for (l, o) in [("Distribute Widths Evenly", SpaceH), ("Distribute Heights Evenly", SpaceV), ("Make Same Width", MatchWidth), ("Make Same Height", MatchHeight)] {
+                if ui.button(l).clicked() { self.ed.align(o, self.align_to_stage); ui.close_menu(); }
+            }
+            ui.separator();
+            if ui.button("Align Panel…").clicked() { self.align_open = true; ui.close_menu(); }
+        });
         ui.menu_button("Arrange", |ui| {
             if ui.button("Bring to Front").clicked() { self.ed.arrange(true); ui.close_menu(); }
             if ui.button("Send to Back").clicked() { self.ed.arrange(false); ui.close_menu(); }
@@ -444,6 +485,11 @@ impl App {
         if ui.add(egui::Button::new("Transform Panel").shortcut_text("Ctrl+T")).clicked() { self.transform_open = true; ui.close_menu(); }
     }
 
+    pub(crate) fn open_layer_props(&mut self, i: usize) {
+        let Some(l) = self.ed.timeline().layers.get(i) else { return };
+        self.dialog = Dialog::LayerProps { i, name: l.name.clone(), kind: l.kind, parent: l.parent, color: c32(l.color), visible: l.visible, locked: l.locked, outline: l.outline };
+    }
+
     pub(crate) fn open_scale_rotate(&mut self) {
         if self.ed.selection.is_empty() {
             self.status = "Select something first.".into();
@@ -471,23 +517,41 @@ impl App {
         egui::TopBottomPanel::top("menu").show(ctx, |ui| {
             egui::menu::bar(ui, |ui| {
                 ui.menu_button("File", |ui| {
-                    if ui.button("New").clicked() { self.ed = Editor::new(Document::default()); self.fit_pending = true; self.file_path = None; ui.close_menu(); }
-                    if ui.button("Open Demo Scene").clicked() { self.ed = Editor::new(demo_document()); self.fit_pending = true; ui.close_menu(); }
-                    if ui.add(egui::Button::new("Open…").shortcut_text("Ctrl+O")).clicked() { self.open_path_dialog("Open document", "untitled.acx.json", FileAction::Open); ui.close_menu(); }
-                    ui.separator();
-                    if ui.add(egui::Button::new("Save").shortcut_text("Ctrl+S")).clicked() {
-                        let p = self.file_path.clone().unwrap_or_else(|| "untitled.acx.json".into());
-                        self.do_file(FileAction::Save, &p);
-                        ui.close_menu();
-                    }
-                    if ui.button("Save As…").clicked() { self.open_path_dialog("Save document as", "untitled.acx.json", FileAction::Save); ui.close_menu(); }
-                    ui.menu_button("Export", |ui| {
-                        if ui.button("Export Animated GIF…").clicked() { self.open_path_dialog("Export animated GIF", "animation.gif", FileAction::ExportGif); ui.close_menu(); }
-                        if ui.button("Export Image (PNG)…").clicked() { self.open_path_dialog("Export current frame as PNG", "frame.png", FileAction::ExportPng); ui.close_menu(); }
-                        if ui.button("Export SVG…").clicked() { self.open_path_dialog("Export current frame as SVG", "frame.svg", FileAction::ExportSvg); ui.close_menu(); }
+                    if ui.add(egui::Button::new("New").shortcut_text("Ctrl+N")).clicked() { self.guarded(files::Pending::New); ui.close_menu(); }
+                    if ui.add(egui::Button::new("Open…").shortcut_text("Ctrl+O")).clicked() { self.guarded(files::Pending::Open); ui.close_menu(); }
+                    ui.menu_button("Open Recent", |ui| {
+                        if self.settings.recent.is_empty() {
+                            ui.label(RichText::new("No recent files").color(Color32::from_gray(140)));
+                        }
+                        for r in self.settings.recent.clone() {
+                            let name = std::path::Path::new(&r).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or(r.clone());
+                            if ui.button(name).on_hover_text(&r).clicked() { self.guarded(files::Pending::OpenPath(r)); ui.close_menu(); }
+                        }
+                        if !self.settings.recent.is_empty() {
+                            ui.separator();
+                            if ui.button("Clear Recent").clicked() { self.settings.recent.clear(); self.settings.save(); ui.close_menu(); }
+                        }
                     });
+                    if ui.button("Open Demo Scene").clicked() { self.guarded(files::Pending::OpenDemo); ui.close_menu(); }
                     ui.separator();
-                    if ui.button("Quit").clicked() { ctx.send_viewport_cmd(egui::ViewportCommand::Close); }
+                    if ui.add(egui::Button::new("Save").shortcut_text("Ctrl+S")).clicked() { self.save(); ui.close_menu(); }
+                    if ui.add(egui::Button::new("Save As…").shortcut_text("Ctrl+Shift+S")).clicked() { self.file(FileAction::Save); ui.close_menu(); }
+                    ui.separator();
+                    ui.menu_button("Import", |ui| {
+                        if ui.add(egui::Button::new("Import to Stage…").shortcut_text("Ctrl+R")).on_hover_text("PNG, JPG, GIF, BMP").clicked() { self.file(FileAction::ImportImage); ui.close_menu(); }
+                        if ui.button("Import Image Sequence…").on_hover_text("walk0001.png, walk0002.png, … onto consecutive keyframes").clicked() { self.file(FileAction::ImportSequence); ui.close_menu(); }
+                        if ui.button("Import SVG…").clicked() { self.file(FileAction::ImportSvg); ui.close_menu(); }
+                    });
+                    ui.menu_button("Export", |ui| {
+                        if ui.button("Export Image (PNG)…").clicked() { self.file(FileAction::ExportPng); ui.close_menu(); }
+                        if ui.button("Export SVG…").clicked() { self.file(FileAction::ExportSvg); ui.close_menu(); }
+                        if ui.button("Export Animated GIF…").clicked() { self.file(FileAction::ExportGif); ui.close_menu(); }
+                        if ui.button("Export PNG Sequence…").clicked() { self.file(FileAction::ExportPngSequence); ui.close_menu(); }
+                        if ui.button("Export Video…").on_hover_text("MP4 / WebM / MOV (needs ffmpeg)").clicked() { self.file(FileAction::ExportVideo); ui.close_menu(); }
+                    });
+                    if ui.add(egui::Button::new("Publish Settings…").shortcut_text("Ctrl+Shift+F12")).clicked() { self.publish.open = true; ui.close_menu(); }
+                    ui.separator();
+                    if ui.add(egui::Button::new("Quit").shortcut_text("Ctrl+Q")).clicked() { self.guarded(files::Pending::Quit); ui.close_menu(); }
                 });
                 ui.menu_button("Edit", |ui| {
                     let u = self.ed.undo_label().map(|l| format!("Undo {l}")).unwrap_or("Undo".into());
@@ -508,6 +572,19 @@ impl App {
                     if ui.add_enabled(self.view_rot != 0.0, egui::Button::new("Reset View Rotation")).clicked() { let r = self.stage_rect; self.set_view_rot(r, 0.0); ui.close_menu(); }
                     ui.separator();
                     ui.checkbox(&mut self.topts.show_bones, "Show Bones");
+                    ui.add(egui::Checkbox::new(&mut self.view.rulers, "Rulers")).on_hover_text("Ctrl+Alt+Shift+R");
+                    ui.menu_button("Grid", |ui| {
+                        ui.checkbox(&mut self.view.grid, "Show Grid  (Ctrl+')");
+                        ui.checkbox(&mut self.view.snap_grid, "Snap to Grid  (Ctrl+Shift+')");
+                        if ui.button("Edit Grid…").clicked() { self.view.edit_grid_open = true; ui.close_menu(); }
+                    });
+                    ui.menu_button("Guides", |ui| {
+                        ui.checkbox(&mut self.view.guides, "Show Guides  (Ctrl+;)");
+                        ui.checkbox(&mut self.view.lock_guides, "Lock Guides  (Ctrl+Alt+;)");
+                        ui.checkbox(&mut self.view.snap_guides, "Snap to Guides  (Ctrl+Shift+;)");
+                        if ui.button("Clear Guides").clicked() { self.ed.clear_guides(); ui.close_menu(); }
+                        ui.label(RichText::new("Drag from a ruler to add a guide").small().color(Color32::from_gray(140)));
+                    });
                     ui.separator();
                     ui.label(RichText::new("Library position").small().color(Color32::from_gray(150)));
                     ui.radio_value(&mut self.lib.left, false, "Right, below Properties");
@@ -516,6 +593,9 @@ impl App {
                 ui.menu_button("Insert", |ui| {
                     if ui.add(egui::Button::new("New Symbol…").shortcut_text("Ctrl+F8")).clicked() { self.open_symbol_dialog(false); ui.close_menu(); }
                     if ui.button("New Layer").clicked() { self.ed.add_layer(); ui.close_menu(); }
+                    if ui.button("Layer Folder").clicked() { self.ed.wrap_layer(ac_core::LayerKind::Folder, "Folder"); ui.close_menu(); }
+                    if ui.button("Classic Motion Guide").clicked() { self.ed.wrap_layer(ac_core::LayerKind::Guide, "Motion Guide"); ui.close_menu(); }
+                    if ui.button("Mask Layer").on_hover_text("Makes a mask above the current layer").clicked() { self.ed.wrap_layer(ac_core::LayerKind::Mask, "Mask"); ui.close_menu(); }
                     if self.ed.camera_layer().is_none() {
                         if ui.add_enabled(self.ed.editing.is_none(), egui::Button::new("Camera Layer")).clicked() { self.ed.add_camera(); self.set_tool(Tool::Camera); ui.close_menu(); }
                     } else if ui.button("Remove Camera Layer").clicked() { self.ed.remove_camera(); ui.close_menu(); }
@@ -556,6 +636,8 @@ impl App {
                     if ui.add(egui::Button::new("Actions").shortcut_text("F9")).clicked() { self.scripting.actions_open = true; ui.close_menu(); }
                     if ui.add(egui::SelectableLabel::new(self.lib.open, "Library  (Ctrl+L)")).clicked() { self.lib.open = !self.lib.open; ui.close_menu(); }
                     if ui.add(egui::SelectableLabel::new(self.transform_open, "Transform  (Ctrl+T)")).clicked() { self.transform_open = !self.transform_open; ui.close_menu(); }
+                    if ui.add(egui::SelectableLabel::new(self.align_open, "Align  (Ctrl+K)")).clicked() { self.align_open = !self.align_open; ui.close_menu(); }
+                    if ui.add(egui::SelectableLabel::new(self.info_open, "Info  (Ctrl+I)")).clicked() { self.info_open = !self.info_open; ui.close_menu(); }
                     if ui.add(egui::Button::new("Output").shortcut_text("F2")).clicked() { self.scripting.output_open = true; ui.close_menu(); }
                     if ui.button("Script Console").clicked() { self.scripting.console_open = true; ui.close_menu(); }
                     if ui.button("Command Reference").clicked() { self.scripting.reference_open = true; ui.close_menu(); }
@@ -563,7 +645,7 @@ impl App {
                     if ui.button("Edit Toolbar…").clicked() { self.topts.edit_toolbar_open = true; ui.close_menu(); }
                 });
                 ui.menu_button("Help", |ui| {
-                    if ui.button("About AnimateCraft").clicked() { self.dialog = Dialog::About; ui.close_menu(); }
+                    if ui.button("About AnimationCraft").clicked() { self.dialog = Dialog::About; ui.close_menu(); }
                 });
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.label(egui::RichText::new("Essentials").color(Color32::from_gray(150)));
@@ -596,6 +678,13 @@ impl App {
         let mut rename_ok: Option<(SymbolId, String)> = None;
         let mut delete_ok: Option<SymbolId> = None;
         let mut scale_rot: Option<(f32, f32)> = None;
+        let mut unsaved_choice: Option<(files::Pending, bool)> = None;
+        let mut recover: Option<bool> = None;
+        let mut path_cancelled = false;
+        let mut bitmap_rename: Option<(u32, String)> = None;
+        let mut bitmap_delete: Option<u32> = None;
+        #[allow(clippy::type_complexity)]
+        let mut layer_ok: Option<(usize, String, ac_core::LayerKind, Option<usize>, Color32, bool, bool, bool)> = None;
         let enter = ctx.input(|i| i.key_pressed(Key::Enter));
         let esc = ctx.input(|i| i.key_pressed(Key::Escape));
         let win = |t: &str| egui::Window::new(t.to_string()).collapsible(false).resizable(false).anchor(Align2::CENTER_CENTER, [0.0, 0.0]);
@@ -611,7 +700,7 @@ impl App {
                             run = Some((*action, path.clone()));
                             close = true;
                         }
-                        if ui.button("Cancel").clicked() || esc { close = true; }
+                        if ui.button("Cancel").clicked() || esc { close = true; path_cancelled = true; }
                     });
                 });
             }
@@ -674,9 +763,93 @@ impl App {
                     });
                 });
             }
+            Dialog::RenameBitmap { id, name } => {
+                win("Rename Bitmap").show(ctx, |ui| {
+                    ui.add(egui::TextEdit::singleline(name)).request_focus();
+                    ui.horizontal(|ui| {
+                        if ui.button("OK").clicked() || enter { bitmap_rename = Some((*id, name.clone())); close = true; }
+                        if ui.button("Cancel").clicked() || esc { close = true; }
+                    });
+                });
+            }
+            Dialog::DeleteBitmap { id, uses } => {
+                win("Delete Library Item").show(ctx, |ui| {
+                    ui.label("Delete this bitmap from the library?");
+                    if *uses > 0 {
+                        ui.label(RichText::new(format!("{uses} placed copy/copies will also be removed.")).color(Color32::from_rgb(0xFF, 0xB0, 0x40)));
+                    }
+                    ui.horizontal(|ui| {
+                        if ui.button("Delete").clicked() || enter { bitmap_delete = Some(*id); close = true; }
+                        if ui.button("Cancel").clicked() || esc { close = true; }
+                    });
+                });
+            }
+            Dialog::Unsaved(pending) => {
+                let what = match pending { files::Pending::Quit => "quitting", files::Pending::New => "starting a new document", _ => "opening another document" };
+                win("Unsaved changes").show(ctx, |ui| {
+                    ui.label(format!("Save changes to “{}” before {what}?", self.doc_name()));
+                    ui.horizontal(|ui| {
+                        if ui.button("Save").clicked() || enter { unsaved_choice = Some((pending.clone(), true)); close = true; }
+                        if ui.button("Don't Save").clicked() { unsaved_choice = Some((pending.clone(), false)); close = true; }
+                        if ui.button("Cancel").clicked() || esc { close = true; }
+                    });
+                });
+            }
+            Dialog::Recover { original, age_secs } => {
+                win("Recover unsaved work").show(ctx, |ui| {
+                    ui.label("AnimationCraft didn't close normally last time.");
+                    ui.label(format!("An autosave from {} is available{}.", files::fmt_age(*age_secs), original.as_ref().map(|o| format!(" for {o}")).unwrap_or_default()));
+                    ui.horizontal(|ui| {
+                        if ui.button("Restore").clicked() || enter { recover = Some(true); close = true; }
+                        if ui.button("Discard").clicked() || esc { recover = Some(false); close = true; }
+                    });
+                });
+            }
+            Dialog::LayerProps { i, name, kind, parent, color, visible, locked, outline } => {
+                let li = *i;
+                let containers: Vec<(usize, String)> = self.ed.timeline().layers.iter().enumerate().filter(|(j, l)| *j < li && matches!(l.kind, ac_core::LayerKind::Folder | ac_core::LayerKind::Mask | ac_core::LayerKind::Guide)).map(|(j, l)| (j, l.name.clone())).collect();
+                win("Layer Properties").show(ctx, |ui| {
+                    egui::Grid::new("lp").num_columns(2).spacing([10.0, 6.0]).show(ui, |ui| {
+                        ui.label("Name");
+                        ui.text_edit_singleline(name);
+                        ui.end_row();
+                        ui.label("Show / Lock");
+                        ui.horizontal(|ui| { ui.checkbox(visible, "Show"); ui.checkbox(locked, "Lock"); });
+                        ui.end_row();
+                        ui.label("Type");
+                        ui.vertical(|ui| {
+                            if *kind == ac_core::LayerKind::Camera {
+                                ui.label("Camera");
+                            } else {
+                                ui.radio_value(kind, ac_core::LayerKind::Normal, "Normal");
+                                ui.radio_value(kind, ac_core::LayerKind::Mask, "Mask (reveals its layers through its shapes)");
+                                ui.radio_value(kind, ac_core::LayerKind::Guide, "Guide (not exported; motion guide for its layers)");
+                                ui.radio_value(kind, ac_core::LayerKind::Folder, "Folder");
+                            }
+                        });
+                        ui.end_row();
+                        ui.label("Inside");
+                        let cur = parent.and_then(|p| containers.iter().find(|c| c.0 == p).map(|c| c.1.clone())).unwrap_or("— (top level)".into());
+                        egui::ComboBox::from_id_salt("lp-parent").selected_text(cur).show_ui(ui, |ui| {
+                            ui.selectable_value(parent, None, "— (top level)");
+                            for (j, n) in &containers {
+                                ui.selectable_value(parent, Some(*j), n);
+                            }
+                        });
+                        ui.end_row();
+                        ui.label("Outline colour");
+                        ui.horizontal(|ui| { ui.color_edit_button_srgba(color); ui.checkbox(outline, "View layer as outlines"); });
+                        ui.end_row();
+                    });
+                    ui.horizontal(|ui| {
+                        if ui.button("OK").clicked() || enter { layer_ok = Some((li, name.clone(), *kind, *parent, *color, *visible, *locked, *outline)); close = true; }
+                        if ui.button("Cancel").clicked() || esc { close = true; }
+                    });
+                });
+            }
             Dialog::About => {
-                win("About AnimateCraft").show(ctx, |ui| {
-                    ui.heading("AnimateCraft 0.2 (demo)");
+                win("About AnimationCraft").show(ctx, |ui| {
+                    ui.heading("AnimationCraft 0.2 (demo)");
                     ui.label("Open-source 2D animation authoring in Rust, modelled on the Adobe Animate workflow.");
                     ui.label("Not affiliated with Adobe. Licensed MIT OR Apache-2.0.");
                     if ui.button("Close").clicked() || esc { close = true; }
@@ -686,7 +859,32 @@ impl App {
         if !close {
             self.dialog = d;
         }
+        if path_cancelled { self.after_save = None; }
+        if let Some((id, n)) = bitmap_rename { self.ed.rename_bitmap(id, &n); }
+        if let Some(id) = bitmap_delete { self.ed.delete_bitmap(id); self.lib.bitmap = None; }
+        if let Some((i, name, kind, parent, color, visible, locked, outline)) = layer_ok {
+            let mark = self.ed.undo_depth();
+            if self.ed.timeline().layers[i].name != name && !name.trim().is_empty() { self.ed.rename_layer(i, name.trim()); }
+            self.ed.set_layer_kind(i, kind);
+            self.ed.set_layer_parent(i, parent);
+            self.ed.set_layer_look(i, from32(color), visible, locked, outline);
+            self.ed.squash_undo(mark, "Layer Properties");
+        }
         if let Some((a, p)) = run { self.do_file(a, &p); }
+        if let Some((pending, save)) = unsaved_choice {
+            if save {
+                self.after_save = Some(pending);
+                self.save();
+            } else {
+                self.saved_rev = self.ed.revision;
+                self.run_pending(pending);
+            }
+        }
+        match recover {
+            Some(true) => self.restore_recovery(),
+            Some(false) => files::clear_recovery(),
+            None => {}
+        }
         if let Some((convert, n, k)) = symbol_ok {
             if convert {
                 match self.ed.convert_to_symbol(&n, k) {
@@ -717,7 +915,34 @@ impl App {
 }
 
 impl eframe::App for App {
+    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        // A clean exit leaves no recovery file behind.
+        files::clear_recovery();
+        self.settings.library_left = self.lib.left;
+        self.settings.save();
+    }
+
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // Closing the window with unsaved changes asks first.
+        if ctx.input(|i| i.viewport().close_requested()) && !self.quit_confirmed && self.dirty() && self.screenshot.is_none() {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            self.dialog = Dialog::Unsaved(files::Pending::Quit);
+        }
+        self.autosave_tick(ctx);
+        // Files dropped onto the window are imported (or opened).
+        let dropped: Vec<String> = ctx.input(|i| i.raw.dropped_files.iter().filter_map(|f| f.path.as_ref().map(|p| p.display().to_string())).collect());
+        for p in dropped {
+            match import::dropped(self, &p) {
+                Ok(m) if !m.is_empty() => self.status = m,
+                Ok(_) => {}
+                Err(e) => self.status = format!("Error: {e}"),
+            }
+        }
+        let title = format!("{}{} — AnimationCraft", self.doc_name(), if self.dirty() { " •" } else { "" });
+        if title != self.title_shown {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Title(title.clone()));
+            self.title_shown = title;
+        }
         self.shortcuts(ctx);
         if ctx.memory(|m| m.focused().is_none()) {
             scripting::shortcuts(self, ctx);
@@ -760,8 +985,12 @@ impl eframe::App for App {
         stage::stage(self, ctx);
         panels::library_drag_ghost(self, ctx);
         self.dialogs(ctx);
+        publish::window(self, ctx);
         scripting::windows(self, ctx);
         panels::transform_window(self, ctx);
+        windows::align_window(self, ctx);
+        rulers::edit_grid_window(self, ctx);
+        windows::info_window(self, ctx);
 
         // Screenshot hook (docs/CI): wait a few frames for layout to settle.
         if let Some((path, n)) = &mut self.screenshot {
@@ -790,7 +1019,7 @@ fn main() -> eframe::Result<()> {
         .with_inner_size([1280.0, 800.0])
         .with_min_inner_size([800.0, 520.0])
         .with_maximized(!shot)
-        .with_title("AnimateCraft");
+        .with_title("AnimationCraft");
     let options = eframe::NativeOptions { viewport, ..Default::default() };
-    eframe::run_native("AnimateCraft", options, Box::new(|cc| Ok(Box::new(App::new(cc)))))
+    eframe::run_native("AnimationCraft", options, Box::new(|cc| Ok(Box::new(App::new(cc)))))
 }

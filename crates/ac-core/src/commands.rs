@@ -35,7 +35,7 @@ cmds! {
     "timeline.insert_blank_keyframe", "layer?, frame?", "F7: insert blank keyframe";
     "timeline.clear_keyframe", "layer?, frame?", "Shift+F6: clear keyframe";
     "timeline.clear_frames", "layer?, frame?, to_frame?", "Clear frames (make them empty)";
-    "timeline.set_tween", "kind ('classic'|'shape'|'none'), ease? (-100..100), rotate?, layer?, frame?", "Create or remove a tween on the span at the target";
+    "timeline.set_tween", "kind ('classic'|'shape'|'none'), ease? (-100..100), rotate?, orient? (motion guide), layer?, frame?", "Create or remove a tween on the span at the target";
     "timeline.set_label", "label, layer?, frame?", "Frame label on the keyframe at the target";
     "timeline.set_script", "script, layer?, frame?", "Frame script (JavaScript) on the keyframe at the target";
     "timeline.move_frames", "by, layer?, frame?, to_frame?", "Drag frames left/right";
@@ -43,13 +43,14 @@ cmds! {
     "layer.add", "name?", "New layer above the current one; returns its number";
     "layer.delete", "layer?", "Delete a layer";
     "layer.select", "layer", "Make a layer current (number or name)";
-    "layer.set", "layer?, name?, visible?, locked?, outline?", "Rename or change layer flags";
+    "layer.set", "layer?, name?, visible?, locked?, outline?, kind? ('normal'|'folder'|'mask'|'guide'), parent? (layer or 0 = none)", "Rename, change flags, type, or the folder/mask/guide a layer belongs to";
+    "layer.wrap", "kind ('folder'|'mask'|'guide'), name?, layer?", "Insert a folder / mask / motion guide above a layer and put the layer in it";
     "draw.rect", "x, y, w, h, radius?, fill?, stroke?, stroke_width?", "Rectangle";
     "draw.oval", "x, y, w, h, fill?, stroke?, stroke_width?", "Oval inside a box";
     "draw.line", "x1, y1, x2, y2, stroke?, stroke_width?", "Straight line";
     "draw.polystar", "cx, cy, r, sides? (5), star? (false), inner? (0.5), fill?, stroke?", "Polygon or star";
     "draw.path", "points [[x,y]...], closed?, smooth?, fill?, stroke?, stroke_width?", "Path through points";
-    "draw.text", "x, y, text, size? (24), color?, font? ('sans'|'mono'), align?", "Static text";
+    "draw.text", "x, y, text, size? (24), color?, font? ('sans'|'mono'|system family), align?", "Static text";
     "select.all", "", "Select everything editable on the current frame";
     "select.none", "", "Clear the selection";
     "select.layer", "layer?", "Select every object on one layer (default: current) at the current frame";
@@ -77,6 +78,13 @@ cmds! {
     "camera.set", "x?, y?, zoom?, rotation?, frame?", "Camera centre, zoom (1 = 100%) and rotation at a frame (makes a keyframe)";
     "camera.remove", "", "Remove the camera layer";
     "selection.arrange", "front (bool)", "Bring to front / send to back";
+    "selection.group", "", "Ctrl+G: group the selection (per layer)";
+    "selection.ungroup", "", "Ctrl+Shift+G: ungroup";
+    "selection.align", "op ('left'|'hcenter'|'right'|'top'|'vcenter'|'bottom'|'dist_left'|'dist_hcenter'|'dist_right'|'dist_top'|'dist_vcenter'|'dist_bottom'|'match_width'|'match_height'|'match_size'|'space_h'|'space_v'), to_stage?", "Align panel";
+    "selection.add_filter", "type ('drop_shadow'|'blur'|'glow'|'bevel'|'adjust_color'), …filter fields (blur_x, blur_y, strength, angle, distance, color, brightness, contrast, saturation, hue…)", "Add a filter to the selected objects";
+    "selection.clear_filters", "", "Remove all filters";
+    "selection.set_blend", "mode ('normal'|'multiply'|'screen'|…)", "Blend mode";
+    "import.image", "path (PNG), x?, y?, place? (true)", "Import a PNG into the library (and place it)";
     "library.list", "", "Library items";
     "library.place", "symbol (name or id), x, y", "Place an instance on the current layer";
     "library.rename", "symbol, name", "Rename a library item";
@@ -200,7 +208,9 @@ fn element_json(ed: &Editor, s: Selection) -> Value {
     let (kind, extra) = match &el.kind {
         ElementKind::Shape(sh) => ("shape", json!({ "fill": sh.fill.map(hex), "stroke": sh.stroke.map(|s| hex(s.color)), "stroke_width": sh.stroke.map(|s| s.width) })),
         ElementKind::Instance(i) => ("instance", json!({ "symbol": ed.doc.symbol(i.symbol).map(|s| s.name.clone()) })),
-        ElementKind::Text(t) => ("text", json!({ "text": t.text, "size": t.size, "color": hex(t.color) })),
+        ElementKind::Text(t) => ("text", json!({ "text": t.text, "size": t.size, "color": hex(t.color), "font": t.family })),
+        ElementKind::Group(c) => ("group", json!({ "children": c.len() })),
+        ElementKind::Bitmap(b) => ("bitmap", json!({ "bitmap": ed.doc.bitmap(b.bitmap).map(|a| a.name.clone()) })),
     };
     let b = ed.bounds_of(&[s]);
     json!({
@@ -319,6 +329,9 @@ pub fn execute(ed: &mut Editor, id: &str, a: &Value) -> Result<Value, String> {
                 k => return Err(format!("unknown tween kind '{k}' (classic, shape, none)")),
             };
             ed.set_tween(tween);
+            if let Some(o) = boolean(a, "orient") {
+                ed.set_orient_to_path(o);
+            }
             Ok(Value::Null)
         }
         "timeline.set_label" => {
@@ -386,6 +399,28 @@ pub fn execute(ed: &mut Editor, id: &str, a: &Value) -> Result<Value, String> {
             if boolean(a, "outline").map(|x| x != o).unwrap_or(false) {
                 ed.toggle_layer_flag(i, crate::editor::LayerFlag::Outline);
             }
+            if let Some(k) = string(a, "kind") {
+                let kind = match k {
+                    "normal" => LayerKind::Normal,
+                    "folder" => LayerKind::Folder,
+                    "mask" => LayerKind::Mask,
+                    "guide" => LayerKind::Guide,
+                    k => return Err(format!("unknown layer kind '{k}'")),
+                };
+                ed.set_layer_kind(i, kind);
+            }
+            match a.get("parent") {
+                None => {}
+                Some(Value::Number(n)) if n.as_u64() == Some(0) => ed.set_layer_parent(i, None),
+                Some(Value::Null) => ed.set_layer_parent(i, None),
+                Some(_) => {
+                    let p = layer_arg(ed, a, "parent")?;
+                    ed.set_layer_parent(i, p);
+                    if ed.timeline().layers[i].parent != p {
+                        return Err("parent must be a folder, mask or guide layer above this layer".into());
+                    }
+                }
+            }
             Ok(Value::Null)
         }
         "draw.rect" => {
@@ -431,13 +466,90 @@ pub fn execute(ed: &mut Editor, id: &str, a: &Value) -> Result<Value, String> {
             let stroke = if fill.is_none() && stroke.is_none() { Some(Stroke { color: Color::rgb(0, 0, 0), width: num(a, "stroke_width").unwrap_or(1.0) }) } else { stroke };
             add_shape(ed, "Path", path, if closed { fill } else { None }, stroke)
         }
+        "layer.wrap" => {
+            if let Some(i) = layer_arg(ed, a, "layer")? {
+                ed.layer = i;
+            }
+            let kind = match string(a, "kind").unwrap_or("folder") {
+                "folder" => LayerKind::Folder,
+                "mask" => LayerKind::Mask,
+                "guide" => LayerKind::Guide,
+                k => return Err(format!("unknown kind '{k}' (folder, mask, guide)")),
+            };
+            let name = string(a, "name").unwrap_or(match kind { LayerKind::Folder => "Folder", LayerKind::Mask => "Mask", _ => "Motion Guide" }).to_string();
+            Ok(json!(ed.wrap_layer(kind, &name) + 1))
+        }
+        "selection.group" => Ok(json!(ed.group_selected())),
+        "selection.ungroup" => Ok(json!(ed.ungroup_selected())),
+        "selection.align" => {
+            need_selection(ed)?;
+            use crate::editor::AlignOp::*;
+            let op = match string(a, "op").ok_or("missing 'op'")? {
+                "left" => Left, "hcenter" => HCenter, "right" => Right, "top" => Top, "vcenter" => VCenter, "bottom" => Bottom,
+                "dist_left" => DistLeft, "dist_hcenter" => DistHCenter, "dist_right" => DistRight,
+                "dist_top" => DistTop, "dist_vcenter" => DistVCenter, "dist_bottom" => DistBottom,
+                "match_width" => MatchWidth, "match_height" => MatchHeight, "match_size" => MatchSize,
+                "space_h" => SpaceH, "space_v" => SpaceV,
+                o => return Err(format!("unknown align op '{o}'")),
+            };
+            ed.align(op, boolean(a, "to_stage").unwrap_or(false));
+            Ok(Value::Null)
+        }
+        "selection.add_filter" => {
+            need_selection(ed)?;
+            let ty = string(a, "type").ok_or("missing 'type'")?;
+            let mut f = crate::fx::Filter::default_of(ty).ok_or_else(|| format!("unknown filter '{ty}' (drop_shadow, blur, glow, bevel, adjust_color)"))?;
+            // overlay given fields onto the defaults
+            let mut v = serde_json::to_value(&f).map_err(|e| e.to_string())?;
+            if let (Some(obj), Some(args)) = (v.as_object_mut(), a.as_object()) {
+                for (k, val) in args {
+                    if k == "type" || !obj.contains_key(k) {
+                        continue;
+                    }
+                    let val = match (k.as_str(), val.as_str().and_then(Color::from_hex)) {
+                        ("color" | "shadow" | "highlight", Some(c)) => serde_json::to_value(c).map_err(|e| e.to_string())?,
+                        _ => val.clone(),
+                    };
+                    obj.insert(k.clone(), val);
+                }
+            }
+            f = serde_json::from_value(v).map_err(|e| format!("bad filter fields: {e}"))?;
+            ed.modify_selected("Add Filter", |e| e.filters.push(f.clone()));
+            Ok(Value::Null)
+        }
+        "selection.clear_filters" => {
+            need_selection(ed)?;
+            ed.modify_selected("Remove Filters", |e| e.filters.clear());
+            Ok(Value::Null)
+        }
+        "selection.set_blend" => {
+            need_selection(ed)?;
+            let m = string(a, "mode").ok_or("missing 'mode'")?;
+            let b = crate::fx::BlendMode::from_name(m).ok_or_else(|| format!("unknown blend mode '{m}'"))?;
+            ed.modify_selected("Blend", |e| e.blend = b);
+            Ok(Value::Null)
+        }
+        "import.image" => {
+            let path = string(a, "path").ok_or("missing 'path'")?;
+            let bytes = std::fs::read(path).map_err(|e| format!("{path}: {e}"))?;
+            let name = std::path::Path::new(path).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or("Bitmap".into());
+            let asset = crate::bitmap::BitmapAsset::from_png(&name, bytes)?;
+            let id = ed.add_bitmap(asset);
+            if boolean(a, "place").unwrap_or(true) {
+                let at = pt(num(a, "x").unwrap_or(0.0), num(a, "y").unwrap_or(0.0));
+                ed.place_bitmap(id, at).ok_or("current layer is locked or hidden")?;
+            }
+            Ok(json!(id))
+        }
         "draw.text" => {
             let text = string(a, "text").ok_or("missing 'text'")?;
             let color = color_arg(a, "color")?.flatten().unwrap_or(Color::rgb(0, 0, 0));
             let mut el = Element::text(text, num(a, "size").unwrap_or(24.0).max(1.0), color, pt(req(a, "x")?, req(a, "y")?));
             if let ElementKind::Text(t) = &mut el.kind {
-                if string(a, "font") == Some("mono") {
-                    t.font = crate::text::FontFace::Mono;
+                match string(a, "font") {
+                    Some("mono") => t.font = crate::text::FontFace::Mono,
+                    Some("sans") | None => {}
+                    Some(fam) => t.family = Some(fam.to_string()),
                 }
                 t.align = match string(a, "align") {
                     Some("center") => crate::text::Align::Center,
@@ -554,7 +666,7 @@ pub fn execute(ed: &mut Editor, id: &str, a: &Value) -> Result<Value, String> {
                             t.size = v.max(1.0);
                         }
                     }
-                    ElementKind::Instance(_) => {}
+                    ElementKind::Instance(_) | ElementKind::Group(_) | ElementKind::Bitmap(_) => {}
                 }
             });
             Ok(Value::Null)

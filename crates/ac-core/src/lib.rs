@@ -1,7 +1,9 @@
-//! AnimateCraft core: document model, timeline evaluation, tweens, editing
+//! AnimationCraft core: document model, timeline evaluation, tweens, editing
 //! commands. No UI or rendering dependencies (portable to wasm).
 
+pub mod bitmap;
 pub mod deform;
+pub mod fx;
 pub mod demo;
 pub mod editor;
 pub mod frames;

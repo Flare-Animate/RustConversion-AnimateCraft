@@ -1,12 +1,12 @@
 [package]
 name = "ac-cli"
-description = "AnimateCraft headless CLI: render, export, inspect"
+description = "AnimationCraft headless CLI: render, export, inspect"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 
 [[bin]]
-name = "animatecraft-cli"
+name = "animationcraft-cli"
 path = "src/main.rs"
 
 [dependencies]

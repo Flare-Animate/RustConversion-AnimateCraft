@@ -38,11 +38,14 @@ pub struct ScriptingState {
     actions_key: Option<(Option<u32>, usize, u32)>,
     actions_buf: String,
     actions_dirty: bool,
+    /// Instance properties set by frame scripts during this playback (by instance name).
+    pub overrides: std::collections::HashMap<String, ac_script::Instance>,
 }
 
 impl Default for ScriptingState {
     fn default() -> Self {
         ScriptingState {
+            overrides: Default::default(),
             actions_open: false,
             console_open: false,
             output_open: false,
@@ -129,6 +132,7 @@ fn run_now(app: &mut App, p: Pending) {
 /// Called when playback starts.
 pub fn start_playback(app: &mut App) {
     app.scripting.player = None;
+    app.scripting.overrides.clear();
     enter_frame(app);
 }
 
@@ -158,9 +162,16 @@ pub fn enter_frame(app: &mut App) {
             },
         };
         let mut jumped = false;
+        let mut instances = named_instances(app);
         for code in scripts {
-            match player.run(&code, f, total, &labels) {
-                Ok(actions) => {
+            match player.run_with(&code, f, total, &labels, &instances) {
+                Ok((actions, changed)) => {
+                    for c in changed {
+                        if let Some(i) = instances.iter_mut().find(|i| i.name == c.name) {
+                            *i = c.clone();
+                        }
+                        app.scripting.overrides.insert(c.name.clone(), c);
+                    }
                     for a in actions {
                         match a {
                             PlayAction::Stop => app.playing = false,
@@ -393,7 +404,7 @@ fn reference(app: &mut App, ctx: &egui::Context) {
     egui::Window::new("Command Reference").open(&mut open).default_size([640.0, 440.0]).resizable(true).show(ctx, |ui| {
         ui.label("Every command works the same from every language:");
         ui.label(RichText::new("JavaScript:  ac.draw.rect({x: 10, y: 10, w: 50, h: 50})     Python:  ac.draw.rect(x=10, y=10, w=50, h=50)").monospace().small());
-        ui.label(RichText::new("Node:  ac.draw.rect({...})     Ruby:  AnimateCraft.call(\"draw.rect\", x: 10, ...)     any language: see protocol below").monospace().small());
+        ui.label(RichText::new("Node:  ac.draw.rect({...})     Ruby:  AnimationCraft.call(\"draw.rect\", x: 10, ...)     any language: see protocol below").monospace().small());
         ui.separator();
         egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
             egui::Grid::new("cmdref").striped(true).num_columns(3).show(ui, |ui| {
@@ -468,4 +479,60 @@ fn confirm(app: &mut App, ctx: &egui::Context) {
         }
         _ => {}
     }
+}
+
+/// Named top-level instances at the playhead, with script overrides applied.
+fn named_instances(app: &App) -> Vec<ac_script::Instance> {
+    let mut out = Vec::new();
+    for l in &app.ed.timeline().layers {
+        let Some((els, _)) = ac_core::layer_elements_at(l, app.ed.frame) else { continue };
+        for e in els {
+            let nameable = matches!(e.kind, ac_core::ElementKind::Instance(_) | ac_core::ElementKind::Text(_) | ac_core::ElementKind::Bitmap(_) | ac_core::ElementKind::Group(_));
+            if !nameable || e.name.is_empty() || out.iter().any(|i: &ac_script::Instance| i.name == e.name) {
+                continue;
+            }
+            let d = e.matrix.decompose();
+            let base = ac_script::Instance { name: e.name.clone(), x: e.matrix.tx, y: e.matrix.ty, rotation: d.skew_y.to_degrees(), scale_x: d.scale_x, scale_y: d.scale_y, alpha: e.alpha, visible: true };
+            out.push(app.scripting.overrides.get(&e.name).cloned().unwrap_or(base));
+        }
+    }
+    out
+}
+
+/// Apply script-set instance properties to rendered items (playback only).
+pub fn apply_overrides(app: &App, items: &mut Vec<ac_core::DrawItem>) {
+    if !app.playing || app.scripting.overrides.is_empty() {
+        return;
+    }
+    let tl = app.ed.timeline();
+    type Entry = Option<(ac_core::Matrix, f32, ac_script::Instance)>;
+    let mut cache: std::collections::HashMap<(usize, usize), Entry> = Default::default();
+    items.retain_mut(|it| {
+        let Some((l, e)) = it.src else { return true };
+        let entry = cache.entry((l, e)).or_insert_with(|| {
+            let el = tl.layers.get(l).and_then(|layer| ac_core::layer_elements_at(layer, app.ed.frame)).and_then(|(els, _)| els.get(e).cloned())?;
+            let ov = app.scripting.overrides.get(&el.name)?.clone();
+            Some((el.matrix, el.alpha, ov))
+        });
+        let Some((m, alpha, ov)) = entry else { return true };
+        if !ov.visible {
+            return false;
+        }
+        let mut d = m.decompose();
+        let rot = ov.rotation.to_radians() - d.skew_y;
+        d.skew_x += rot;
+        d.skew_y += rot;
+        d.scale_x = ov.scale_x;
+        d.scale_y = ov.scale_y;
+        d.tx = ov.x;
+        d.ty = ov.y;
+        let want = ac_core::Matrix::compose(&d);
+        if let Some(inv) = m.invert() {
+            it.matrix = want.concat(&inv).concat(&it.matrix);
+        }
+        if *alpha > 1e-4 {
+            it.alpha *= ov.alpha / *alpha;
+        }
+        true
+    });
 }

@@ -3,7 +3,7 @@
 //! playhead, blue frame selection).
 
 use crate::{c32, App, ACCENT};
-use ac_core::{FrameSel, LayerFlag, Tween};
+use ac_core::{FrameSel, LayerFlag, LayerKind, Tween};
 use eframe::egui::{self, pos2, vec2, Align2, Color32, FontId, Rect, Sense, Stroke};
 
 #[derive(Default)]
@@ -63,6 +63,32 @@ pub fn frame_menu(app: &mut App, ui: &mut egui::Ui) {
     }
 }
 
+/// Layer commands (right-click a layer name, Insert › Timeline).
+pub fn layer_menu(app: &mut App, ui: &mut egui::Ui, i: usize) {
+    let kind = app.ed.timeline().layers.get(i).map(|l| l.kind).unwrap_or(LayerKind::Normal);
+    if ui.button("Insert Layer").clicked() { app.ed.layer = i; app.ed.add_layer(); ui.close_menu(); }
+    if ui.button("Delete Layer").clicked() { app.ed.layer = i; app.ed.delete_layer(); ui.close_menu(); }
+    if ui.button("Duplicate Layer").clicked() { app.ed.layer = i; app.ed.duplicate_layer(); ui.close_menu(); }
+    ui.separator();
+    if ui.button("New Folder").on_hover_text("Insert a folder above and put this layer in it").clicked() { app.ed.layer = i; app.ed.wrap_layer(LayerKind::Folder, "Folder"); ui.close_menu(); }
+    if ui.selectable_label(kind == LayerKind::Guide, "Guide").on_hover_text("Guide layers don't export. A guide with layers under it is a motion guide").clicked() {
+        app.ed.set_layer_kind(i, if kind == LayerKind::Guide { LayerKind::Normal } else { LayerKind::Guide });
+        ui.close_menu();
+    }
+    if ui.button("Add Classic Motion Guide").on_hover_text("Classic tweens on this layer follow the first stroke on the guide").clicked() {
+        app.ed.layer = i;
+        app.ed.wrap_layer(LayerKind::Guide, "Motion Guide");
+        app.status = "Draw a path on the Motion Guide layer (Pencil or Pen), then make a classic tween on the layer below.".into();
+        ui.close_menu();
+    }
+    if ui.selectable_label(kind == LayerKind::Mask, "Mask").on_hover_text("Shapes on this layer reveal the layer below; everything else is hidden").clicked() {
+        if kind == LayerKind::Mask { app.ed.set_layer_kind(i, LayerKind::Normal) } else { app.ed.make_mask(i) }
+        ui.close_menu();
+    }
+    ui.separator();
+    if ui.button("Layer Properties…").clicked() { app.open_layer_props(i); ui.close_menu(); }
+}
+
 pub fn panel(app: &mut App, ctx: &egui::Context) {
     egui::TopBottomPanel::bottom("timeline").resizable(true).default_height(230.0).min_height(120.0).show(ctx, |ui| {
         toolbar(app, ui);
@@ -93,6 +119,7 @@ fn toolbar(app: &mut App, ui: &mut egui::Ui) {
         ui.label(egui::RichText::new(format!("{:.1}s", app.ed.frame as f32 / app.ed.doc.fps)).monospace().color(Color32::from_gray(160)));
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             if ui.button("🗑").on_hover_text("Delete layer").clicked() { app.ed.delete_layer(); }
+            if ui.button("📁").on_hover_text("New folder (puts the current layer in it)").clicked() { app.ed.wrap_layer(LayerKind::Folder, "Folder"); }
             if ui.button("➕ Layer").on_hover_text("New layer").clicked() { app.ed.add_layer(); }
             ui.separator();
             if ui.button("Clear").on_hover_text("Clear selected frames (Delete)").clicked() { app.ed.clear_frames(); }
@@ -117,6 +144,10 @@ fn grid(app: &mut App, ui: &mut egui::Ui) {
     let n = app.ed.frame_count();
     let layers = app.ed.timeline().layers.clone();
     let nl = layers.len();
+    // visible rows (layers inside collapsed folders are hidden)
+    let rows: Vec<usize> = (0..nl).filter(|i| !app.ed.layer_collapsed_away(*i)).collect();
+    let nr = rows.len().max(1);
+    let depths: Vec<usize> = (0..nl).map(|i| app.ed.layer_depth(i)).collect();
 
     // Follow the playhead while playing; wheel scrolls (horizontal over frames, vertical over layers).
     if app.playing {
@@ -133,10 +164,10 @@ fn grid(app: &mut App, ui: &mut egui::Ui) {
         app.tl.scroll = (app.tl.scroll + delta / CW).clamp(0.0, n as f32 + 200.0);
     }
     if ui.rect_contains_pointer(layer_col) && d.y != 0.0 {
-        let max = nl.saturating_sub(visible_rows);
+        let max = nr.saturating_sub(visible_rows);
         app.tl.vscroll = if d.y < 0.0 { (app.tl.vscroll + 1).min(max) } else { app.tl.vscroll.saturating_sub(1) };
     }
-    app.tl.vscroll = app.tl.vscroll.min(nl.saturating_sub(1));
+    app.tl.vscroll = app.tl.vscroll.min(nr.saturating_sub(1));
     let scroll = app.tl.scroll;
     let vscroll = app.tl.vscroll;
     let first = scroll.floor() as u32;
@@ -144,8 +175,8 @@ fn grid(app: &mut App, ui: &mut egui::Ui) {
     let row_y = |i: usize| rows_top + (i as f32 - vscroll as f32) * RH;
     let cell_at = |pos: egui::Pos2| -> (usize, u32) {
         let f = (((pos.x - grid_x0) / CW) + scroll).floor().max(0.0) as u32;
-        let r = (((pos.y - rows_top) / RH).floor().max(0.0) as usize + vscroll).min(nl.saturating_sub(1));
-        (r, f)
+        let r = (((pos.y - rows_top) / RH).floor().max(0.0) as usize + vscroll).min(nr.saturating_sub(1));
+        (rows.get(r).copied().unwrap_or(0), f)
     };
 
     // --- header (scrub)
@@ -175,7 +206,7 @@ fn grid(app: &mut App, ui: &mut egui::Ui) {
     }
 
     // --- frame cells: one interaction for the whole area (selection, drag-move, context menu)
-    let cells = Rect::from_min_max(pos2(grid_x0, rows_top), pos2(rect.right(), (rows_top + (nl - vscroll) as f32 * RH).min(rect.bottom())));
+    let cells = Rect::from_min_max(pos2(grid_x0, rows_top), pos2(rect.right(), (rows_top + (nr - vscroll) as f32 * RH).min(rect.bottom())));
     let cresp = ui.interact(cells, ui.id().with("tl-cells"), Sense::click_and_drag());
     let shift = ui.input(|i| i.modifiers.shift);
     if cresp.hovered() || cresp.dragged() {
@@ -249,8 +280,9 @@ fn grid(app: &mut App, ui: &mut egui::Ui) {
     // --- rows
     let move_delta = if let Gesture::Move(d) = app.tl.gesture { d } else { 0 };
     let sel = app.ed.frame_sel;
-    for (i, layer) in layers.iter().enumerate().skip(vscroll) {
-        let y = row_y(i);
+    for (ri, &i) in rows.iter().enumerate().skip(vscroll) {
+        let layer = &layers[i];
+        let y = row_y(ri);
         if y > rect.bottom() {
             break;
         }
@@ -260,7 +292,45 @@ fn grid(app: &mut App, ui: &mut egui::Ui) {
         p.line_segment([pos2(rect.left(), y + RH), pos2(rect.right(), y + RH)], Stroke::new(1.0_f32, Color32::from_gray(0x22)));
 
         // Name: click = select layer (+ its frames), double-click = rename, drag = reorder.
-        let name_rect = Rect::from_min_size(pos2(rect.left() + 8.0, y), vec2(LW - 90.0, RH));
+        // nesting indent + type icon (folder ▸/▾, mask, guide, camera)
+        let indent = depths[i] as f32 * 14.0;
+        let icon_c = pos2(rect.left() + 12.0 + indent, y + RH / 2.0);
+        let ic = Color32::from_gray(200);
+        match layer.kind {
+            LayerKind::Folder => {
+                let tri = if layer.collapsed {
+                    vec![icon_c + vec2(-3.0, -5.0), icon_c + vec2(4.0, 0.0), icon_c + vec2(-3.0, 5.0)]
+                } else {
+                    vec![icon_c + vec2(-5.0, -3.0), icon_c + vec2(5.0, -3.0), icon_c + vec2(0.0, 4.0)]
+                };
+                p.add(egui::Shape::convex_polygon(tri, Color32::from_rgb(0xE8, 0xC0, 0x50), Stroke::NONE));
+                if ui.interact(Rect::from_center_size(icon_c, vec2(16.0, 18.0)), ui.id().with(("fold", i)), Sense::click()).on_hover_text("Expand / collapse folder").clicked() {
+                    app.ed.toggle_folder(i);
+                }
+            }
+            LayerKind::Mask => {
+                p.rect_stroke(Rect::from_center_size(icon_c, vec2(11.0, 11.0)), 1.0, Stroke::new(1.2_f32, ic));
+                p.circle_filled(icon_c, 3.0, ic);
+            }
+            LayerKind::Guide => {
+                let mut x = icon_c.x - 6.0;
+                while x < icon_c.x + 6.0 {
+                    p.line_segment([pos2(x, icon_c.y + 4.0 - (x - icon_c.x + 6.0) * 0.6), pos2(x + 2.5, icon_c.y + 4.0 - (x - icon_c.x + 8.5) * 0.6)], Stroke::new(1.4_f32, Color32::from_rgb(0x70, 0xB0, 0xFF)));
+                    x += 4.0;
+                }
+            }
+            LayerKind::Camera => {
+                p.rect_stroke(Rect::from_center_size(icon_c - vec2(1.0, 0.0), vec2(9.0, 7.0)), 1.0, Stroke::new(1.2_f32, Color32::from_rgb(0xFF, 0xA0, 0x30)));
+            }
+            LayerKind::Normal => {
+                if layer.parent.map(|p| layers.get(p).map(|l| l.kind == LayerKind::Mask).unwrap_or(false)).unwrap_or(false) {
+                    p.circle_stroke(icon_c, 4.0, Stroke::new(1.1_f32, ic)); // masked
+                } else if layer.parent.map(|p| layers.get(p).map(|l| l.kind == LayerKind::Guide).unwrap_or(false)).unwrap_or(false) {
+                    p.circle_filled(icon_c, 2.5, Color32::from_rgb(0x70, 0xB0, 0xFF)); // guided
+                }
+            }
+        }
+        let name_rect = Rect::from_min_size(pos2(rect.left() + 22.0 + indent, y), vec2(LW - 104.0 - indent, RH));
         let renaming = matches!(&app.tl.renaming, Some((ri, _)) if *ri == i);
         if renaming {
             let (_, buf) = app.tl.renaming.as_mut().unwrap();
@@ -287,11 +357,15 @@ fn grid(app: &mut App, ui: &mut egui::Ui) {
             }
             if r.drag_stopped() {
                 if let (Some(from), Some(pos)) = (app.tl.layer_drag.take(), ui.input(|inp| inp.pointer.latest_pos())) {
-                    let to = (((pos.y - rows_top) / RH).floor().max(0.0) as usize + vscroll).min(nl - 1);
-                    app.ed.move_layer(from, to);
+                    let to_row = (((pos.y - rows_top) / RH).floor().max(0.0) as usize + vscroll).min(nr - 1);
+                    let to = rows[to_row];
+                    if to != from {
+                        app.ed.drop_layer(from, to);
+                    }
                 }
             }
-            r.on_hover_text("Click: select layer · double-click: rename · drag: reorder");
+            let r = r.on_hover_text("Click: select layer · double-click: rename · drag: reorder or into a folder · right-click: layer menu");
+            r.context_menu(|ui| layer_menu(app, ui, i));
         }
         // Eye / lock / outline toggles
         let icon = |k: usize| Rect::from_center_size(pos2(rect.left() + LW - 70.0 + k as f32 * 22.0, y + RH / 2.0), vec2(18.0, 18.0));
@@ -325,6 +399,10 @@ fn grid(app: &mut App, ui: &mut egui::Ui) {
         // Frame cells
         let row = Rect::from_min_max(pos2(grid_x0, y), pos2(rect.right(), y + RH));
         let rp = ui.painter_at(row.intersect(rect));
+        if layer.kind == LayerKind::Folder {
+            rp.rect_filled(row, 0.0, Color32::from_gray(0x2E));
+            continue;
+        }
         for f in first..first + visible_cols {
             let x = x_of(f);
             let cell = Rect::from_min_size(pos2(x, y), vec2(CW, RH));
@@ -394,7 +472,7 @@ fn grid(app: &mut App, ui: &mut egui::Ui) {
     }
     // Layer reorder indicator
     if let (Some(_), Some(pos)) = (app.tl.layer_drag, ui.input(|i| i.pointer.latest_pos())) {
-        let to = (((pos.y - rows_top) / RH).floor().max(0.0) as usize + vscroll).min(nl - 1);
+        let to = (((pos.y - rows_top) / RH).floor().max(0.0) as usize + vscroll).min(nr - 1);
         let y = row_y(to);
         p.line_segment([pos2(rect.left(), y), pos2(grid_x0, y)], Stroke::new(2.0_f32, ACCENT));
     }
@@ -403,7 +481,7 @@ fn grid(app: &mut App, ui: &mut egui::Ui) {
     let x = x_of(app.ed.frame);
     if x >= grid_x0 - CW && x <= rect.right() {
         let gp = ui.painter_at(grid_rect);
-        let bottom = (rows_top + (nl - vscroll) as f32 * RH).min(rect.bottom());
+        let bottom = (rows_top + (nr - vscroll) as f32 * RH).min(rect.bottom());
         gp.line_segment([pos2(x + CW / 2.0, rect.top()), pos2(x + CW / 2.0, bottom)], Stroke::new(1.5_f32, PLAYHEAD));
         let tag = Rect::from_center_size(pos2(x + CW / 2.0, rect.top() + HH / 2.0), vec2(26.0, HH - 4.0));
         gp.rect_filled(tag, 3.0, PLAYHEAD);

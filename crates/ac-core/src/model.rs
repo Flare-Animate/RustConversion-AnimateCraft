@@ -5,7 +5,10 @@
 use crate::deform::{project_path, Perspective, Transform3D, Warp};
 use crate::geom::{morph_paths, pt, Matrix, Path, Pt};
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
+use std::sync::Arc;
+pub use crate::bitmap::{BitmapAsset, BitmapId, Image};
+pub use crate::fx::{BevelType, BlendMode, Filter, FxGroup};
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Color {
@@ -147,11 +150,14 @@ pub struct TextEl {
     pub align: crate::text::Align,
     #[serde(default)]
     pub letter_spacing: f32,
+    /// System font family (falls back to `font` if it isn't installed).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub family: Option<String>,
 }
 
 impl TextEl {
     pub fn outline(&self) -> Path {
-        crate::text::text_path(&self.text, self.size, self.font, self.align, self.letter_spacing)
+        crate::text::text_path_family(&self.text, self.size, self.family.as_deref(), self.font, self.align, self.letter_spacing)
     }
 }
 
@@ -160,6 +166,15 @@ pub enum ElementKind {
     Shape(Shape),
     Instance(Instance),
     Text(TextEl),
+    /// Modify › Group (Ctrl+G): child elements in the group's coordinate space.
+    Group(Vec<Element>),
+    /// A library bitmap placed on stage (drawn at 0,0 … width,height).
+    Bitmap(BitmapRef),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct BitmapRef {
+    pub bitmap: crate::bitmap::BitmapId,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -174,31 +189,40 @@ pub struct Element {
     /// 3D Rotation / 3D Translation (perspective-projected at render time).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub three_d: Option<Transform3D>,
+    /// Properties › Filters (applied to everything the element draws).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub filters: Vec<crate::fx::Filter>,
+    #[serde(default, skip_serializing_if = "is_normal_blend")]
+    pub blend: crate::fx::BlendMode,
+}
+
+fn is_normal_blend(b: &crate::fx::BlendMode) -> bool {
+    *b == crate::fx::BlendMode::Normal
 }
 
 impl Element {
+    fn base(name: &str, matrix: Matrix, kind: ElementKind) -> Self {
+        Element { name: name.into(), matrix, alpha: 1.0, tint: None, kind, three_d: None, filters: vec![], blend: Default::default() }
+    }
+    pub fn group(children: Vec<Element>) -> Self {
+        Element::base("", Matrix::IDENTITY, ElementKind::Group(children))
+    }
+    pub fn bitmap(name: &str, bitmap: crate::bitmap::BitmapId, matrix: Matrix) -> Self {
+        Element::base(name, matrix, ElementKind::Bitmap(BitmapRef { bitmap }))
+    }
+    /// Instance name (Properties › Object), used by frame scripts. Only
+    /// symbol instances and text keep one in Animate; we allow any element.
+    pub fn instance_name(&self) -> Option<&str> {
+        (!self.name.is_empty()).then_some(self.name.as_str())
+    }
     pub fn shape(name: &str, shape: Shape) -> Self {
-        Element { name: name.into(), matrix: Matrix::IDENTITY, alpha: 1.0, tint: None, kind: ElementKind::Shape(shape), three_d: None }
+        Element::base(name, Matrix::IDENTITY, ElementKind::Shape(shape))
     }
     pub fn text(text: &str, size: f32, color: Color, at: Pt) -> Self {
-        Element {
-            name: "Text".into(),
-            matrix: Matrix::translate(at.x, at.y),
-            alpha: 1.0,
-            tint: None,
-            kind: ElementKind::Text(TextEl { text: text.into(), size, color, font: Default::default(), align: Default::default(), letter_spacing: 0.0 }),
-            three_d: None,
-        }
+        Element::base("Text", Matrix::translate(at.x, at.y), ElementKind::Text(TextEl { text: text.into(), size, color, font: Default::default(), align: Default::default(), letter_spacing: 0.0, family: None }))
     }
     pub fn instance(name: &str, symbol: SymbolId, matrix: Matrix) -> Self {
-        Element {
-            name: name.into(),
-            matrix,
-            alpha: 1.0,
-            tint: None,
-            kind: ElementKind::Instance(Instance { symbol, loop_mode: LoopMode::Loop, first_frame: 0 }),
-            three_d: None,
-        }
+        Element::base(name, matrix, ElementKind::Instance(Instance { symbol, loop_mode: LoopMode::Loop, first_frame: 0 }))
     }
 }
 
@@ -235,22 +259,29 @@ pub struct Keyframe {
     /// Frame script (JavaScript, CreateJS-style API) run when playback enters this frame.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub script: Option<String>,
+    /// Classic tween along a motion guide: rotate with the path's direction.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub orient_to_path: bool,
 }
 
 impl Keyframe {
     pub fn blank() -> Self {
-        Keyframe { elements: vec![], tween: Tween::None, label: None, script: None }
+        Keyframe::with(vec![])
     }
     pub fn with(elements: Vec<Element>) -> Self {
-        Keyframe { elements, tween: Tween::None, label: None, script: None }
+        Keyframe { elements, tween: Tween::None, label: None, script: None, orient_to_path: false }
     }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum LayerKind {
     Normal,
+    /// Not exported. With child layers it is a motion guide: classic tweens on
+    /// the children follow the first stroke on it.
     Guide,
     Folder,
+    /// The shapes on a mask layer cut out (clip) its child layers.
+    Mask,
     /// Camera layer: its keyframes hold the camera (pan/zoom/rotate), tweenable.
     Camera,
 }
@@ -284,6 +315,13 @@ pub struct Layer {
     /// IK armature (Bone tool).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub bones: Vec<Bone>,
+    /// Folder, mask or guide layer this layer belongs to (index in the same
+    /// timeline, always above this layer) — XFL's `parentLayerIndex`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent: Option<usize>,
+    /// Folder collapsed in the Timeline panel.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub collapsed: bool,
 }
 
 const LAYER_COLORS: [Color; 6] = [
@@ -309,6 +347,8 @@ impl Layer {
             keyframes,
             end: 1,
             bones: vec![],
+            parent: None,
+            collapsed: false,
         }
     }
 
@@ -366,6 +406,26 @@ pub struct Document {
     pub perspective_angle: f32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub vanishing_point: Option<Pt>,
+    /// Imported bitmaps (library items alongside symbols).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub bitmaps: Vec<crate::bitmap::BitmapAsset>,
+    /// Ruler guides (View › Guides), in stage coordinates.
+    #[serde(default, skip_serializing_if = "Guides::is_empty")]
+    pub guides: Guides,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct Guides {
+    /// Vertical guides at these x positions.
+    pub x: Vec<f32>,
+    /// Horizontal guides at these y positions.
+    pub y: Vec<f32>,
+}
+
+impl Guides {
+    pub fn is_empty(&self) -> bool {
+        self.x.is_empty() && self.y.is_empty()
+    }
 }
 
 fn default_perspective() -> f32 {
@@ -384,6 +444,8 @@ impl Default for Document {
             next_symbol_id: 1,
             perspective_angle: 55.0,
             vanishing_point: None,
+            bitmaps: vec![],
+            guides: Guides::default(),
         }
     }
 }
@@ -391,6 +453,12 @@ impl Default for Document {
 impl Document {
     pub fn symbol(&self, id: SymbolId) -> Option<&Symbol> {
         self.library.iter().find(|s| s.id == id)
+    }
+    pub fn bitmap(&self, id: crate::bitmap::BitmapId) -> Option<&crate::bitmap::BitmapAsset> {
+        self.bitmaps.iter().find(|b| b.id == id)
+    }
+    pub fn next_bitmap_id(&self) -> crate::bitmap::BitmapId {
+        self.bitmaps.iter().map(|b| b.id).max().unwrap_or(0) + 1
     }
     pub fn symbol_mut(&mut self, id: SymbolId) -> Option<&mut Symbol> {
         self.library.iter_mut().find(|s| s.id == id)
@@ -428,6 +496,25 @@ pub struct DrawItem {
     pub src: Option<(usize, usize)>,
     /// Gradient fill in the item's local space.
     pub gradient: Option<Gradient>,
+    /// Effect groups this item belongs to, outermost first (filters/blend
+    /// render all items of a group into one offscreen layer).
+    pub fx: Vec<Arc<FxGroup>>,
+    /// Mask layers clipping this item (intersected).
+    pub clips: Vec<Arc<Clip>>,
+    /// Bitmap drawn into `path` (a 0,0,w,h rectangle) when set.
+    pub image: Option<Arc<Image>>,
+}
+
+/// The shapes of a mask layer, in the same space as item matrices.
+#[derive(Debug)]
+pub struct Clip {
+    pub shapes: Vec<(Path, Matrix)>,
+}
+
+impl DrawItem {
+    pub fn new(path: Path, matrix: Matrix) -> DrawItem {
+        DrawItem { path, fill: None, stroke: None, matrix, alpha: 1.0, tint: None, outline: None, src: None, gradient: None, fx: vec![], clips: vec![], image: None }
+    }
 }
 
 impl DrawItem {
@@ -436,7 +523,10 @@ impl DrawItem {
         let lp = inv.apply(p);
         let scale = self.matrix.decompose().scale_x.abs().max(0.01);
         let tol = self.stroke.map(|s| s.width / 2.0).unwrap_or(0.0) + 3.0 / scale;
-        self.path.hit(lp, self.fill.is_some(), tol)
+        if !self.clips.is_empty() && !self.clips.iter().all(|c| c.shapes.iter().any(|(sp, m)| m.invert().map(|i| sp.hit(i.apply(p), true, 0.0)).unwrap_or(false))) {
+            return false; // masked out here
+        }
+        self.path.hit(lp, self.fill.is_some() || self.gradient.is_some() || self.image.is_some(), tol)
     }
 }
 
@@ -505,6 +595,7 @@ fn interpolate_elements(from: &[Element], to: &[Element], t: f32, tween: Tween) 
                 (None, None) => None,
             };
             out.three_d = Transform3D::lerp(a.three_d, b.three_d, t);
+            out.filters = Filter::lerp_list(&a.filters, &b.filters, t);
             if let (Tween::Shape { .. }, ElementKind::Shape(sa), ElementKind::Shape(sb)) = (tween, &a.kind, &b.kind) {
                 out.kind = ElementKind::Shape(Shape {
                     gradient: match (&sa.gradient, &sb.gradient) {
@@ -542,7 +633,7 @@ impl<'a> EvalCtx<'a> {
 }
 
 fn shape_items(s: &Shape, m: Matrix, a: f32, tint: Option<(Color, f32)>, outline: Option<Color>, out: &mut Vec<DrawItem>) {
-    let item = |path: Path, fill: Option<Color>, stroke: Option<Stroke>, gradient: Option<Gradient>| DrawItem { path, fill, stroke, matrix: m, alpha: a, tint, outline, src: None, gradient };
+    let item = |path: Path, fill: Option<Color>, stroke: Option<Stroke>, gradient: Option<Gradient>| DrawItem { fill, stroke, alpha: a, tint, outline, gradient, ..DrawItem::new(path, m) };
     match (&s.width_profile, s.stroke) {
         // Variable-width stroke: drawn as a filled outline.
         (Some(profile), Some(st)) if !profile.is_empty() => {
@@ -554,68 +645,211 @@ fn shape_items(s: &Shape, m: Matrix, a: f32, tint: Option<(Color, f32)>, outline
     }
 }
 
+/// Is a layer shown, taking hidden folders above it into account?
+pub fn layer_shown(tl: &Timeline, li: usize) -> bool {
+    let mut cur = Some(li);
+    let mut guard = 0;
+    while let Some(i) = cur {
+        let Some(l) = tl.layers.get(i) else { return true };
+        if !l.visible && (i == li || l.kind == LayerKind::Folder) {
+            return false;
+        }
+        cur = l.parent.filter(|p| *p != i);
+        guard += 1;
+        if guard > 64 {
+            break;
+        }
+    }
+    true
+}
+
+/// The mask or guide layer directly governing `li` (skipping folders).
+pub fn layer_effect_parent(tl: &Timeline, li: usize, kind: LayerKind) -> Option<usize> {
+    let p = tl.layers.get(li)?.parent?;
+    (tl.layers.get(p)?.kind == kind).then_some(p)
+}
+
 /// Evaluate a timeline at `frame` into draw items, bottom layer first.
 pub fn evaluate(ctx: &EvalCtx, tl: &Timeline, frame: u32, parent: &Matrix, alpha: f32, depth: u32, out: &mut Vec<DrawItem>) {
     if depth > 16 {
         return; // recursive symbol guard
     }
+    let mut masks: HashMap<usize, Option<Arc<Clip>>> = HashMap::new();
     for (li, layer) in tl.layers.iter().enumerate().rev() {
-        if !layer.visible || layer.kind != LayerKind::Normal {
+        if layer.kind != LayerKind::Normal || !layer_shown(tl, li) {
             continue;
         }
-        let Some((elements, local)) = layer_elements_at(layer, frame) else { continue };
+        let Some((mut elements, local)) = layer_elements_at(layer, frame) else { continue };
+        if let Some(g) = layer_effect_parent(tl, li, LayerKind::Guide) {
+            apply_motion_guide(ctx, tl, li, g, frame, &mut elements);
+        }
         let outline = layer.outline.then_some(layer.color);
+        let layer_first = out.len();
         for (ei, el) in elements.iter().enumerate() {
-            let m = parent.concat(&el.matrix);
-            let a = alpha * el.alpha;
             let first = out.len();
-            match &el.kind {
-                ElementKind::Shape(s) => shape_items(s, m, a, el.tint, outline, out),
-                ElementKind::Text(t) => out.push(DrawItem { path: t.outline(), fill: Some(t.color), stroke: None, matrix: m, alpha: a, tint: el.tint, outline, src: None, gradient: None }),
-                ElementKind::Instance(inst) => {
-                    let Some(sym) = ctx.doc.symbol(inst.symbol) else { continue };
-                    let dur = sym.timeline.frame_count();
-                    let f = match sym.kind {
-                        SymbolKind::MovieClip => ctx.global_frame % dur,
-                        SymbolKind::Button => 0,
-                        SymbolKind::Graphic => {
-                            let raw = inst.first_frame + local;
-                            match inst.loop_mode {
-                                LoopMode::Loop => raw % dur,
-                                LoopMode::PlayOnce => raw.min(dur - 1),
-                                LoopMode::SingleFrame => inst.first_frame.min(dur - 1),
-                            }
-                        }
-                    };
-                    evaluate(ctx, &sym.timeline, f, &m, a, depth + 1, out);
-                    for it in &mut out[first..] {
-                        if it.tint.is_none() {
-                            it.tint = el.tint;
-                        }
-                        if outline.is_some() {
-                            it.outline = outline;
-                        }
-                    }
-                }
-            }
-            // 3D: project everything this object produced.
-            if let Some(td) = el.three_d.filter(|t| !t.is_identity()) {
-                let center = m.apply(td.center);
-                let persp = ctx.doc.perspective();
-                for it in &mut out[first..] {
-                    it.path = project_path(&it.path, &it.matrix, &td, center, &persp);
-                    if let Some(g) = &mut it.gradient {
-                        g.matrix = it.matrix.concat(&g.matrix);
-                    }
-                    it.matrix = Matrix::IDENTITY;
-                }
-            }
+            eval_element(ctx, el, parent, alpha, local, outline, depth, out);
             if depth == 0 {
                 for it in &mut out[first..] {
                     it.src = Some((li, ei));
                 }
             }
         }
+        if let Some(m) = layer_effect_parent(tl, li, LayerKind::Mask).filter(|m| tl.layers[*m].visible) {
+            let clip = masks.entry(m).or_insert_with(|| mask_clip(ctx, tl, m, frame, parent, depth)).clone();
+            match clip {
+                Some(c) => {
+                    for it in &mut out[layer_first..] {
+                        it.clips.push(c.clone());
+                    }
+                }
+                // an empty mask frame hides everything it masks (as in Animate)
+                None => out.truncate(layer_first),
+            }
+        }
+    }
+}
+
+/// Shapes on mask layer `m` at `frame`, as a clip.
+fn mask_clip(ctx: &EvalCtx, tl: &Timeline, m: usize, frame: u32, parent: &Matrix, depth: u32) -> Option<Arc<Clip>> {
+    let (els, local) = layer_elements_at(&tl.layers[m], frame)?;
+    let mut items = Vec::new();
+    for el in &els {
+        eval_element(ctx, el, parent, 1.0, local, None, depth, &mut items);
+    }
+    let shapes: Vec<(Path, Matrix)> = items.into_iter().map(|it| (it.path, it.matrix)).collect();
+    (!shapes.is_empty()).then(|| Arc::new(Clip { shapes }))
+}
+
+/// Draw items for one element (recursing into groups and symbols).
+#[allow(clippy::too_many_arguments)]
+pub fn eval_element(ctx: &EvalCtx, el: &Element, parent: &Matrix, alpha: f32, local: u32, outline: Option<Color>, depth: u32, out: &mut Vec<DrawItem>) {
+    let m = parent.concat(&el.matrix);
+    let a = alpha * el.alpha;
+    let first = out.len();
+    match &el.kind {
+        ElementKind::Shape(s) => shape_items(s, m, a, el.tint, outline, out),
+        ElementKind::Text(t) => out.push(DrawItem { fill: Some(t.color), alpha: a, tint: el.tint, outline, ..DrawItem::new(t.outline(), m) }),
+        ElementKind::Group(children) => {
+            for c in children {
+                eval_element(ctx, c, &m, a, local, outline, depth, out);
+            }
+            for it in &mut out[first..] {
+                if it.tint.is_none() {
+                    it.tint = el.tint;
+                }
+            }
+        }
+        ElementKind::Bitmap(b) => {
+            if let Some(asset) = ctx.doc.bitmap(b.bitmap) {
+                let path = Path::rect(0.0, 0.0, asset.width as f32, asset.height as f32);
+                let image = asset.image();
+                // outline mode / missing pixels: draw the frame only
+                let fill = image.is_none().then_some(Color::rgb(200, 200, 200));
+                out.push(DrawItem { fill, alpha: a, tint: el.tint, outline, image, ..DrawItem::new(path, m) });
+            }
+        }
+        ElementKind::Instance(inst) => {
+            let Some(sym) = ctx.doc.symbol(inst.symbol) else { return };
+            let dur = sym.timeline.frame_count();
+            let f = match sym.kind {
+                SymbolKind::MovieClip => ctx.global_frame % dur,
+                SymbolKind::Button => 0,
+                SymbolKind::Graphic => {
+                    let raw = inst.first_frame + local;
+                    match inst.loop_mode {
+                        LoopMode::Loop => raw % dur,
+                        LoopMode::PlayOnce => raw.min(dur - 1),
+                        LoopMode::SingleFrame => inst.first_frame.min(dur - 1),
+                    }
+                }
+            };
+            evaluate(ctx, &sym.timeline, f, &m, a, depth + 1, out);
+            for it in &mut out[first..] {
+                if it.tint.is_none() {
+                    it.tint = el.tint;
+                }
+                if outline.is_some() {
+                    it.outline = outline;
+                }
+            }
+        }
+    }
+    // 3D: project everything this object produced.
+    if let Some(td) = el.three_d.filter(|t| !t.is_identity()) {
+        let center = m.apply(td.center);
+        let persp = ctx.doc.perspective();
+        for it in &mut out[first..] {
+            it.path = project_path(&it.path, &it.matrix, &td, center, &persp);
+            if let Some(g) = &mut it.gradient {
+                g.matrix = it.matrix.concat(&g.matrix);
+            }
+            it.image = None; // projected bitmaps draw as their outline for now
+            it.matrix = Matrix::IDENTITY;
+        }
+    }
+    // Filters and blend modes: everything this element drew is one layer.
+    if (!el.filters.is_empty() || el.blend != BlendMode::Normal) && outline.is_none() {
+        let fx = Arc::new(FxGroup { filters: el.filters.clone(), blend: el.blend });
+        for it in &mut out[first..] {
+            it.fx.insert(0, fx.clone());
+        }
+    }
+}
+
+/// Local-space centre of an element (its default transformation point).
+pub fn element_local_center(ctx: &EvalCtx, el: &Element) -> Pt {
+    let mut items = Vec::new();
+    let mut plain = el.clone();
+    plain.matrix = Matrix::IDENTITY;
+    plain.three_d = None;
+    plain.filters.clear();
+    eval_element(ctx, &plain, &Matrix::IDENTITY, 1.0, 0, None, 1, &mut items);
+    items
+        .iter()
+        .filter_map(|it| it.path.transformed(&it.matrix).bounds())
+        .reduce(|a, b| (pt(a.0.x.min(b.0.x), a.0.y.min(b.0.y)), pt(a.1.x.max(b.1.x), a.1.y.max(b.1.y))))
+        .map(|(lo, hi)| pt((lo.x + hi.x) / 2.0, (lo.y + hi.y) / 2.0))
+        .unwrap_or_default()
+}
+
+/// Classic motion guide: during a classic tween, elements on a layer under a
+/// guide layer travel along the guide's first shape (Animate snaps the
+/// transformation point to the path at both keyframes).
+fn apply_motion_guide(ctx: &EvalCtx, tl: &Timeline, li: usize, g: usize, frame: u32, els: &mut [Element]) {
+    let layer = &tl.layers[li];
+    let Some((start, kf, Some(next))) = layer.span_at(frame) else { return };
+    let Tween::Classic { ease, .. } = kf.tween else { return };
+    let Some((gels, _)) = layer_elements_at(&tl.layers[g], frame) else { return };
+    let Some(guide) = gels.iter().find_map(|e| match &e.kind {
+        ElementKind::Shape(s) => Some(s.path.transformed(&e.matrix)),
+        _ => None,
+    }) else {
+        return;
+    };
+    let to = &layer.keyframes[&next];
+    let t = if frame >= next { 1.0 } else { apply_ease((frame - start) as f32 / (next - start) as f32, ease) };
+    for (i, el) in els.iter_mut().enumerate() {
+        let (Some(a), Some(b)) = (kf.elements.get(i), to.elements.get(i)) else { continue };
+        let c = element_local_center(ctx, a);
+        let (pa, pb) = (a.matrix.apply(c), b.matrix.apply(c));
+        let (Some((ta, _)), Some((tb, _))) = (crate::deform::nearest_t(&guide, pa), crate::deform::nearest_t(&guide, pb)) else { continue };
+        let tt = ta + (tb - ta) * t;
+        let Some(p) = crate::deform::point_at(&guide, tt) else { continue };
+        if kf.orient_to_path {
+            let dir = |u: f32| {
+                let (p0, p1) = (crate::deform::point_at(&guide, (u - 0.002).max(0.0)), crate::deform::point_at(&guide, (u + 0.002).min(1.0)));
+                match (p0, p1) {
+                    (Some(p0), Some(p1)) => (p1.y - p0.y).atan2(p1.x - p0.x),
+                    _ => 0.0,
+                }
+            };
+            let da = dir(tt) - dir(ta);
+            let cw = el.matrix.apply(c);
+            el.matrix = Matrix::translate(cw.x, cw.y).concat(&Matrix::rotate(da)).concat(&Matrix::translate(-cw.x, -cw.y)).concat(&el.matrix);
+        }
+        let cur = el.matrix.apply(c);
+        el.matrix.tx += p.x - cur.x;
+        el.matrix.ty += p.y - cur.y;
     }
 }
 
@@ -646,8 +880,14 @@ pub fn default_camera(doc: &Document) -> Element {
 }
 
 pub fn apply_view(items: &mut [DrawItem], view: &Matrix) {
+    let mut done: HashMap<*const Clip, Arc<Clip>> = HashMap::new();
     for it in items {
         it.matrix = view.concat(&it.matrix);
+        for c in &mut it.clips {
+            let k = Arc::as_ptr(c);
+            let n = done.entry(k).or_insert_with(|| Arc::new(Clip { shapes: c.shapes.iter().map(|(p, m)| (p.clone(), view.concat(m))).collect() })).clone();
+            *c = n;
+        }
     }
 }
 

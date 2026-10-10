@@ -1,0 +1,181 @@
+//! Align (Ctrl+K) and Info (Ctrl+I) panels.
+
+use crate::App;
+use ac_core::editor::AlignOp;
+use ac_core::pt;
+use eframe::egui::{self, Color32, RichText};
+
+fn op_button(ui: &mut egui::Ui, label: &str, tip: &str) -> bool {
+    ui.add(egui::Button::new(label).min_size(egui::vec2(30.0, 24.0))).on_hover_text(tip).clicked()
+}
+
+/// Align / space buttons drawn with lines (the default font lacks these arrows).
+fn icon_button(ui: &mut egui::Ui, op: AlignOp, tip: &str) -> bool {
+    use egui::{pos2, Rect, Sense, Stroke};
+    let (r, resp) = ui.allocate_exact_size(egui::vec2(30.0, 24.0), Sense::click());
+    let v = ui.style().interact(&resp);
+    ui.painter().rect(r, 3.0, v.weak_bg_fill, v.bg_stroke);
+    let c = r.center();
+    let col = Color32::from_gray(225);
+    let line = Stroke::new(1.5_f32, crate::ACCENT);
+    let bar = |x0: f32, y0: f32, x1: f32, y1: f32| Rect::from_min_max(pos2(x0, y0), pos2(x1, y1));
+    let p = ui.painter();
+    match op {
+        AlignOp::Left | AlignOp::HCenter | AlignOp::Right => {
+            let x = match op { AlignOp::Left => c.x - 8.0, AlignOp::HCenter => c.x, _ => c.x + 8.0 };
+            p.line_segment([pos2(x, c.y - 9.0), pos2(x, c.y + 9.0)], line);
+            for (w, y) in [(14.0, c.y - 5.0), (9.0, c.y + 3.0)] {
+                let (x0, x1) = match op { AlignOp::Left => (x, x + w), AlignOp::HCenter => (x - w / 2.0, x + w / 2.0), _ => (x - w, x) };
+                p.rect_filled(bar(x0, y, x1, y + 4.0), 1.0, col);
+            }
+        }
+        AlignOp::Top | AlignOp::VCenter | AlignOp::Bottom => {
+            let y = match op { AlignOp::Top => c.y - 8.0, AlignOp::VCenter => c.y, _ => c.y + 8.0 };
+            p.line_segment([pos2(c.x - 10.0, y), pos2(c.x + 10.0, y)], line);
+            for (h, x) in [(14.0, c.x - 6.0), (9.0, c.x + 2.0)] {
+                let (y0, y1) = match op { AlignOp::Top => (y, y + h), AlignOp::VCenter => (y - h / 2.0, y + h / 2.0), _ => (y - h, y) };
+                p.rect_filled(bar(x, y0, x + 4.0, y1), 1.0, col);
+            }
+        }
+        AlignOp::SpaceH => {
+            for x in [c.x - 10.0, c.x - 2.0, c.x + 6.0] {
+                p.rect_filled(bar(x, c.y - 6.0, x + 4.0, c.y + 6.0), 1.0, col);
+            }
+        }
+        _ => {
+            for y in [c.y - 9.0, c.y - 2.0, c.y + 5.0] {
+                p.rect_filled(bar(c.x - 7.0, y, c.x + 7.0, y + 4.0), 1.0, col);
+            }
+        }
+    }
+    resp.on_hover_text(tip).clicked()
+}
+
+pub fn align_window(app: &mut App, ctx: &egui::Context) {
+    if !app.align_open {
+        return;
+    }
+    let mut open = true;
+    let mut op = None;
+    egui::Window::new("Align").open(&mut open).resizable(false).default_pos(app.stage_rect.right_top() + egui::vec2(-260.0, 60.0)).show(ctx, |ui| {
+        let n = app.ed.selection.len();
+        ui.checkbox(&mut app.align_to_stage, "Align to stage").on_hover_text("Off: align to each other (needs 2+ objects)");
+        ui.label(RichText::new("Align").small().color(Color32::from_gray(170)));
+        ui.horizontal(|ui| {
+            for (tip, o) in [("Left edges", AlignOp::Left), ("Horizontal centres", AlignOp::HCenter), ("Right edges", AlignOp::Right)] {
+                if icon_button(ui, o, tip) {
+                    op = Some(o);
+                }
+            }
+            ui.separator();
+            for (tip, o) in [("Top edges", AlignOp::Top), ("Vertical centres", AlignOp::VCenter), ("Bottom edges", AlignOp::Bottom)] {
+                if icon_button(ui, o, tip) {
+                    op = Some(o);
+                }
+            }
+        });
+        ui.label(RichText::new("Distribute").small().color(Color32::from_gray(170)));
+        ui.horizontal(|ui| {
+            for (l, tip, o) in [("L", "Distribute left edges", AlignOp::DistLeft), ("C", "Distribute horizontal centres", AlignOp::DistHCenter), ("R", "Distribute right edges", AlignOp::DistRight)] {
+                if op_button(ui, l, tip) {
+                    op = Some(o);
+                }
+            }
+            ui.separator();
+            for (l, tip, o) in [("T", "Distribute top edges", AlignOp::DistTop), ("M", "Distribute vertical centres", AlignOp::DistVCenter), ("B", "Distribute bottom edges", AlignOp::DistBottom)] {
+                if op_button(ui, l, tip) {
+                    op = Some(o);
+                }
+            }
+        });
+        ui.label(RichText::new("Match size · Space evenly").small().color(Color32::from_gray(170)));
+        ui.horizontal(|ui| {
+            for (l, tip, o) in [("W", "Match width (widest, or the stage)", AlignOp::MatchWidth), ("H", "Match height", AlignOp::MatchHeight), ("W+H", "Match width and height", AlignOp::MatchSize)] {
+                if op_button(ui, l, tip) {
+                    op = Some(o);
+                }
+            }
+            ui.separator();
+            for (tip, o) in [("Space evenly horizontally", AlignOp::SpaceH), ("Space evenly vertically", AlignOp::SpaceV)] {
+                if icon_button(ui, o, tip) {
+                    op = Some(o);
+                }
+            }
+        });
+        if n == 0 {
+            ui.label(RichText::new("Select objects on the stage.").small().color(Color32::from_rgb(0xFF, 0xB0, 0x40)));
+        } else if n == 1 && !app.align_to_stage {
+            ui.label(RichText::new("One object: tick “Align to stage”.").small().color(Color32::from_gray(150)));
+        }
+    });
+    if let Some(o) = op {
+        app.ed.align(o, app.align_to_stage);
+    }
+    if !open {
+        app.align_open = false;
+    }
+}
+
+pub fn info_window(app: &mut App, ctx: &egui::Context) {
+    if !app.info_open {
+        return;
+    }
+    let mut open = true;
+    let pointer = ctx.input(|i| i.pointer.hover_pos()).filter(|p| app.stage_rect.contains(*p));
+    egui::Window::new("Info").open(&mut open).resizable(false).default_pos(app.stage_rect.right_top() + egui::vec2(-260.0, 320.0)).show(ctx, |ui| {
+        egui::Grid::new("info").num_columns(4).spacing([10.0, 4.0]).show(ui, |ui| {
+            match app.ed.selection_bounds() {
+                Some((lo, hi)) => {
+                    ui.label("X");
+                    ui.monospace(format!("{:.1}", lo.x));
+                    ui.label("W");
+                    ui.monospace(format!("{:.1}", hi.x - lo.x));
+                    ui.end_row();
+                    ui.label("Y");
+                    ui.monospace(format!("{:.1}", lo.y));
+                    ui.label("H");
+                    ui.monospace(format!("{:.1}", hi.y - lo.y));
+                    ui.end_row();
+                }
+                None => {
+                    ui.label(RichText::new("No selection").color(Color32::from_gray(150)));
+                    ui.end_row();
+                }
+            }
+            if let Some(p) = pointer {
+                let d = app.to_doc(app.stage_rect, p);
+                ui.label("Cursor");
+                ui.monospace(format!("{:.0}, {:.0}", d.x, d.y));
+                // colour under the cursor, from the rendered document
+                let doc = &app.ed.doc;
+                if app.ed.editing.is_none() && d.x >= 0.0 && d.y >= 0.0 && d.x < doc.width && d.y < doc.height {
+                    let key = (app.ed.revision, app.ed.frame);
+                    if app.info_cache.as_ref().map(|c| c.0 != key).unwrap_or(true) {
+                        app.info_cache = Some((key, ac_render::render_frame(doc, app.ed.frame, 1.0)));
+                    }
+                    let pix = &app.info_cache.as_ref().unwrap().1;
+                    if let Some(c) = pix.pixel(d.x as u32, d.y as u32) {
+                        let c = c.demultiply();
+                        let col = Color32::from_rgb(c.red(), c.green(), c.blue());
+                        ui.label("RGBA");
+                        ui.horizontal(|ui| {
+                            let (r, _) = ui.allocate_exact_size(egui::vec2(12.0, 12.0), egui::Sense::hover());
+                            ui.painter().rect_filled(r, 2.0, col);
+                            ui.monospace(format!("{} {} {} {}%", c.red(), c.green(), c.blue(), c.alpha() as u32 * 100 / 255));
+                        });
+                    }
+                }
+                ui.end_row();
+                let _ = pt(0.0, 0.0);
+            }
+        });
+        let n = app.ed.selection.len();
+        ui.label(RichText::new(format!("{n} selected · frame {} · layer “{}”", app.ed.frame + 1, app.ed.timeline().layers.get(app.ed.layer).map(|l| l.name.as_str()).unwrap_or(""))).small().color(Color32::from_gray(150)));
+    });
+    if pointer.is_some() {
+        ctx.request_repaint();
+    }
+    if !open {
+        app.info_open = false;
+    }
+}
