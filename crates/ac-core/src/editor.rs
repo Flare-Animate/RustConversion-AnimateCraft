@@ -390,6 +390,35 @@ impl Editor {
         l.keyframes.get_mut(&start).unwrap().label = if label.is_empty() { None } else { Some(label.into()) };
     }
 
+    pub fn set_frame_script(&mut self, script: &str) {
+        let li = self.layer;
+        let f = self.frame;
+        if self.timeline().layers.get(li).is_none() {
+            return;
+        }
+        self.checkpoint("Frame Script");
+        let l = &mut self.timeline_mut().layers[li];
+        // Scripts live on keyframes; make one here if needed (as Animate does).
+        if !l.keyframes.contains_key(&f) {
+            frames::convert_to_keyframes(l, f, f, false);
+        }
+        let kf = l.keyframes.get_mut(&f).unwrap();
+        kf.script = if script.trim().is_empty() { None } else { Some(script.into()) };
+    }
+
+    /// Undo-stack depth; pair with `squash_undo` to make a batch (a script run) one step.
+    pub fn undo_depth(&self) -> usize {
+        self.undo.len()
+    }
+    pub fn squash_undo(&mut self, since: usize, label: &str) {
+        if self.undo.len() > since + 1 {
+            self.undo.truncate(since + 1);
+        }
+        if let Some(s) = self.undo.get_mut(since) {
+            s.label = label.into();
+        }
+    }
+
     // ------------------------------------------------------------ elements
     /// Which keyframe an edit at the playhead lands in, creating one if needed:
     /// - past the layer's end: a new keyframe (Animate inserts one for you)
@@ -823,6 +852,7 @@ impl Editor {
         self.modify_selected("Paint Bucket", |el| match &mut el.kind {
             ElementKind::Shape(s) => s.fill = Some(color),
             ElementKind::Instance(_) => el.tint = Some((color, 0.6)),
+            ElementKind::Text(t) => t.color = color,
         });
     }
 }

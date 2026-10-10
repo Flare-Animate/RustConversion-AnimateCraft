@@ -41,6 +41,12 @@ for a in sys.argv[1:]:
         for ch in args[0]: key(ch)
     elif op=='shot': shot(args[0])
     elif op=='drag': drag(*map(int,args))
+    elif op=='path':
+        v=list(map(int,args)); pts=list(zip(v[0::2], v[1::2]))
+        mv(*pts[0]); xtest.fake_input(d, X.ButtonPress, 1); d.sync(); time.sleep(0.08)
+        for (a,b),(c,e) in zip(pts, pts[1:]):
+            for i in range(1,9): mv(int(a+(c-a)*i/8), int(b+(e-b)*i/8))
+        time.sleep(0.1); xtest.fake_input(d, X.ButtonRelease, 1); d.sync(); time.sleep(0.35)
     elif op=='combo': combo(args[0])
     elif op=='dclick': dclick(*map(int,args))
     elif op=='shiftclick':

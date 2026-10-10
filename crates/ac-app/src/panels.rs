@@ -1,47 +1,46 @@
 //! Tools panel (left) and Properties + Library panels (right).
 
-use crate::{c32, from32, App, Dialog, Tool, ACCENT};
+use crate::toolbar::{PencilMode, Tool};
+use crate::{c32, from32, App, Dialog, PropsTab, ACCENT};
+use ac_core::text::{Align, FontFace};
 use ac_core::{pt, Element, ElementKind, LoopMode, Matrix, Stroke, SymbolKind, Tween};
 use eframe::egui::{self, pos2, vec2, Align2, Color32, FontId, Rect, RichText, Sense, Stroke as EStroke};
 use tiny_skia as sk;
 
-pub fn tools_panel(app: &mut App, ctx: &egui::Context) {
-    egui::SidePanel::left("tools").exact_width(64.0).resizable(false).show(ctx, |ui| {
-        ui.add_space(6.0);
-        ui.vertical_centered(|ui| {
-            for t in Tool::ALL {
-                let (rect, resp) = ui.allocate_exact_size(vec2(40.0, 34.0), Sense::click());
-                let active = app.tool == t;
-                let bg = if active { Color32::from_gray(0x1E) } else if resp.hovered() { Color32::from_gray(0x44) } else { Color32::TRANSPARENT };
-                ui.painter().rect_filled(rect, 4.0, bg);
-                draw_tool_icon(ui.painter(), rect, t, if active { ACCENT } else { Color32::from_gray(210) });
-                if resp.on_hover_text(t.name()).clicked() {
-                    app.tool = t;
-                }
-            }
-            ui.separator();
-            ui.label(RichText::new("Stroke").small());
-            ui.color_edit_button_srgba(&mut app.stroke);
-            ui.checkbox(&mut app.stroke_on, "").on_hover_text("Stroke on/off");
-            ui.add(egui::DragValue::new(&mut app.stroke_w).range(0.1..=50.0).speed(0.1)).on_hover_text("Stroke width");
-            ui.label(RichText::new("Fill").small());
-            ui.color_edit_button_srgba(&mut app.fill);
-            ui.checkbox(&mut app.fill_on, "").on_hover_text("Fill on/off");
-            if ui.small_button("⇄").on_hover_text("Swap stroke and fill colors").clicked() {
-                std::mem::swap(&mut app.fill, &mut app.stroke);
-            }
-        });
-    });
-}
-
 pub fn right_panel(app: &mut App, ctx: &egui::Context) {
     egui::SidePanel::right("props").default_width(290.0).min_width(240.0).show(ctx, |ui| {
         egui::ScrollArea::vertical().show(ui, |ui| {
-            egui::CollapsingHeader::new(RichText::new("Properties").strong()).default_open(true).show(ui, |ui| properties(app, ui));
+            egui::CollapsingHeader::new(RichText::new("Properties").strong()).default_open(true).show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    for (t, name) in [(PropsTab::Tool, "Tool"), (PropsTab::Object, "Object"), (PropsTab::Frame, "Frame"), (PropsTab::Doc, "Doc")] {
+                        ui.selectable_value(&mut app.props_tab, t, name);
+                    }
+                });
+                ui.separator();
+                match app.props_tab {
+                    PropsTab::Tool => tool_properties(app, ui),
+                    PropsTab::Object => {
+                        if app.ed.selection.is_empty() {
+                            ui.label(RichText::new("Nothing selected. Click an object on the stage.").color(Color32::from_gray(150)));
+                        } else {
+                            object_properties(app, ui);
+                        }
+                    }
+                    PropsTab::Frame => frame_properties(app, ui),
+                    PropsTab::Doc => document_properties(app, ui),
+                }
+            });
             ui.add_space(4.0);
             egui::CollapsingHeader::new(RichText::new("Library").strong()).default_open(true).show(ui, |ui| library(app, ui));
         });
     });
+}
+
+/// A real user edit. egui also reports `changed` when a DragValue clamps a
+/// value that is outside its range (e.g. set by a script); that must never be
+/// written back, or the panel would keep "fixing" the document every frame.
+pub(crate) fn edited(r: &egui::Response) -> bool {
+    r.changed() && (r.dragged() || r.has_focus() || r.lost_focus() || r.clicked())
 }
 
 /// Route a widget change to the editor: drags merge into one undo step,
@@ -50,7 +49,7 @@ fn apply(app: &mut App, resp: &egui::Response, label: &str, f: impl Fn(&mut Elem
     if resp.drag_stopped() {
         app.prop_dragging = false;
     }
-    if !resp.changed() {
+    if !edited(resp) {
         return;
     }
     if resp.dragged() {
@@ -69,16 +68,6 @@ fn section(ui: &mut egui::Ui, title: &str) {
     ui.label(RichText::new(title).strong().color(Color32::from_gray(200)));
 }
 
-fn properties(app: &mut App, ui: &mut egui::Ui) {
-    if !app.ed.selection.is_empty() {
-        object_properties(app, ui);
-    } else {
-        frame_properties(app, ui);
-        ui.separator();
-        document_properties(app, ui);
-    }
-}
-
 fn object_properties(app: &mut App, ui: &mut egui::Ui) {
     let n = app.ed.selection.len();
     let Some(el) = app.ed.selected_element() else {
@@ -91,6 +80,7 @@ fn object_properties(app: &mut App, ui: &mut egui::Ui) {
     } else {
         match &el.kind {
             ElementKind::Shape(_) => "Shape (drawing object)".to_string(),
+            ElementKind::Text(_) => "Static text".to_string(),
             ElementKind::Instance(i) => {
                 let s = app.ed.doc.symbol(i.symbol);
                 let kind = s.map(|s| match s.kind { SymbolKind::Graphic => "Graphic", SymbolKind::MovieClip => "Movie Clip", SymbolKind::Button => "Button" }).unwrap_or("?");
@@ -112,7 +102,7 @@ fn object_properties(app: &mut App, ui: &mut egui::Ui) {
     ui.add_enabled_ui(editable, |ui| {
         section(ui, "Position and size");
         let (lo, hi) = app.ed.selection_bounds().unwrap_or((pt(0.0, 0.0), pt(0.0, 0.0)));
-        let (w0, h0) = ((hi.x - lo.x).max(0.01), (hi.y - lo.y).max(0.01));
+        let (w0, h0) = (hi.x - lo.x, hi.y - lo.y);
         egui::Grid::new("xform").num_columns(4).spacing([6.0, 4.0]).show(ui, |ui| {
             let (mut x, mut y) = (lo.x, lo.y);
             ui.label("X");
@@ -124,13 +114,19 @@ fn object_properties(app: &mut App, ui: &mut egui::Ui) {
             ui.end_row();
             let (mut w, mut h) = (w0, h0);
             ui.label("W");
-            let r = ui.add(egui::DragValue::new(&mut w).speed(1.0).range(1.0..=10000.0).max_decimals(1));
-            let m = Matrix::translate(lo.x, lo.y).concat(&Matrix::scale(w / w0, 1.0)).concat(&Matrix::translate(-lo.x, -lo.y));
-            apply(app, &r, "Resize", |e| e.matrix = m.concat(&e.matrix));
+            // No range clamp here: egui reports a clamped value as a change,
+            // which would rescale a zero-width object every frame.
+            let r = ui.add_enabled(w0 > 0.05, egui::DragValue::new(&mut w).speed(1.0).max_decimals(1));
+            if w > 0.05 && w0 > 0.05 && (w - w0).abs() > 1e-3 {
+                let m = Matrix::translate(lo.x, lo.y).concat(&Matrix::scale(w / w0, 1.0)).concat(&Matrix::translate(-lo.x, -lo.y));
+                apply(app, &r, "Resize", |e| e.matrix = m.concat(&e.matrix));
+            }
             ui.label("H");
-            let r = ui.add(egui::DragValue::new(&mut h).speed(1.0).range(1.0..=10000.0).max_decimals(1));
-            let m = Matrix::translate(lo.x, lo.y).concat(&Matrix::scale(1.0, h / h0)).concat(&Matrix::translate(-lo.x, -lo.y));
-            apply(app, &r, "Resize", |e| e.matrix = m.concat(&e.matrix));
+            let r = ui.add_enabled(h0 > 0.05, egui::DragValue::new(&mut h).speed(1.0).max_decimals(1));
+            if h > 0.05 && h0 > 0.05 && (h - h0).abs() > 1e-3 {
+                let m = Matrix::translate(lo.x, lo.y).concat(&Matrix::scale(1.0, h / h0)).concat(&Matrix::translate(-lo.x, -lo.y));
+                apply(app, &r, "Resize", |e| e.matrix = m.concat(&e.matrix));
+            }
             ui.end_row();
         });
 
@@ -196,6 +192,48 @@ fn object_properties(app: &mut App, ui: &mut egui::Ui) {
                         apply(app, &r, "Stroke Size", |e| if let ElementKind::Shape(s) = &mut e.kind { if let Some(st) = &mut s.stroke { st.width = w } });
                     });
                 }
+            }
+            ElementKind::Text(t) if n == 1 => {
+                section(ui, "Text");
+                let mut text = t.text.clone();
+                let r = ui.add(egui::TextEdit::multiline(&mut text).desired_rows(2).desired_width(f32::INFINITY));
+                if r.changed() {
+                    let v = text.clone();
+                    app.ed.modify_selected("Edit Text", move |e| if let ElementKind::Text(t) = &mut e.kind { t.text = v.clone() });
+                }
+                let mut size = t.size;
+                let mut col = c32(t.color);
+                let mut font = t.font;
+                let mut align = t.align;
+                let mut spacing = t.letter_spacing;
+                egui::Grid::new("textprops").num_columns(4).show(ui, |ui| {
+                    ui.label("Size");
+                    let r = ui.add(egui::DragValue::new(&mut size).range(1.0..=500.0).speed(0.5));
+                    apply(app, &r, "Text Size", |e| if let ElementKind::Text(t) = &mut e.kind { t.size = size });
+                    ui.label("Colour");
+                    if ui.color_edit_button_srgba(&mut col).changed() {
+                        let c = from32(col);
+                        app.ed.modify_selected("Text Colour", move |e| if let ElementKind::Text(t) = &mut e.kind { t.color = c });
+                    }
+                    ui.end_row();
+                    ui.label("Spacing");
+                    let r = ui.add(egui::DragValue::new(&mut spacing).range(-20.0..=100.0).speed(0.1));
+                    apply(app, &r, "Letter Spacing", |e| if let ElementKind::Text(t) = &mut e.kind { t.letter_spacing = spacing });
+                    ui.end_row();
+                });
+                ui.horizontal(|ui| {
+                    for (f, l) in [(FontFace::Sans, "Sans"), (FontFace::Mono, "Mono")] {
+                        if ui.selectable_value(&mut font, f, l).changed() {
+                            app.ed.modify_selected("Font", move |e| if let ElementKind::Text(t) = &mut e.kind { t.font = font });
+                        }
+                    }
+                    ui.separator();
+                    for (a, l) in [(Align::Left, "⬅"), (Align::Center, "↔"), (Align::Right, "➡")] {
+                        if ui.selectable_value(&mut align, a, l).changed() {
+                            app.ed.modify_selected("Align", move |e| if let ElementKind::Text(t) = &mut e.kind { t.align = align });
+                        }
+                    }
+                });
             }
             ElementKind::Instance(inst) if n == 1 => {
                 let id = inst.symbol;
@@ -307,7 +345,7 @@ fn frame_properties(app: &mut App, ui: &mut egui::Ui) {
         if kind == 1 {
             ui.horizontal(|ui| {
                 ui.label("Rotate");
-                changed |= ui.add(egui::DragValue::new(&mut t).range(-10..=10).suffix(" × CW")).changed();
+                changed |= edited(&ui.add(egui::DragValue::new(&mut t).range(-10..=10).suffix(" × CW")));
             });
         }
         if changed {
@@ -315,6 +353,15 @@ fn frame_properties(app: &mut App, ui: &mut egui::Ui) {
         }
     }
     frame_buttons(app, ui);
+    if target.is_single() {
+        section(ui, "Frame script (JavaScript)");
+        let code = kf.script.clone().unwrap_or_default();
+        let lines = code.lines().count();
+        ui.label(RichText::new(if code.is_empty() { "No script on this keyframe.".to_string() } else { format!("{lines} line(s) on keyframe {}", start + 1) }).small().color(Color32::from_gray(150)));
+        if ui.button("Edit in Actions panel (F9)").clicked() {
+            app.scripting.actions_open = true;
+        }
+    }
 }
 
 fn frame_buttons(app: &mut App, ui: &mut egui::Ui) {
@@ -334,12 +381,12 @@ fn document_properties(app: &mut App, ui: &mut egui::Ui) {
     let mut changed = false;
     egui::Grid::new("docprops").num_columns(4).show(ui, |ui| {
         ui.label("W");
-        changed |= ui.add(egui::DragValue::new(&mut w).range(16.0..=8000.0)).changed();
+        changed |= edited(&ui.add(egui::DragValue::new(&mut w).range(16.0..=8000.0)));
         ui.label("H");
-        changed |= ui.add(egui::DragValue::new(&mut h).range(16.0..=8000.0)).changed();
+        changed |= edited(&ui.add(egui::DragValue::new(&mut h).range(16.0..=8000.0)));
         ui.end_row();
         ui.label("FPS");
-        changed |= ui.add(egui::DragValue::new(&mut fps).range(1.0..=120.0).speed(0.1)).changed();
+        changed |= edited(&ui.add(egui::DragValue::new(&mut fps).range(0.1..=240.0).speed(0.1)));
         ui.label("Stage");
         changed |= ui.color_edit_button_srgba(&mut bg).changed();
         ui.end_row();
@@ -466,45 +513,73 @@ pub fn library_drag_ghost(app: &mut App, ctx: &egui::Context) {
     ctx.request_repaint();
 }
 
-fn draw_tool_icon(p: &egui::Painter, r: Rect, t: Tool, col: Color32) {
-    let c = r.center();
-    let s = EStroke::new(1.6_f32, col);
-    match t {
-        Tool::Select => {
-            let pts = vec![c + vec2(-5.0, -9.0), c + vec2(6.0, 2.0), c + vec2(1.0, 2.5), c + vec2(4.0, 9.0), c + vec2(1.5, 10.0), c + vec2(-1.5, 3.5), c + vec2(-5.0, 7.0)];
-            p.add(egui::Shape::convex_polygon(pts, col, EStroke::NONE));
-        }
-        Tool::FreeTransform => {
-            let rr = Rect::from_center_size(c, vec2(16.0, 14.0));
-            p.rect_stroke(rr, 0.0, EStroke::new(1.0_f32, col));
-            for k in [rr.left_top(), rr.right_top(), rr.left_bottom(), rr.right_bottom()] {
-                p.rect_filled(Rect::from_center_size(k, vec2(4.0, 4.0)), 0.0, col);
-            }
-        }
+fn tool_properties(app: &mut App, ui: &mut egui::Ui) {
+    let tool = app.tool;
+    let info = tool.info();
+    ui.label(RichText::new(format!("{}  {}", info.name, tool.shortcut_label())).strong());
+    ui.label(RichText::new(info.tip).small().color(Color32::from_gray(160)));
+    ui.add_space(4.0);
+    let o = &mut app.topts;
+    match tool {
         Tool::Rect => {
-            p.rect_stroke(Rect::from_center_size(c, vec2(18.0, 14.0)), 0.0, s);
+            section(ui, "Rectangle options");
+            ui.add(egui::Slider::new(&mut o.rect_radius, 0.0..=100.0).text("Corner radius"));
         }
-        Tool::Oval => {
-            p.circle_stroke(c, 8.0, s);
-        }
-        Tool::Line => {
-            p.line_segment([c + vec2(-8.0, 8.0), c + vec2(8.0, -8.0)], s);
+        Tool::PolyStar => {
+            section(ui, "PolyStar options");
+            ui.horizontal(|ui| {
+                ui.selectable_value(&mut o.poly_star, false, "Polygon");
+                ui.selectable_value(&mut o.poly_star, true, "Star");
+            });
+            ui.add(egui::Slider::new(&mut o.poly_sides, 3..=32).text("Sides"));
+            ui.add_enabled(o.poly_star, egui::Slider::new(&mut o.poly_inner, 0.05..=1.0).text("Star point size"));
         }
         Tool::Pencil => {
-            p.line_segment([c + vec2(-6.0, 6.0), c + vec2(7.0, -7.0)], EStroke::new(4.0_f32, col));
-            p.add(egui::Shape::convex_polygon(vec![c + vec2(-6.5, 3.5), c + vec2(-3.5, 6.5), c + vec2(-9.0, 9.0)], col, EStroke::NONE));
+            section(ui, "Pencil mode");
+            ui.horizontal(|ui| {
+                ui.selectable_value(&mut o.pencil_mode, PencilMode::Straighten, "Straighten");
+                ui.selectable_value(&mut o.pencil_mode, PencilMode::Smooth, "Smooth");
+                ui.selectable_value(&mut o.pencil_mode, PencilMode::Ink, "Ink");
+            });
         }
-        Tool::Bucket => {
-            let pts = vec![c + vec2(-7.0, -1.0), c + vec2(0.0, -8.0), c + vec2(7.0, -1.0), c + vec2(0.0, 6.0)];
-            p.add(egui::Shape::convex_polygon(pts, Color32::TRANSPARENT, s));
-            p.circle_filled(c + vec2(8.0, 6.0), 2.5, col);
+        Tool::Brush => {
+            section(ui, "Paint Brush");
+            ui.add(egui::Slider::new(&mut o.brush_size, 1.0..=200.0).text("Size"));
+            ui.add(egui::Slider::new(&mut o.brush_smooth, 0.0..=100.0).text("Smoothing"));
+            ui.label(RichText::new("Paints with the fill colour.").small().color(Color32::from_gray(150)));
         }
-        Tool::Hand => {
-            for (i, h) in [6.0, 8.0, 8.0, 6.5].iter().enumerate() {
-                let x = -4.5 + i as f32 * 3.0;
-                p.line_segment([c + vec2(x, 2.0), c + vec2(x, 2.0 - h)], EStroke::new(2.0_f32, col));
-            }
-            p.rect_filled(Rect::from_center_size(c + vec2(0.0, 4.0), vec2(12.0, 8.0)), 3.0, col);
+        Tool::Eraser => {
+            section(ui, "Eraser");
+            ui.add(egui::Slider::new(&mut o.eraser_size, 2.0..=100.0).text("Size"));
+            ui.label(RichText::new("Mode: erase objects. Cutting into fills needs Merge Drawing (roadmap M2).").small().color(Color32::from_gray(150)));
         }
+        Tool::Text => {
+            section(ui, "Character");
+            ui.add(egui::Slider::new(&mut o.text_size, 4.0..=200.0).text("Size"));
+            ui.horizontal(|ui| {
+                ui.selectable_value(&mut o.text_font, FontFace::Sans, "Sans");
+                ui.selectable_value(&mut o.text_font, FontFace::Mono, "Mono");
+                ui.separator();
+                ui.selectable_value(&mut o.text_align, Align::Left, "⬅");
+                ui.selectable_value(&mut o.text_align, Align::Center, "↔");
+                ui.selectable_value(&mut o.text_align, Align::Right, "➡");
+            });
+            ui.label(RichText::new("Text uses the fill colour.").small().color(Color32::from_gray(150)));
+        }
+        Tool::Select | Tool::Subselect | Tool::FreeTransform => {
+            section(ui, "Snapping");
+            ui.checkbox(&mut o.snap, "Snap to objects and stage (hold Alt to bypass)");
+        }
+        _ => {}
+    }
+    if tool.is_drawing() || matches!(tool, Tool::InkBottle | Tool::Bucket) {
+        section(ui, "Fill and stroke");
+        ui.horizontal(|ui| {
+            ui.checkbox(&mut app.fill_on, "Fill");
+            ui.color_edit_button_srgba(&mut app.fill);
+            ui.checkbox(&mut app.stroke_on, "Stroke");
+            ui.color_edit_button_srgba(&mut app.stroke);
+        });
+        ui.add(egui::Slider::new(&mut app.stroke_w, 0.1..=50.0).text("Stroke size"));
     }
 }

@@ -12,3 +12,4 @@ path = "src/main.rs"
 [dependencies]
 ac-core.workspace = true
 ac-render.workspace = true
+ac-script.workspace = true

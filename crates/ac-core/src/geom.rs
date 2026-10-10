@@ -573,3 +573,359 @@ pub fn simplify(pts: &[Pt], tol: f32) -> Vec<Pt> {
         vec![first, last]
     }
 }
+
+// ------------------------------------------------------------------ shape builders
+
+impl Path {
+    /// Rectangle with rounded corners (Animate's Rectangle tool corner radius).
+    pub fn rounded_rect(x: f32, y: f32, w: f32, h: f32, r: f32) -> Path {
+        let r = r.max(0.0).min(w.abs() / 2.0).min(h.abs() / 2.0);
+        if r < 0.01 {
+            return Path::rect(x, y, w, h);
+        }
+        const K: f32 = 0.552_284_8;
+        let k = r * (1.0 - K);
+        let (x1, y1) = (x + w, y + h);
+        Path {
+            segs: vec![
+                Seg::M(pt(x + r, y)),
+                Seg::L(pt(x1 - r, y)),
+                Seg::C(pt(x1 - k, y), pt(x1, y + k), pt(x1, y + r)),
+                Seg::L(pt(x1, y1 - r)),
+                Seg::C(pt(x1, y1 - k), pt(x1 - k, y1), pt(x1 - r, y1)),
+                Seg::L(pt(x + r, y1)),
+                Seg::C(pt(x + k, y1), pt(x, y1 - k), pt(x, y1 - r)),
+                Seg::L(pt(x, y + r)),
+                Seg::C(pt(x, y + k), pt(x + k, y), pt(x + r, y)),
+                Seg::Z,
+            ],
+        }
+    }
+
+    /// Animate's PolyStar: a regular polygon, or a star whose inner points sit
+    /// at `inner` (0..1) of the outer radius. First point faces up.
+    pub fn polystar(cx: f32, cy: f32, rx: f32, ry: f32, sides: usize, star: bool, inner: f32) -> Path {
+        let sides = sides.clamp(3, 32);
+        let n = if star { sides * 2 } else { sides };
+        let pts: Vec<Pt> = (0..n)
+            .map(|i| {
+                let f = if star && i % 2 == 1 { inner.clamp(0.05, 1.0) } else { 1.0 };
+                let a = -PI / 2.0 + i as f32 * 2.0 * PI / n as f32;
+                pt(cx + rx * f * a.cos(), cy + ry * f * a.sin())
+            })
+            .collect();
+        Path::polygon(&pts)
+    }
+}
+
+// ------------------------------------------------------------------ anchor editing (Subselection / Pen tools)
+
+/// One editable point of a path: the anchor at the end of segment `seg`
+/// and, for curves, the control handles that belong to that segment.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum PointRef {
+    /// End point of segment `seg` (or the M point).
+    Anchor(usize),
+    /// Control point `k` (0 or 1) of segment `seg`.
+    Handle(usize, usize),
+}
+
+impl Path {
+    /// All anchors as (segment index, point). The closing anchor of a closed
+    /// subpath that repeats its start is skipped.
+    pub fn anchors(&self) -> Vec<(usize, Pt)> {
+        let mut out = Vec::new();
+        let mut start: Option<(usize, Pt)> = None;
+        for (i, s) in self.segs.iter().enumerate() {
+            let p = match *s {
+                Seg::M(p) => {
+                    start = Some((i, p));
+                    Some(p)
+                }
+                Seg::L(p) | Seg::Q(_, p) | Seg::C(_, _, p) => Some(p),
+                Seg::Z => None,
+            };
+            if let Some(p) = p {
+                // skip an explicit closing point that sits on the start (closed shapes)
+                let closes = matches!(self.segs.get(i + 1), Some(Seg::Z)) && start.map(|(_, s)| s.dist(p) < 1e-3).unwrap_or(false) && !matches!(s, Seg::M(_));
+                if !closes {
+                    out.push((i, p));
+                }
+            }
+        }
+        out
+    }
+
+    /// Control handles as (segment, k, handle point, anchor it belongs to).
+    pub fn handles(&self) -> Vec<(usize, usize, Pt, Pt)> {
+        let mut out = Vec::new();
+        let mut last = Pt::default();
+        for (i, s) in self.segs.iter().enumerate() {
+            match *s {
+                Seg::M(p) | Seg::L(p) => last = p,
+                Seg::Q(c, p) => {
+                    out.push((i, 0, c, p));
+                    last = p;
+                }
+                Seg::C(c1, c2, p) => {
+                    out.push((i, 0, c1, last));
+                    out.push((i, 1, c2, p));
+                    last = p;
+                }
+                Seg::Z => {}
+            }
+        }
+        out
+    }
+
+    pub fn get_point(&self, r: PointRef) -> Option<Pt> {
+        match (r, self.segs.get(match r { PointRef::Anchor(i) | PointRef::Handle(i, _) => i })?) {
+            (PointRef::Anchor(_), Seg::M(p) | Seg::L(p) | Seg::Q(_, p) | Seg::C(_, _, p)) => Some(*p),
+            (PointRef::Handle(_, 0), Seg::Q(c, _)) => Some(*c),
+            (PointRef::Handle(_, 0), Seg::C(c, _, _)) => Some(*c),
+            (PointRef::Handle(_, 1), Seg::C(_, c, _)) => Some(*c),
+            _ => None,
+        }
+    }
+
+    /// Move a point. Moving an anchor drags its neighbouring handles along,
+    /// and keeps a closed subpath closed when its start anchor moves.
+    pub fn set_point(&mut self, r: PointRef, to: Pt) {
+        match r {
+            PointRef::Anchor(i) => {
+                let Some(from) = self.get_point(r) else { return };
+                let d = pt(to.x - from.x, to.y - from.y);
+                let shift = |p: &mut Pt| {
+                    p.x += d.x;
+                    p.y += d.y;
+                };
+                match &mut self.segs[i] {
+                    Seg::M(p) | Seg::L(p) => *p = to,
+                    Seg::Q(_, p) => *p = to,
+                    Seg::C(_, c2, p) => {
+                        shift(c2);
+                        *p = to;
+                    }
+                    Seg::Z => {}
+                }
+                if let Some(Seg::C(c1, _, _)) = self.segs.get_mut(i + 1) {
+                    shift(c1);
+                }
+                // keep closed shapes closed: the last anchor before Z mirrors the M point
+                if matches!(self.segs[i], Seg::M(_)) {
+                    if let Some(z) = self.segs[i + 1..].iter().position(|s| matches!(s, Seg::Z | Seg::M(_))).map(|k| k + i + 1) {
+                        if matches!(self.segs[z], Seg::Z) && z > i + 1 {
+                            let last = z - 1;
+                            let lp = self.get_point(PointRef::Anchor(last));
+                            if lp.map(|p| p.dist(from) < 1e-3).unwrap_or(false) {
+                                match &mut self.segs[last] {
+                                    Seg::L(p) | Seg::Q(_, p) => *p = to,
+                                    Seg::C(_, c2, p) => {
+                                        shift(c2);
+                                        *p = to;
+                                    }
+                                    _ => {}
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            PointRef::Handle(i, k) => match (&mut self.segs[i], k) {
+                (Seg::Q(c, _), 0) => *c = to,
+                (Seg::C(c, _, _), 0) => *c = to,
+                (Seg::C(_, c, _), 1) => *c = to,
+                _ => {}
+            },
+        }
+    }
+
+    /// Nearest editable point within `tol` (anchors win over handles).
+    pub fn pick_point(&self, p: Pt, tol: f32, with_handles: bool) -> Option<PointRef> {
+        let mut best: Option<(PointRef, f32)> = None;
+        for (i, a) in self.anchors() {
+            let d = a.dist(p);
+            if d <= tol && best.map(|b| d < b.1).unwrap_or(true) {
+                best = Some((PointRef::Anchor(i), d));
+            }
+        }
+        if best.is_none() && with_handles {
+            for (i, k, h, _) in self.handles() {
+                let d = h.dist(p);
+                if d <= tol && best.map(|b| d < b.1).unwrap_or(true) {
+                    best = Some((PointRef::Handle(i, k), d));
+                }
+            }
+        }
+        best.map(|b| b.0)
+    }
+
+    /// Delete Anchor tool: remove the anchor at segment `i`, joining its neighbours.
+    pub fn delete_anchor(&mut self, i: usize) -> bool {
+        let n_anchors = self.anchors().len();
+        if n_anchors <= 2 || i >= self.segs.len() {
+            return false;
+        }
+        match self.segs[i] {
+            Seg::M(_) => {
+                // promote the next anchor to be the start
+                if let Some(next) = self.segs.get(i + 1).copied() {
+                    let p = match next {
+                        Seg::L(p) | Seg::Q(_, p) | Seg::C(_, _, p) => p,
+                        _ => return false,
+                    };
+                    self.segs[i] = Seg::M(p);
+                    self.segs.remove(i + 1);
+                    // a closed shape's closing anchor equals the old start: retarget it
+                    if let Some(z) = self.segs[i + 1..].iter().position(|s| matches!(s, Seg::Z)).map(|k| k + i + 1) {
+                        if z > i + 1 {
+                            match &mut self.segs[z - 1] {
+                                Seg::L(q) | Seg::Q(_, q) | Seg::C(_, _, q) => *q = p,
+                                _ => {}
+                            }
+                        }
+                    }
+                    return true;
+                }
+                false
+            }
+            Seg::L(_) | Seg::Q(..) | Seg::C(..) => {
+                let removed = self.segs.remove(i);
+                // the following segment now starts from the previous anchor; keep it a straight join
+                if let Some(next) = self.segs.get_mut(i) {
+                    if let (Seg::C(_, _, _), Seg::C(c1, _, _)) = (removed, next) {
+                        if let Seg::C(rc1, _, _) = removed {
+                            *c1 = rc1;
+                        }
+                    }
+                }
+                true
+            }
+            Seg::Z => false,
+        }
+    }
+
+    /// Add Anchor tool: split the segment nearest `p` (within `tol`) at that point.
+    pub fn insert_anchor(&mut self, p: Pt, tol: f32) -> Option<usize> {
+        let mut last = Pt::default();
+        let mut start = Pt::default();
+        let mut best: Option<(usize, f32, f32)> = None; // (seg, t, dist)
+        for (i, s) in self.segs.iter().enumerate() {
+            let samples = 24;
+            match *s {
+                Seg::M(q) => {
+                    last = q;
+                    start = q;
+                    continue;
+                }
+                Seg::Z => {
+                    last = start;
+                    continue;
+                }
+                _ => {}
+            }
+            for k in 1..samples {
+                let t = k as f32 / samples as f32;
+                let q = seg_at(last, s, t);
+                let d = q.dist(p);
+                if d <= tol && best.map(|b| d < b.2).unwrap_or(true) {
+                    best = Some((i, t, d));
+                }
+            }
+            last = seg_end(s).unwrap_or(last);
+        }
+        let (i, t, _) = best?;
+        let prev = self.seg_start(i);
+        let (a, b) = split_seg(prev, &self.segs[i], t);
+        self.segs[i] = a;
+        self.segs.insert(i + 1, b);
+        Some(i)
+    }
+
+    fn seg_start(&self, i: usize) -> Pt {
+        let mut last = Pt::default();
+        let mut start = Pt::default();
+        for s in &self.segs[..i] {
+            match *s {
+                Seg::M(p) => {
+                    last = p;
+                    start = p;
+                }
+                Seg::L(p) | Seg::Q(_, p) | Seg::C(_, _, p) => last = p,
+                Seg::Z => last = start,
+            }
+        }
+        last
+    }
+
+    /// Convert Anchor tool: toggle the anchor at segment `i` between corner
+    /// (straight joins) and smooth (curved joins with symmetric handles).
+    pub fn convert_anchor(&mut self, i: usize) {
+        let Some(a) = self.get_point(PointRef::Anchor(i)) else { return };
+        let prev = self.seg_start(i);
+        let next_i = i + 1;
+        let next_end = self.segs.get(next_i).and_then(seg_end);
+        let is_smooth = matches!(self.segs[i], Seg::C(..)) || matches!(self.segs.get(next_i), Some(Seg::C(..)));
+        if is_smooth {
+            if !matches!(self.segs[i], Seg::M(_)) {
+                self.segs[i] = Seg::L(a);
+            }
+            if let (Some(Seg::C(..)), Some(e)) = (self.segs.get(next_i), next_end) {
+                self.segs[next_i] = Seg::L(e);
+            }
+        } else {
+            let dir = match next_end {
+                Some(e) => pt((e.x - prev.x) / 6.0, (e.y - prev.y) / 6.0),
+                None => pt((a.x - prev.x) / 3.0, (a.y - prev.y) / 3.0),
+            };
+            if !matches!(self.segs[i], Seg::M(_)) {
+                self.segs[i] = Seg::C(prev.lerp(a, 1.0 / 3.0), pt(a.x - dir.x, a.y - dir.y), a);
+            }
+            if let (Some(Seg::L(_)), Some(e)) = (self.segs.get(next_i), next_end) {
+                self.segs[next_i] = Seg::C(pt(a.x + dir.x, a.y + dir.y), a.lerp(e, 2.0 / 3.0), e);
+            }
+        }
+    }
+}
+
+fn seg_end(s: &Seg) -> Option<Pt> {
+    match *s {
+        Seg::M(p) | Seg::L(p) | Seg::Q(_, p) | Seg::C(_, _, p) => Some(p),
+        Seg::Z => None,
+    }
+}
+
+fn seg_at(p0: Pt, s: &Seg, t: f32) -> Pt {
+    match *s {
+        Seg::L(p) => p0.lerp(p, t),
+        Seg::Q(c, p) => p0.lerp(c, t).lerp(c.lerp(p, t), t),
+        Seg::C(c1, c2, p) => cubic_at(p0, c1, c2, p, t),
+        Seg::M(p) => p,
+        Seg::Z => p0,
+    }
+}
+
+fn split_seg(p0: Pt, s: &Seg, t: f32) -> (Seg, Seg) {
+    match *s {
+        Seg::L(p) => {
+            let m = p0.lerp(p, t);
+            (Seg::L(m), Seg::L(p))
+        }
+        Seg::Q(c, p) => {
+            let a = p0.lerp(c, t);
+            let b = c.lerp(p, t);
+            let m = a.lerp(b, t);
+            (Seg::Q(a, m), Seg::Q(b, p))
+        }
+        Seg::C(c1, c2, p) => {
+            let a = p0.lerp(c1, t);
+            let b = c1.lerp(c2, t);
+            let c = c2.lerp(p, t);
+            let ab = a.lerp(b, t);
+            let bc = b.lerp(c, t);
+            let m = ab.lerp(bc, t);
+            (Seg::C(a, ab, m), Seg::C(bc, c, p))
+        }
+        other => (other, other),
+    }
+}

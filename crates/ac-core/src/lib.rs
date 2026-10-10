@@ -6,10 +6,12 @@ pub mod editor;
 pub mod frames;
 pub mod geom;
 pub mod model;
+pub mod text;
+pub mod commands;
 pub mod xfl;
 
 pub use editor::{Editor, FrameSel, LayerFlag, Selection};
-pub use geom::{pt, Matrix, Path, Pt, Seg};
+pub use geom::{pt, Matrix, Path, PointRef, Pt, Seg};
 pub use model::*;
 
 #[cfg(test)]
@@ -317,6 +319,104 @@ mod tests {
         for f in 0..ed.frame_count() {
             let _ = ed.evaluate_current(f);
         }
+    }
+
+
+    #[test]
+    fn text_outlines_and_hits() {
+        let t = text::text_path("Hi", 40.0, text::FontFace::Sans, text::Align::Left, 0.0);
+        let (lo, hi) = t.bounds().unwrap();
+        assert!(hi.x - lo.x > 15.0 && hi.y - lo.y > 20.0, "{lo:?} {hi:?}");
+        let mut ed = Editor::new(Document::default());
+        ed.add_element(Element::text("Hello", 40.0, Color::rgb(0, 0, 0), pt(100.0, 100.0)));
+        let (lo, _) = ed.selection_bounds().unwrap();
+        assert!(lo.x >= 100.0 && lo.y >= 100.0);
+        assert!(!ed.evaluate_current(0)[0].path.segs.is_empty());
+    }
+
+    #[test]
+    fn shape_builders() {
+        let r = Path::rounded_rect(0.0, 0.0, 100.0, 50.0, 10.0);
+        let (lo, hi) = r.bounds().unwrap();
+        assert!(close(lo.x, 0.0) && close(hi.x, 100.0) && close(hi.y, 50.0));
+        assert!(!r.hit(pt(0.5, 0.5), true, 0.0), "corner is rounded off");
+        let star = Path::polystar(0.0, 0.0, 10.0, 10.0, 5, true, 0.5);
+        assert_eq!(star.anchors().len(), 10);
+        let hex = Path::polystar(0.0, 0.0, 10.0, 10.0, 6, false, 0.5);
+        assert_eq!(hex.anchors().len(), 6);
+    }
+
+    #[test]
+    fn anchor_editing() {
+        let mut p = Path::rect(0.0, 0.0, 10.0, 10.0);
+        assert_eq!(p.anchors().len(), 4);
+        let r = p.pick_point(pt(10.2, 9.8), 1.0, true).unwrap();
+        p.set_point(r, pt(20.0, 20.0));
+        assert!(close(p.bounds().unwrap().1.x, 20.0));
+        let i = p.insert_anchor(pt(5.0, 0.0), 1.0).unwrap();
+        assert_eq!(p.anchors().len(), 5);
+        assert!(p.delete_anchor(i + 1));
+        assert_eq!(p.anchors().len(), 4);
+        p.convert_anchor(1);
+        assert!(p.segs.iter().any(|s| matches!(s, Seg::C(..))), "corner became smooth");
+        p.convert_anchor(1);
+        assert!(!p.segs.iter().any(|s| matches!(s, Seg::C(..))), "and back to a corner");
+        // moving the start anchor of a closed shape keeps it closed
+        let mut q = Path::ellipse(0.0, 0.0, 10.0, 10.0);
+        q.set_point(PointRef::Anchor(0), pt(15.0, 0.0));
+        assert_eq!(q.anchors().len(), 4);
+        assert!(close(q.bounds().unwrap().1.x, 15.0));
+    }
+
+    #[test]
+    fn command_registry() {
+        use serde_json::json;
+        let mut ed = Editor::new(Document::default());
+        let r = commands::execute(&mut ed, "draw.rect", &json!({"x": 10, "y": 10, "w": 50, "h": 20, "fill": "#FF0000"})).unwrap();
+        assert_eq!(r["layer"], 1);
+        commands::execute(&mut ed, "draw.text", &json!({"x": 10, "y": 60, "text": "Hi"})).unwrap();
+        assert_eq!(commands::execute(&mut ed, "select.all", &json!({})).unwrap(), 2);
+        commands::execute(&mut ed, "select.at", &json!({"x": 20, "y": 20})).unwrap();
+        commands::execute(&mut ed, "selection.set", &json!({"fill": "#00FF00", "alpha": 0.5})).unwrap();
+        let info = commands::execute(&mut ed, "selection.info", &json!(null)).unwrap();
+        assert_eq!(info[0]["props"]["fill"], "#00FF00");
+        commands::execute(&mut ed, "timeline.insert_keyframe", &json!({"frame": 10})).unwrap();
+        commands::execute(&mut ed, "timeline.set_tween", &json!({"kind": "classic", "frame": 1})).unwrap();
+        let layers = commands::execute(&mut ed, "layer.list", &json!({})).unwrap();
+        assert_eq!(layers[0]["keyframes"], json!([1, 10]));
+        commands::execute(&mut ed, "timeline.set_script", &json!({"frame": 10, "script": "this.stop();"})).unwrap();
+        assert!(ed.timeline().layers[0].keyframes[&9].script.is_some());
+        // errors are messages, not panics
+        assert!(commands::execute(&mut ed, "draw.rect", &json!({"x": 1})).unwrap_err().contains("missing"));
+        assert!(commands::execute(&mut ed, "timeline.goto", &json!({"frame": 0})).is_err());
+        assert!(commands::execute(&mut ed, "nope", &json!({})).is_err());
+        assert!(commands::execute(&mut ed, "layer.select", &json!({"layer": "Nope"})).is_err());
+        // every registered command id is dispatched
+        for c in commands::COMMANDS {
+            let e = commands::execute(&mut ed, c.id, &json!({}));
+            assert!(!matches!(&e, Err(m) if m.starts_with("unknown command")), "{} not dispatched", c.id);
+        }
+    }
+
+    #[test]
+    fn undo_squash_groups_a_script() {
+        let mut ed = Editor::new(Document::default());
+        let mark = ed.undo_depth();
+        for i in 0..5 {
+            commands::execute(&mut ed, "draw.rect", &serde_json::json!({"x": i * 10, "y": 0, "w": 5, "h": 5})).unwrap();
+        }
+        ed.squash_undo(mark, "Run Script");
+        assert_eq!(ed.undo_label(), Some("Run Script"));
+        ed.undo();
+        assert!(ed.evaluate_current(0).is_empty(), "one undo removes everything the script did");
+    }
+
+    #[test]
+    fn old_documents_still_load() {
+        // keyframes saved before `script` and text existed
+        let doc = demo::demo_document();
+        let json = doc.to_json().replace(",\n          \"script\": null", "");
+        assert!(Document::from_json(&json).is_ok());
     }
 
     #[test]

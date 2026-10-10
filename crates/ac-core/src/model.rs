@@ -77,10 +77,31 @@ pub struct Instance {
     pub first_frame: u32,
 }
 
+/// Static text (Animate's Text tool, "Static Text" mode).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct TextEl {
+    pub text: String,
+    pub size: f32,
+    pub color: Color,
+    #[serde(default)]
+    pub font: crate::text::FontFace,
+    #[serde(default)]
+    pub align: crate::text::Align,
+    #[serde(default)]
+    pub letter_spacing: f32,
+}
+
+impl TextEl {
+    pub fn outline(&self) -> Path {
+        crate::text::text_path(&self.text, self.size, self.font, self.align, self.letter_spacing)
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum ElementKind {
     Shape(Shape),
     Instance(Instance),
+    Text(TextEl),
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -97,6 +118,15 @@ pub struct Element {
 impl Element {
     pub fn shape(name: &str, shape: Shape) -> Self {
         Element { name: name.into(), matrix: Matrix::IDENTITY, alpha: 1.0, tint: None, kind: ElementKind::Shape(shape) }
+    }
+    pub fn text(text: &str, size: f32, color: Color, at: Pt) -> Self {
+        Element {
+            name: "Text".into(),
+            matrix: Matrix::translate(at.x, at.y),
+            alpha: 1.0,
+            tint: None,
+            kind: ElementKind::Text(TextEl { text: text.into(), size, color, font: Default::default(), align: Default::default(), letter_spacing: 0.0 }),
+        }
     }
     pub fn instance(name: &str, symbol: SymbolId, matrix: Matrix) -> Self {
         Element {
@@ -139,14 +169,17 @@ pub struct Keyframe {
     pub elements: Vec<Element>,
     pub tween: Tween,
     pub label: Option<String>,
+    /// Frame script (JavaScript, CreateJS-style API) run when playback enters this frame.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub script: Option<String>,
 }
 
 impl Keyframe {
     pub fn blank() -> Self {
-        Keyframe { elements: vec![], tween: Tween::None, label: None }
+        Keyframe { elements: vec![], tween: Tween::None, label: None, script: None }
     }
     pub fn with(elements: Vec<Element>) -> Self {
-        Keyframe { elements, tween: Tween::None, label: None }
+        Keyframe { elements, tween: Tween::None, label: None, script: None }
     }
 }
 
@@ -384,6 +417,16 @@ pub fn evaluate(ctx: &EvalCtx, tl: &Timeline, frame: u32, parent: &Matrix, alpha
                     path: s.path.clone(),
                     fill: s.fill,
                     stroke: s.stroke,
+                    matrix: m,
+                    alpha: a,
+                    tint: el.tint,
+                    outline,
+                    src: None,
+                }),
+                ElementKind::Text(t) => out.push(DrawItem {
+                    path: t.outline(),
+                    fill: Some(t.color),
+                    stroke: None,
                     matrix: m,
                     alpha: a,
                     tint: el.tint,

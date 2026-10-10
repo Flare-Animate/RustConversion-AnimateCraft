@@ -38,6 +38,35 @@ Linux needs the usual X11/Wayland + OpenGL libraries (any desktop has them).
    change type or delete.
 7. File → Export → Animated GIF / PNG / SVG.
 
+## Tools
+
+Two-column Tools panel, organised like Animate (and PhotoCraft): each button is
+a group; a corner triangle means more tools inside: **right-click or
+long-press** to pick one. **…** at the bottom opens *Edit Toolbar* to hide
+tools. Options for the active tool are in Properties ▸ **Tool**.
+
+| Group | Tools (shortcut) |
+|---|---|
+| Select | Selection (V), Subselection (A: drag anchors and curve handles), Free Transform (Q), Lasso (L), Polygon Lasso |
+| Draw | Pen (P) + Add (=) / Delete (−) / Convert Anchor, Text (T), Line (N), Rectangle (R, corner radius), Oval (O), PolyStar |
+| Paint | Paint Brush (Y, filled strokes), Pencil (Shift+Y: Straighten / Smooth / Ink), Paint Bucket (K), Ink Bottle (S), Eyedropper (I), Eraser (E, object mode) |
+| View | Hand (H / Space), Zoom (Z: click, Alt+click, drag a box) |
+| Colours | Stroke / Fill / none, Swap (X), Black & White (D), Snap to objects |
+
+Dimmed tools are planned and say what they need: Gradient Transform, Fluid
+Brush, Bone, Width, Asset Warp, Camera, Rotate View.
+
+## Scripting
+
+- **Window ▸ Actions (F9):** frame scripts in JavaScript (`this.stop()`,
+  `this.gotoAndPlay("label")`…), sandboxed, run during playback.
+- **Commands ▸ Script Console:** automate the editor in **JavaScript
+  (built in), Python, Node.js or Ruby**, or any language via a one-line JSON
+  protocol. One undo step per run.
+- Headless: `cargo run -p ac-cli -- run examples/scripts/stars.py --gif stars.gif`
+
+See [SCRIPTING.md](SCRIPTING.md) for the API, examples and the safety model.
+
 ## Keyboard
 
 | Key | Action | Key | Action |
@@ -51,6 +80,7 @@ Linux needs the usual X11/Wayland + OpenGL libraries (any desktop has them).
 | Arrows | Nudge (Shift = 10 px) | Ctrl+D / Ctrl+A / Ctrl+B | Duplicate / select all / break apart |
 | Enter | Play / stop | Ctrl+Z / Ctrl+Shift+Z | Undo / redo |
 | Esc | Deselect, then leave symbol | Ctrl+1 / Ctrl+2 | 100% / fit |
+| F9 | Actions panel | F2 | Output panel |
 
 ## UI smoke testing
 

@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/ac-core", "crates/ac-render", "crates/ac-cli", "crates/ac-app"]
+members = ["crates/ac-core", "crates/ac-render", "crates/ac-script", "crates/ac-cli", "crates/ac-app"]
 
 [workspace.package]
 version = "0.1.0"
@@ -11,6 +11,7 @@ repository = "https://github.com/animatecraft/animatecraft"
 [workspace.dependencies]
 ac-core = { path = "crates/ac-core" }
 ac-render = { path = "crates/ac-render" }
+ac-script = { path = "crates/ac-script" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tiny-skia = "0.11"

@@ -3,8 +3,12 @@
 //! Properties + Library (right), Timeline (bottom).
 
 mod panels;
+mod scripting;
 mod stage;
 mod timeline;
+mod toolbar;
+
+use toolbar::Tool;
 
 use ac_core::{demo::demo_document, Color, Document, Editor, ElementKind, Matrix, Pt, SymbolId, SymbolKind};
 use eframe::egui::{self, vec2, Align2, Color32, Key, Modifiers, Rect, Stroke as EStroke, Vec2};
@@ -12,43 +16,11 @@ use eframe::egui::{self, vec2, Align2, Color32, Key, Modifiers, Rect, Stroke as 
 pub(crate) const ACCENT: Color32 = Color32::from_rgb(0x2D, 0x8C, 0xEB);
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub(crate) enum Tool {
-    Select,
-    FreeTransform,
-    Rect,
-    Oval,
-    Line,
-    Pencil,
-    Bucket,
-    Hand,
-}
-
-impl Tool {
-    pub(crate) const ALL: [Tool; 8] = [Tool::Select, Tool::FreeTransform, Tool::Rect, Tool::Oval, Tool::Line, Tool::Pencil, Tool::Bucket, Tool::Hand];
-    pub(crate) fn name(self) -> &'static str {
-        match self {
-            Tool::Select => "Selection Tool (V)",
-            Tool::FreeTransform => "Free Transform Tool (Q)",
-            Tool::Rect => "Rectangle Tool (R)",
-            Tool::Oval => "Oval Tool (O)",
-            Tool::Line => "Line Tool (N)",
-            Tool::Pencil => "Pencil Tool (Y)",
-            Tool::Bucket => "Paint Bucket Tool (K)",
-            Tool::Hand => "Hand Tool (H)",
-        }
-    }
-    fn key(self) -> Key {
-        match self {
-            Tool::Select => Key::V,
-            Tool::FreeTransform => Key::Q,
-            Tool::Rect => Key::R,
-            Tool::Oval => Key::O,
-            Tool::Line => Key::N,
-            Tool::Pencil => Key::Y,
-            Tool::Bucket => Key::K,
-            Tool::Hand => Key::H,
-        }
-    }
+pub(crate) enum PropsTab {
+    Tool,
+    Object,
+    Frame,
+    Doc,
 }
 
 pub(crate) enum Dialog {
@@ -98,6 +70,14 @@ pub struct App {
     pub(crate) status: String,
     file_path: Option<String>,
     pub(crate) tl: timeline::TimelineState,
+    pub(crate) topts: toolbar::ToolOpts,
+    pub(crate) pen: Option<stage::PenState>,
+    pub(crate) poly_lasso: Vec<Pt>,
+    pub(crate) text_edit: Option<stage::TextEdit>,
+    pub(crate) snap_guides: (Option<f32>, Option<f32>),
+    pub(crate) props_tab: PropsTab,
+    pub(crate) scripting: scripting::ScriptingState,
+    last_sel: (Vec<ac_core::Selection>, Option<ac_core::FrameSel>),
     screenshot: Option<(String, u32)>,
 }
 
@@ -148,6 +128,14 @@ impl App {
             status: "Demo loaded. Enter = play · click frames to select · Delete removes the selection · right-click for menus".into(),
             file_path: None,
             tl: Default::default(),
+            topts: Default::default(),
+            pen: None,
+            poly_lasso: vec![],
+            text_edit: None,
+            snap_guides: (None, None),
+            props_tab: PropsTab::Frame,
+            scripting: Default::default(),
+            last_sel: (vec![], None),
             screenshot: None,
         };
         // Headless screenshot hook used by CI/docs: AC_SCREENSHOT=out.png [AC_SCREENSHOT_FRAME=n]
@@ -163,6 +151,34 @@ impl App {
     }
 
     // ------------------------------------------------------------ actions
+    pub(crate) fn set_tool(&mut self, t: Tool) {
+        if !t.usable() {
+            self.status = format!("{} is planned: {}", t.info().name, t.info().planned.unwrap_or(""));
+            return;
+        }
+        if t != self.tool {
+            if self.pen.is_some() {
+                self.finish_pen(false);
+            }
+            if self.text_edit.is_some() && t != Tool::Text {
+                self.finish_text();
+            }
+            self.poly_lasso.clear();
+        }
+        self.tool = t;
+        // remember the tool in its toolbar slot
+        let mut idx = 0;
+        for section in toolbar::SECTIONS {
+            for slot in section.iter() {
+                if slot.contains(&t) {
+                    self.topts.slot_memory[idx] = t;
+                }
+                idx += 1;
+            }
+        }
+        self.props_tab = PropsTab::Tool;
+    }
+
     pub(crate) fn toggle_play(&mut self) {
         self.playing = !self.playing;
         self.play_accum = 0.0;
@@ -171,6 +187,7 @@ impl App {
             if self.ed.frame + 1 >= self.ed.frame_count() {
                 self.ed.set_frame(0);
             }
+            scripting::start_playback(self);
         }
     }
 
@@ -332,7 +349,8 @@ impl App {
         if k(none, Key::F7) { self.ed.insert_blank_keyframe(); }
         if k(cmd, Key::F8) { self.open_symbol_dialog(false); }
         if k(none, Key::F8) { self.open_symbol_dialog(true); }
-        if k(none, Key::Enter) { self.toggle_play(); }
+        let busy = self.pen.is_some() || !self.poly_lasso.is_empty() || self.text_edit.is_some();
+        if !busy && k(none, Key::Enter) { self.toggle_play(); }
         if k(none, Key::Period) { self.step(1); }
         if k(none, Key::Comma) { self.step(-1); }
         if k(none, Key::Delete) || k(none, Key::Backspace) { self.delete(); }
@@ -344,7 +362,7 @@ impl App {
                 self.ed.modify_selected("Nudge", |e| { e.matrix.tx += dx * s; e.matrix.ty += dy * s; });
             }
         }
-        if k(none, Key::Escape) {
+        if !busy && k(none, Key::Escape) {
             if !self.ed.selection.is_empty() || self.ed.frame_sel.is_some() {
                 self.ed.selection.clear();
                 self.ed.frame_sel = None;
@@ -353,9 +371,7 @@ impl App {
                 self.fit_pending = true;
             }
         }
-        for t in Tool::ALL {
-            if k(none, t.key()) { self.tool = t; }
-        }
+        toolbar::tool_shortcuts(self, ctx);
     }
 
     // ------------------------------------------------------------ menus
@@ -469,6 +485,29 @@ impl App {
                     ui.separator();
                     ui.checkbox(&mut self.loop_play, "Loop Playback");
                     ui.checkbox(&mut self.onion, "Onion Skin");
+                    ui.checkbox(&mut self.scripting.frame_scripts, "Enable Frame Scripts");
+                });
+                ui.menu_button("Commands", |ui| {
+                    if ui.button("Run Script…").clicked() { self.scripting.console_open = true; ui.close_menu(); }
+                    if ui.button("Script Console…").clicked() { self.scripting.console_open = true; ui.close_menu(); }
+                    if ui.button("Command Reference").clicked() { self.scripting.reference_open = true; ui.close_menu(); }
+                    ui.separator();
+                    ui.menu_button("Run Example", |ui| {
+                        for l in ac_script::Language::ALL {
+                            if ui.button(l.name()).clicked() {
+                                scripting::request_run(self, scripting::Pending::Code(l, l.example().to_string()));
+                                ui.close_menu();
+                            }
+                        }
+                    });
+                });
+                ui.menu_button("Window", |ui| {
+                    if ui.add(egui::Button::new("Actions").shortcut_text("F9")).clicked() { self.scripting.actions_open = true; ui.close_menu(); }
+                    if ui.add(egui::Button::new("Output").shortcut_text("F2")).clicked() { self.scripting.output_open = true; ui.close_menu(); }
+                    if ui.button("Script Console").clicked() { self.scripting.console_open = true; ui.close_menu(); }
+                    if ui.button("Command Reference").clicked() { self.scripting.reference_open = true; ui.close_menu(); }
+                    ui.separator();
+                    if ui.button("Edit Toolbar…").clicked() { self.topts.edit_toolbar_open = true; ui.close_menu(); }
                 });
                 ui.menu_button("Help", |ui| {
                     if ui.button("About AnimateCraft").clicked() { self.dialog = Dialog::About; ui.close_menu(); }
@@ -486,7 +525,7 @@ impl App {
                 ui.label(egui::RichText::new(&self.status).small());
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.label(egui::RichText::new(format!("{:.0}%", self.zoom * 100.0)).small());
-                    ui.label(egui::RichText::new(self.tool.name()).small().color(Color32::from_gray(150)));
+                    ui.label(egui::RichText::new(self.tool.info().name).small().color(Color32::from_gray(150)));
                     let n = self.ed.selection.len();
                     if n > 0 {
                         ui.label(egui::RichText::new(format!("{n} selected")).small().color(ACCENT));
@@ -603,6 +642,21 @@ impl App {
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.shortcuts(ctx);
+        if ctx.memory(|m| m.focused().is_none()) {
+            scripting::shortcuts(self, ctx);
+        }
+        // Properties follows what you work on, like Animate.
+        let cur = (self.ed.selection.clone(), self.ed.frame_sel);
+        if cur != self.last_sel {
+            if !cur.0.is_empty() {
+                self.props_tab = PropsTab::Object;
+            } else if cur.1.is_some() {
+                self.props_tab = PropsTab::Frame;
+            } else if self.props_tab == PropsTab::Object {
+                self.props_tab = PropsTab::Frame;
+            }
+            self.last_sel = cur;
+        }
         if self.playing {
             let dt = ctx.input(|i| i.stable_dt) as f64;
             self.play_accum += dt;
@@ -615,17 +669,22 @@ impl eframe::App for App {
                 } else {
                     self.ed.frame += 1;
                 }
+                scripting::enter_frame(self);
+                if !self.playing {
+                    break;
+                }
             }
             ctx.request_repaint();
         }
         self.menu_bar(ctx);
         self.status_bar(ctx);
         timeline::panel(self, ctx);
-        panels::tools_panel(self, ctx);
+        toolbar::panel(self, ctx);
         panels::right_panel(self, ctx);
         stage::stage(self, ctx);
         panels::library_drag_ghost(self, ctx);
         self.dialogs(ctx);
+        scripting::windows(self, ctx);
 
         // Screenshot hook (docs/CI): wait a few frames for layout to settle.
         if let Some((path, n)) = &mut self.screenshot {

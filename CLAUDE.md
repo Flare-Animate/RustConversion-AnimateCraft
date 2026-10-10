@@ -36,14 +36,21 @@ Status: ✅ in the demo · 🟡 partial · ⬜ planned
 - ⬜ Rulers, guides, grid, snapping, Align panel, Info panel, workspaces
 
 **Drawing**
-- ✅ Object Drawing model (each shape its own object): Rectangle, Oval, Line,
-  Pencil (smoothed), Paint Bucket, Selection with move/scale, Free Transform rotate
+- ✅ Object Drawing model (each shape its own object)
+- ✅ Tools panel in PhotoCraft's structure (sections → flyout slots, last-used
+  tool per slot, Edit Toolbar), Properties ▸ Tool tab with per-tool options
+- ✅ Selection, Subselection (anchors + handles), Free Transform, Lasso,
+  Polygon Lasso, Pen + Add/Delete/Convert Anchor, Text (static, outlined via
+  ab_glyph), Line, Rectangle (corner radius), Oval, PolyStar, Pencil
+  (Straighten/Smooth/Ink), Paint Brush (filled outline), Paint Bucket, Ink
+  Bottle, Eyedropper (switches to Bucket/Ink Bottle), Eraser (object mode),
+  Hand, Zoom; snapping with guides
 - ⬜ **Merge Drawing** model: Flash's planar map where shapes cut/merge, fill
   styles left/right of each edge, Selection-tool edge bending. This is the core
   engine milestone; nothing else in open source does it well.
-- ⬜ Brush (variable width, pressure, tilt), Fluid Brush, Art/Pattern brushes,
-  Eraser modes, Pen + subselection, Ink Bottle, gradients (linear/radial),
-  bitmap fills, Width tool, Text (static/dynamic/input) with font embedding
+- ⬜ Pressure/tilt, Fluid Brush, Art/Pattern brushes, fill-cutting Eraser modes,
+  gradients (linear/radial) + Gradient Transform, bitmap fills, Width tool,
+  dynamic/input text, system fonts, Rotate View, Camera, Bone, Asset Warp
 
 **Timeline**
 - ✅ Layers (visible / lock / outline, colour), frames, keyframes, blank keyframes,
@@ -81,9 +88,14 @@ Status: ✅ in the demo · 🟡 partial · ⬜ planned
   `LIBRARY/*.xml`, `bin/`, media), uncompressed XFL read/write, legacy binary
   FLA (pre-CS5 compound file) read-only, SVG/AI/PSD import
 
-**Scripting**
-- ⬜ JSFL-like automation via our command registry (CLI/MCP). ActionScript is
-  out of scope; runtime interactivity should target JS in the HTML5 export.
+**Scripting** (see SCRIPTING.md)
+- ✅ Command registry (`ac_core::commands`, ~50 dotted commands, 1-based frames)
+- ✅ Frame scripts: sandboxed QuickJS, CreateJS-style `this.stop()/gotoAndPlay()`,
+  Actions panel (F9), run during playback; never on open
+- ✅ Authoring scripts: built-in JS, Python, Node.js, Ruby, any language via a
+  JSON-lines protocol; Script Console, Output, Command Reference; confirm
+  before external scripts; one undo step per run; CLI `run`
+- ⬜ MCP server over the same registry; recorded macros; script plug-in menu
 
 ## 3. Architecture
 
@@ -91,7 +103,8 @@ Status: ✅ in the demo · 🟡 partial · ⬜ planned
 crates/
   ac-core    model, timeline evaluation, tweens, editor commands, XFL bits   (no UI, wasm-portable)
   ac-render  tiny-skia rasteriser shared by stage + exports; SVG, GIF, PNG
-  ac-cli     headless: info / gif / png / svg / save-demo
+  ac-script  scripting: sandboxed frame scripts (QuickJS), authoring scripts (JS embedded, others via JSON bridge)
+  ac-cli     headless: info / gif / png / svg / save-demo / run / commands
   ac-app     egui desktop editor (Animate "Essentials" layout)
 ```
 
@@ -114,7 +127,8 @@ crates/
 | Milestone | Goal |
 |---|---|
 | **M0 (done: demo)** | Model, classic + shape tweens, symbols, onion skin, egui editor, GIF/PNG/SVG export, CLI. M0.1: selection, frame ops, clipboard, library management; 24 tests |
-| **M1** | Command registry (every menu item a named command) + MCP/JSON control, matching ArtCraft's pattern. Snapping, rulers/guides, Align panel, native file dialogs |
+| **M0.2 (done)** | Toolbar overhaul (17 working tools), command registry, multi-language scripting, frame scripts; 40 tests |
+| **M1** | Route every menu item through the registry; MCP server; rulers/guides, Align panel, native file dialogs |
 | **M2** | Merge Drawing planar-map engine, Brush/Eraser/Pen/Subselection, gradients, Selection-tool edge bending |
 | **M3** | `.fla`/XFL import with a corpus of real files; XFL export; round-trip tests |
 | **M4** | Motion tweens + Motion Editor, custom eases, shape hints, masks, guide layers, layer parenting, camera |

@@ -10,7 +10,7 @@ fn shape(name: &str, path: Path, fill: Option<Color>, stroke: Option<Stroke>) ->
 }
 
 fn kf(els: Vec<Element>, tween: Tween) -> Keyframe {
-    Keyframe { elements: els, tween, label: None }
+    Keyframe { elements: els, tween, label: None, script: None }
 }
 
 pub fn demo_document() -> Document {

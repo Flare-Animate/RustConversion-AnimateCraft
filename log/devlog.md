@@ -12,3 +12,12 @@
 - App split into stage/panels/timeline modules; window starts maximised; stage + timeline take focus from text fields so shortcuts always work; right-click menus on stage, frames and library; library drag-to-stage.
 - 24 tests green. UI scenarios exercised under Xvfb via tools/ui_drive.py: frame click/range/context menu, keyframe drag, click+Delete, marquee+Delete, Ctrl+Z, typed W/alpha, rotate, stroke toggle, library delete with confirm, library drag-to-stage, copy/paste/cut.
 - Still open: command registry/MCP; merge drawing; rulers/snapping; FLA import; real file dialogs (rfd).
+
+## 2026-10-10 — M0.2: tools + scripting (user asked for Animate's missing tools and Python/JS scripting)
+- Studied PhotoCraft (storytold/photocraft, MIT/Apache) for structure only: toolbar = sections of flyout slots remembering the last tool, Edit Toolbar, commands with stable ids, tools as pointer→ops+overlays, JSON-lines automation with limits, WASM-sandboxed plug-ins. No code copied.
+- Toolbar rebuilt (toolbar.rs) with Animate's set; 17 tools working, 7 shown dimmed as planned. Properties now Tool/Object/Frame/Doc tabs.
+- Core: rounded rect, PolyStar, anchor editing (pick/move/insert/delete/convert), text outlines (ab_glyph + bundled Ubuntu/Hack fonts), command registry (commands.rs), frame scripts on keyframes (serde-default so old files load), undo squashing.
+- ac-script: QuickJS sandbox (memory cap, interrupt deadline) for frame scripts and embedded authoring JS; external-process bridge with \x1eAC JSON-lines protocol + helpers for Python/Node/Ruby; timeouts, size and command limits.
+- Bugs found by driving the UI: DragValue clamping reported as a change rescaled zero-width objects 100x per frame (fixed: only user interactions count as edits, panel-wide); inline text editor lost focus to the creating click; example scripts used select.all and rotated other layers (added select.layer).
+- 40 tests green (28 core, 10 scripting incl. real Python/Node/Ruby runs, 2 render). Xvfb runs: flyout, PolyStar, Pen (curve + close), Text, Brush, Subselection drag, Eyedropper→Bucket, Eraser, Lasso, Zoom box, Script Console JS + Python (with confirm), Actions snippet → playback stops at frame 24.
+- Still open: script runs block the UI thread (fine for short scripts; move to a worker + progress later); planned tools; MCP server.

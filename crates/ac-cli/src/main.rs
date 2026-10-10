@@ -5,6 +5,8 @@
 //!   animatecraft-cli png    <doc | demo> <frame> <out.png> [scale]
 //!   animatecraft-cli svg    <doc | demo> <frame> <out.svg>
 //!   animatecraft-cli save-demo <out.acx.json>
+//!   animatecraft-cli run <script.js|.py|.mjs|.rb> [--doc <doc|demo>] [--save out.acx.json] [--gif out.gif]
+//!   animatecraft-cli commands            (list scriptable commands)
 
 use ac_core::{demo::demo_document, Document, ElementKind, Tween};
 use std::path::Path;
@@ -60,6 +62,35 @@ fn run(args: &[String]) -> Result<(), String> {
             std::fs::write(arg(1)?, demo_document().to_json()).map_err(|e| e.to_string())?;
             println!("wrote {}", arg(1)?);
         }
+        "commands" => {
+            print!("{}", ac_script::reference());
+            println!("\n{}", ac_script::PROTOCOL);
+        }
+        "run" => {
+            let script = std::path::PathBuf::from(arg(1)?);
+            let flag = |name: &str| args.iter().position(|a| a == name).and_then(|i| args.get(i + 1)).map(String::as_str);
+            let doc = match flag("--doc") {
+                Some(d) => load(d)?,
+                None => ac_core::Document::default(),
+            };
+            let mut ed = ac_core::Editor::new(doc);
+            let rep = ac_script::run_file(&mut ed, &script, &ac_script::ScriptOptions::default());
+            for line in &rep.log {
+                println!("{line}");
+            }
+            eprintln!("[{} commands in {:.2?}]", rep.commands, rep.elapsed);
+            if let Some(e) = rep.error {
+                return Err(e);
+            }
+            if let Some(p) = flag("--save") {
+                std::fs::write(p, ed.doc.to_json()).map_err(|e| e.to_string())?;
+                eprintln!("saved {p}");
+            }
+            if let Some(p) = flag("--gif") {
+                ac_render::export_gif(&ed.doc, 1.0, Path::new(p))?;
+                eprintln!("wrote {p}");
+            }
+        }
         other => return Err(format!("unknown command '{other}'")),
     }
     Ok(())
@@ -68,7 +99,7 @@ fn run(args: &[String]) -> Result<(), String> {
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.is_empty() {
-        eprintln!("usage: animatecraft-cli <info|gif|png|svg|save-demo> ...  (use 'demo' as the document for the built-in scene)");
+        eprintln!("usage: animatecraft-cli <info|gif|png|svg|save-demo|run|commands> ...  (use 'demo' as the document for the built-in scene)");
         std::process::exit(2);
     }
     if let Err(e) = run(&args) {
