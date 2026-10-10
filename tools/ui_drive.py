@@ -62,9 +62,13 @@ for a in sys.argv[1:]:
         click(*map(int,args))
         xtest.fake_input(d, X.KeyRelease, d.keysym_to_keycode(XK.XK_Shift_L)); d.sync()
     elif op=='sleep': time.sleep(float(args[0]))
+    elif op=='mv': mv(*map(int,args)); time.sleep(0.2)
+    elif op=='down': xtest.fake_input(d, X.ButtonPress, 1); d.sync(); time.sleep(0.3)
+    elif op=='up': xtest.fake_input(d, X.ButtonRelease, 1); d.sync(); time.sleep(0.3)
     elif op=='scroll':
         x, y, n = map(int, args); mv(x, y)
         b = 5 if n > 0 else 4
         for _ in range(abs(n)):
             xtest.fake_input(d, X.ButtonPress, b); d.sync(); time.sleep(0.03); xtest.fake_input(d, X.ButtonRelease, b); d.sync(); time.sleep(0.03)
         time.sleep(0.3)
+    else: raise SystemExit(f'unknown op {op}')

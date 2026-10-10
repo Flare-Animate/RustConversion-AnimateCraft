@@ -146,7 +146,7 @@ pub fn window(app: &mut App, ctx: &egui::Context) {
         return;
     }
     let mut open = true;
-    let n = app.ed.doc.scene.frame_count().max(1);
+    let n = app.ed.doc.total_frames();
     let (w, h) = (app.ed.doc.width, app.ed.doc.height);
     egui::Window::new("Publish Settings").open(&mut open).resizable(false).show(ctx, |ui| {
         let ps = &mut app.publish;

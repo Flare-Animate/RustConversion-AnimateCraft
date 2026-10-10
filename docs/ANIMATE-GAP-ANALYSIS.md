@@ -19,12 +19,12 @@ files.
 
 | Area | Coverage | Biggest gaps |
 |---|---|---|
-| Workspace and panels | ~55% | docking/workspaces, Color & Swatches, History, Motion Editor, preferences |
+| Workspace and panels | ~60% | docking/workspaces, Color & Swatches, History, preferences |
 | Drawing model | ~40% | **Merge Drawing** (planar map), primitives, brush modes, bitmap fills, Selection-tool edge bending |
 | Tools | ~75% | Classic Brush modes, primitives, Magic Wand, Bind, Eraser modes, Paint Bucket gap size / Lock Fill |
-| Timeline | ~65% | parenting, multi-frame edit, frame-span drag, frame view sizes, scenes, sound |
-| Symbols | ~60% | button states, 9-slice, swap symbol, brightness/advanced colour, Visible / Cache as bitmap |
-| Animation | ~40% | **Motion tweens + Motion Editor**, custom eases, shape hints, motion paths, tween presets, lip-sync, rig mapping |
+| Timeline | ~80% | frame view sizes, sound, Synchronize Symbols |
+| Symbols | ~75% | 9-slice, Visible / Cache as bitmap, button sounds |
+| Animation | ~70% | 3D/filter/colour properties in motion tweens, tween presets, copy/paste motion, lip-sync, rig mapping |
 | Text | ~35% | dynamic/input text, rich text, paragraph options, font styles |
 | Media | ~45% | audio, video, AI/PSD import, Trace Bitmap |
 | Scripting | 🟡 different by design | ActionScript 3 (won't do), HTML5 Canvas / CreateJS runtime, Code Snippets, debugger |
@@ -37,7 +37,7 @@ The two engine milestones that unlock most of the rest:
 1. **Merge Drawing**, the planar-map shape model: Flash's defining feature. It's needed for
    edge bending, brush modes, the eraser and cutting shapes, and faithful FLA import.
 2. **Motion tweens and the Motion Editor**: property keyframes along spans, motion paths and graph
-   eases. Most modern Animate projects use them.
+   eases. Most modern Animate projects use them. ✅ Phase 2.
 
 ---
 
@@ -64,9 +64,9 @@ The two engine milestones that unlock most of the rest:
 | Color panel (solid / linear / radial / bitmap fills, HSB/RGB/hex, alpha, overflow modes) | Yes | Gradient stops in Properties only | 🟡 | P1 |
 | Swatches panel (palette, save/load .clr/.aco/.act, Web 216) | Yes | — | ❌ | P1 |
 | History panel (steps, replay, copy steps as JSFL) | Yes | Undo stack exists; no panel | ❌ | P1 |
-| Motion Editor | Yes | — | ❌ | P0 (with motion tweens) |
+| Motion Editor | Yes | Per-property graphs, key drag/retime, smooth/corner, per-property eases | ✅ | |
 | Output, Actions, Code Snippets, Compiler Errors panels | Yes | Output + Actions | 🟡 | P2 |
-| Scene panel (multiple scenes) | Yes | One scene | ❌ | P1 |
+| Scene panel (multiple scenes) | Yes | Scene panel (Shift+F2), header switcher | ✅ | |
 | Movie Explorer | Yes | — | ❌ | P3 |
 | Components / Component Inspector | Yes (AS3, HTML5 components) | — | ❌ | P3 |
 | Frame Picker (lip-sync / graphic first-frame picker) | Yes | First frame number only | 🟡 | P2 |
@@ -103,7 +103,7 @@ The two engine milestones that unlock most of the rest:
 | Alpha per fill / stroke colour | Yes | Yes (colour alpha) | ✅ | |
 | Pressure / tilt (tablet) | Yes | — | ❌ | P2 |
 | Hairline strokes, stroke scaling (normal / horizontal / vertical / none) | Yes | — | ❌ | P2 |
-| Shape hints (for shape tweens) | Yes | — | ❌ | P1 |
+| Shape hints (for shape tweens) | Yes | Ctrl+Shift+H, drag + snap to outline | ✅ | |
 
 ## 3. Tools panel
 
@@ -144,22 +144,22 @@ The two engine milestones that unlock most of the rest:
 | **Layer folders** (nest, collapse, folder show/lock) | Yes | Yes (drag into/out of folders, collapse, hide) | ✅ | |
 | **Mask layers** (mask + masked layers, show mask) | Yes | Yes (any shapes/symbols as mask, several masked layers) | ✅ | |
 | Guide layers and **Classic motion guides** (orient to path, snap) | Yes | Yes (guides don't export; Orient to path) | ✅ | |
-| **Layer parenting** (parent layer view) | Yes | — | ❌ | P1 |
+| **Layer parenting** (parent layer view) | Yes | Layer menu ▸ Parent Layer; no drag-to-link column yet | 🟡 | P2 (parent view column) |
 | Layer depth (2.5D, with camera) | Yes | — | ❌ | P2 |
 | Layer properties dialog; layer effects (filters on layers) | Yes | Properties dialog; no layer effects | 🟡 | P2 |
 | Frames: insert/remove (F5), keyframe (F6), blank (F7), clear, convert | Yes | Yes | ✅ | |
 | Select frames, copy/cut/paste/move frames, labels | Yes | Yes | ✅ | |
 | Frame label types: Name / Comment / Anchor | Yes | Name only | 🟡 | P2 |
-| Reverse Frames, Synchronize Symbols, Insert Blank Keyframe on ranges | Yes | — | ❌ | P1 |
-| Drag the end of a span to extend / shorten it | Yes | — | ❌ | P1 |
+| Reverse Frames, Synchronize Symbols, Insert Blank Keyframe on ranges | Yes | Reverse Frames, ranges | 🟡 | P2 (Synchronize Symbols) |
+| Drag the end of a span to extend / shorten it | Yes | Ctrl+drag a layer's last frame; motion tweens stretch | 🟡 | P2 (spans mid-layer) |
 | Auto Keyframe toggle | Yes | Edits auto-key | 🟡 | P2 |
 | Copy / Paste Layers (with folders) | Yes | Duplicate Layer | 🟡 | P1 |
-| Onion skin: range markers, Advanced settings, colours, outline mode | Yes | Prev/next count + tint | 🟡 | P1 |
-| **Edit multiple frames** | Yes | — | ❌ | P1 |
+| Onion skin: range markers, Advanced settings, colours, outline mode | Yes | Draggable/anchored markers, Onion 2/5/All, outlines | 🟡 | P3 (colour settings) |
+| **Edit multiple frames** | Yes | Keyframes between markers shown and moved together | ✅ | |
 | Frame view sizes (tiny…large), preview thumbnails, timeline zoom | Yes | One size | ❌ | P2 |
 | Frame-rate change with "scale spans", time display (s / frames) | Yes | FPS only | 🟡 | P2 |
 | Loop playback range, play in a range | Yes | Whole timeline loop | 🟡 | P2 |
-| Scenes (add, duplicate, reorder, Scene panel) | Yes | One scene | ❌ | P1 |
+| Scenes (add, duplicate, reorder, Scene panel) | Yes | Yes; exports play every scene | ✅ | |
 | Sound on frames (sync: event/start/stop/stream; loop; effects) and waveform | Yes | — | ❌ | P1 |
 
 ## 5. Symbols and instances
@@ -168,11 +168,11 @@ The two engine milestones that unlock most of the rest:
 |---|---|---|---|---|
 | Graphic, Movie Clip, Button symbols; Convert (F8); New (Ctrl+F8) | Yes | Yes | ✅ | |
 | Graphic looping: Loop / Play Once / Single Frame / Play Reverse once / Loop Reverse | Yes | First three | 🟡 | P2 |
-| **Button states** Up / Over / Down / Hit + preview with Control › Enable Simple Buttons | Yes | Static | ❌ | P1 |
+| **Button states** Up / Over / Down / Hit + preview with Control › Enable Simple Buttons | Yes | Yes (Hit area, live on stage) | ✅ | |
 | Instance name (for scripting) | Yes | Yes; frame scripts read/set `this.name.x/y/rotation/scaleX/scaleY/alpha/visible` | ✅ | |
-| Swap Symbol | Yes | — | ❌ | P1 |
+| Swap Symbol | Yes | Properties ▸ Symbol | ✅ | |
 | Duplicate Symbol and swap | Yes | Duplicate only | 🟡 | P2 |
-| Colour effects: Brightness, Tint, Advanced (RGBA multiply/offset), Alpha | Yes | Tint + Alpha | 🟡 | P1 |
+| Colour effects: Brightness, Tint, Advanced (RGBA multiply/offset), Alpha | Yes | All five, tweenable | ✅ | |
 | **Filters**: Drop Shadow, Blur, Glow, Bevel, Gradient Glow, Gradient Bevel, Adjust Color; presets; filter tweening | Yes | Drop Shadow, Blur, Glow, Bevel, Adjust Color, tweened; SVG export of blur/shadow/glow | 🟡 | P2 (gradient glow/bevel, presets) |
 | **Blend modes** (Normal, Layer, Darken, Multiply, Lighten, Screen, Overlay, Hard Light, Add, Subtract, Difference, Invert, Alpha, Erase) | Yes | All 14 | ✅ | |
 | Render: Original / Cache as Bitmap / Export as Bitmap; Visible flag | Yes | — | ❌ | P2 |
@@ -187,13 +187,13 @@ The two engine milestones that unlock most of the rest:
 | Feature | Animate | AnimationCraft | Status | Pri |
 |---|---|---|---|---|
 | Classic tween (scale, skew, rotate ±turns, colour, ease, Sync, Snap, Orient to path) | Yes | Scale/skew/rotate/turns/colour/ease | 🟡 | P1 (Sync, orient, Snap) |
-| Classic tween **custom ease** (Edit easing curve per property, presets) | Yes | −100…+100 only | ❌ | **P0** |
-| Shape tween + **shape hints** | Yes | Auto correspondence only | 🟡 | P1 |
-| **Motion tweens** (object-based, property keyframes, auto-span, motion path you can edit with Selection/Subselection, Orient to path) | Yes | — | ❌ | **P0** |
-| **Motion Editor** (per-property graphs, Bezier eases, add anchor, presets, Copy/paste curves) | Yes | — | ❌ | **P0** |
+| Classic tween **custom ease** (Edit easing curve per property, presets) | Yes | Curve editor + 30 presets per span (not per property) | 🟡 | P2 (per-property) |
+| Shape tween + **shape hints** | Yes | Yes (first shape on the layer) | ✅ | |
+| **Motion tweens** (object-based, property keyframes, auto-span, motion path you can edit with Selection/Subselection, Orient to path) | Yes | Position/rotation/skew/scale/alpha/brightness; 3D, filters, colour pending | 🟡 | P2 |
+| **Motion Editor** (per-property graphs, Bezier eases, add anchor, presets, Copy/paste curves) | Yes | Graphs, keys, eases; no handle editing or copy/paste | 🟡 | P2 |
 | Motion presets panel (bounce, fly-in…, save your own) | Yes | — | ❌ | P2 |
 | Copy / Paste Motion, Copy Motion as JS/XML | Yes | — | ❌ | P2 |
-| Convert to Frame-by-Frame Animation, Convert to Keyframes | Yes | — | ❌ | P1 |
+| Convert to Frame-by-Frame Animation, Convert to Keyframes | Yes | Yes | ✅ | |
 | Bones: IK poses on keyframes, joint rotation/translation constraints, **springiness / damping**, bone ease, runtime vs authoring | Yes | Poses + IK | 🟡 | P2 |
 | Asset Warp: pins, mesh density, tween warped poses, **Create Warped Asset / Reset** | Yes | Pins, rigid MLS | 🟡 | P2 |
 | Camera: tween, colour effects, attach layers, layer depth | Yes | Tweenable pan/zoom/rotate | 🟡 | P2 |
@@ -304,7 +304,7 @@ The phases put dependencies first. Each phase ends with tests, a UI run under Xv
 8. Export: **PNG sequence**, **MP4/WebM** (ffmpeg), GIF settings, Publish Settings dialog
 9. Rulers, guides, grid + snapping to them
 
-### Phase 2: Animation depth
+### Phase 2: Animation depth — ✅ done (Oct 2026)
 1. **Custom eases** (graph editor, presets) for classic tweens
 2. **Motion tweens** (object spans, property keyframes, editable motion path)
 3. **Motion Editor** panel

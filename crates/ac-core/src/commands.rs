@@ -35,7 +35,17 @@ cmds! {
     "timeline.insert_blank_keyframe", "layer?, frame?", "F7: insert blank keyframe";
     "timeline.clear_keyframe", "layer?, frame?", "Shift+F6: clear keyframe";
     "timeline.clear_frames", "layer?, frame?, to_frame?", "Clear frames (make them empty)";
-    "timeline.set_tween", "kind ('classic'|'shape'|'none'), ease? (-100..100), rotate?, orient? (motion guide), layer?, frame?", "Create or remove a tween on the span at the target";
+    "timeline.set_tween", "kind ('classic'|'shape'|'motion'|'none'), ease? (-100..100), rotate?, orient? (motion guide / path), layer?, frame?", "Create or remove a tween on the span at the target";
+    "timeline.set_ease", "ease (preset e.g. 'Quad In', 'Bounce Out', 'Back In Out'; 'none' = simple ease; or points [[x,y,in_dx,in_dy,out_dx,out_dy]...]), layer?, frame?", "Custom ease curve or preset for the tween span at the target";
+    "timeline.reverse_frames", "layer?, frame?, to_layer?, to_frame?", "Reverse the selected frames (tweens play backwards)";
+    "timeline.to_frame_by_frame", "layer?, frame?, to_frame?", "Convert tweens in the range to one keyframe per frame";
+    "timeline.set_layer_end", "end (last frame), layer?", "Lengthen/shorten a layer's last span (motion tween keys stretch)";
+    "shape_hint.add", "x?, y? (start keyframe), to_x?, to_y? (end keyframe)", "Add a shape hint to the shape tween at the playhead; returns its letter";
+    "shape_hint.clear", "", "Remove all shape hints from the shape tween at the playhead";
+    "motion.info", "layer?, frame?", "The motion tween at the target: span, pivot and property keyframes";
+    "motion.set_key", "prop ('x'|'y'|'rotation'|'skew'|'scale_x'|'scale_y'|'alpha'|'brightness'), frame, value, layer?", "Property keyframe in the motion tween containing frame (scale/alpha in 0..1, angles in degrees)";
+    "motion.remove_key", "frame, prop? (all), layer?", "Remove property keyframe(s)";
+    "motion.set_ease", "prop ('position' or a property), ease (preset name, 'custom', or 'none'), layer?, frame?", "Ease one property of the motion tween (Motion Editor)";
     "timeline.set_label", "label, layer?, frame?", "Frame label on the keyframe at the target";
     "timeline.set_script", "script, layer?, frame?", "Frame script (JavaScript) on the keyframe at the target";
     "timeline.move_frames", "by, layer?, frame?, to_frame?", "Drag frames left/right";
@@ -44,6 +54,13 @@ cmds! {
     "layer.delete", "layer?", "Delete a layer";
     "layer.select", "layer", "Make a layer current (number or name)";
     "layer.set", "layer?, name?, visible?, locked?, outline?, kind? ('normal'|'folder'|'mask'|'guide'), parent? (layer or 0 = none)", "Rename, change flags, type, or the folder/mask/guide a layer belongs to";
+    "layer.set_parent", "parent (layer or 0 = none), layer?", "Layer parenting: the layer's objects follow the parent layer's first object";
+    "scene.list", "", "Scenes in playing order, with frame counts; marks the current one";
+    "scene.add", "name?", "Insert a scene after the current one and switch to it";
+    "scene.goto", "scene (number or name)", "Edit another scene";
+    "scene.rename", "name, scene?", "Rename a scene";
+    "scene.delete", "scene?", "Delete a scene (not the last one)";
+    "scene.move", "scene, to", "Reorder scenes";
     "layer.wrap", "kind ('folder'|'mask'|'guide'), name?, layer?", "Insert a folder / mask / motion guide above a layer and put the layer in it";
     "draw.rect", "x, y, w, h, radius?, fill?, stroke?, stroke_width?", "Rectangle";
     "draw.oval", "x, y, w, h, fill?, stroke?, stroke_width?", "Oval inside a box";
@@ -78,6 +95,8 @@ cmds! {
     "camera.set", "x?, y?, zoom?, rotation?, frame?", "Camera centre, zoom (1 = 100%) and rotation at a frame (makes a keyframe)";
     "camera.remove", "", "Remove the camera layer";
     "selection.arrange", "front (bool)", "Bring to front / send to back";
+    "selection.swap_symbol", "symbol (name or id)", "Swap Symbol: selected instances show another symbol, keeping transform and effects";
+    "selection.color_effect", "style ('none'|'brightness'|'tint'|'advanced'|'alpha'), amount? (-100..100 or 0..100), color?, mul? [r,g,b,a %], add? [r,g,b,a]", "Color effect of the selected objects";
     "selection.group", "", "Ctrl+G: group the selection (per layer)";
     "selection.ungroup", "", "Ctrl+Shift+G: ungroup";
     "selection.align", "op ('left'|'hcenter'|'right'|'top'|'vcenter'|'bottom'|'dist_left'|'dist_hcenter'|'dist_right'|'dist_top'|'dist_vcenter'|'dist_bottom'|'match_width'|'match_height'|'match_size'|'space_h'|'space_v'), to_stage?", "Align panel";
@@ -245,6 +264,8 @@ pub fn execute(ed: &mut Editor, id: &str, a: &Value) -> Result<Value, String> {
                 "width": ed.doc.width, "height": ed.doc.height, "fps": ed.doc.fps,
                 "background": hex(ed.doc.background),
                 "frames": tl.frame_count(),
+                "movie_frames": ed.doc.total_frames(),
+                "scene": ed.scene_tl().name, "scenes": ed.doc.scene_count(),
                 "current_frame": ed.frame + 1, "current_layer": ed.layer + 1,
                 "editing_symbol": ed.editing.and_then(|i| ed.doc.symbol(i)).map(|s| s.name.clone()),
                 "layers": tl.layers.iter().map(|l| l.name.clone()).collect::<Vec<_>>(),
@@ -325,13 +346,158 @@ pub fn execute(ed: &mut Editor, id: &str, a: &Value) -> Result<Value, String> {
             let tween = match string(a, "kind").unwrap_or("classic") {
                 "classic" => Tween::Classic { ease, rotate_turns: num(a, "rotate").unwrap_or(0.0) as i32 },
                 "shape" => Tween::Shape { ease },
+                "motion" => Tween::Motion { ease },
                 "none" => Tween::None,
-                k => return Err(format!("unknown tween kind '{k}' (classic, shape, none)")),
+                k => return Err(format!("unknown tween kind '{k}' (classic, shape, motion, none)")),
             };
             ed.set_tween(tween);
+            if let (Tween::Motion { .. }, Some(r)) = (tween, num(a, "rotate")) {
+                ed.set_tween_params(ease, r as i32);
+            }
             if let Some(o) = boolean(a, "orient") {
                 ed.set_orient_to_path(o);
             }
+            Ok(Value::Null)
+        }
+        "timeline.set_ease" => {
+            target(ed, a)?;
+            ed.set_ease_curve(parse_ease(a.get("ease"))?);
+            Ok(Value::Null)
+        }
+        "layer.set_parent" => {
+            let li = layer_arg(ed, a, "layer")?.unwrap_or(ed.layer);
+            let p = match a.get("parent") {
+                Some(Value::Number(n)) if n.as_u64() == Some(0) => None,
+                None | Some(Value::Null) => None,
+                _ => Some(layer_arg(ed, a, "parent")?.ok_or("bad parent")?),
+            };
+            if let Some(p) = p {
+                if !ed.parent_candidates(li).contains(&p) {
+                    return Err("that layer can't be the parent (same layer, not a normal layer, or it would loop)".into());
+                }
+            }
+            ed.set_anim_parent(li, p);
+            Ok(Value::Null)
+        }
+        "scene.list" => Ok(Value::Array(
+            ed.doc.scenes().enumerate().map(|(i, t)| json!({ "scene": i + 1, "name": t.name, "frames": t.frame_count(), "current": i == ed.scene })).collect(),
+        )),
+        "scene.add" => {
+            let i = ed.add_scene();
+            if let Some(n) = string(a, "name") {
+                ed.rename_scene(i, n);
+            }
+            Ok(json!(i + 1))
+        }
+        "scene.goto" => {
+            let i = scene_arg(ed, a, "scene")?.ok_or("scene is required")?;
+            ed.goto_scene(i);
+            Ok(Value::Null)
+        }
+        "scene.rename" => {
+            let i = scene_arg(ed, a, "scene")?.unwrap_or(ed.scene);
+            ed.rename_scene(i, string(a, "name").ok_or("name is required")?);
+            Ok(Value::Null)
+        }
+        "scene.delete" => {
+            let i = scene_arg(ed, a, "scene")?.unwrap_or(ed.scene);
+            if ed.doc.scene_count() < 2 {
+                return Err("a document needs at least one scene".into());
+            }
+            ed.delete_scene(i);
+            Ok(Value::Null)
+        }
+        "scene.move" => {
+            let i = scene_arg(ed, a, "scene")?.ok_or("scene is required")?;
+            let to = scene_arg(ed, a, "to")?.ok_or("to is required")?;
+            ed.move_scene(i, to);
+            Ok(Value::Null)
+        }
+        "timeline.reverse_frames" => {
+            target(ed, a)?;
+            ed.reverse_frames();
+            Ok(Value::Null)
+        }
+        "timeline.to_frame_by_frame" => {
+            target(ed, a)?;
+            ed.convert_to_frame_by_frame();
+            Ok(Value::Null)
+        }
+        "timeline.set_layer_end" => {
+            let l = layer_arg(ed, a, "layer")?.unwrap_or(ed.layer);
+            let e = frame_arg(a, "end")?.ok_or("end is required")?;
+            ed.set_layer_end(l, e + 1, Some("Span Length"));
+            Ok(Value::Null)
+        }
+        "shape_hint.add" => {
+            let (s0, s1) = ed.shape_tween_keys().ok_or("no shape tween at the playhead")?;
+            let i = ed.add_shape_hint().ok_or("at most 26 shape hints")?;
+            if let (Some(x), Some(y)) = (num(a, "x"), num(a, "y")) {
+                ed.move_shape_hint(s0, i, pt(x, y), None);
+            }
+            if let (Some(x), Some(y)) = (num(a, "to_x"), num(a, "to_y")) {
+                ed.move_shape_hint(s1, i, pt(x, y), None);
+            }
+            Ok(json!(((b'a' + i as u8) as char).to_string()))
+        }
+        "shape_hint.clear" => {
+            ed.remove_all_shape_hints();
+            Ok(Value::Null)
+        }
+        "motion.info" => {
+            target(ed, a)?;
+            let Some((st, len, m, _)) = ed.current_motion() else { return Err("no motion tween at the target".into()) };
+            let mut props = serde_json::Map::new();
+            for p in crate::motion::Prop::ALL {
+                let keys: Vec<Value> = m.keys_of(p).into_iter().map(|(f, v)| json!([st + f + 1, v])).collect();
+                if !keys.is_empty() {
+                    props.insert(prop_id(p).into(), Value::Array(keys));
+                }
+            }
+            Ok(json!({ "start": st + 1, "frames": len, "pivot": [m.pivot.x, m.pivot.y], "keys": props, "rotate": m.rotate_turns }))
+        }
+        "motion.set_key" => {
+            if let Some(l) = layer_arg(ed, a, "layer")? {
+                ed.layer = l;
+            }
+            let p = prop_arg(a)?;
+            let f = frame_arg(a, "frame")?.ok_or("frame is required")?;
+            let v = num(a, "value").ok_or("value is required")?;
+            if ed.motion_span(ed.layer, f).is_none() {
+                return Err(format!("frame {} is not inside a motion tween", f + 1));
+            }
+            ed.set_motion_value(p, f, v, Some("Property Keyframe"));
+            Ok(Value::Null)
+        }
+        "motion.remove_key" => {
+            if let Some(l) = layer_arg(ed, a, "layer")? {
+                ed.layer = l;
+            }
+            let f = frame_arg(a, "frame")?.ok_or("frame is required")?;
+            let Some((st, _)) = ed.motion_span(ed.layer, f) else { return Err(format!("frame {} is not inside a motion tween", f + 1)) };
+            let prop = if a.get("prop").is_some() { Some(prop_arg(a)?) } else { None };
+            ed.frame = f;
+            ed.edit_motion(Some("Remove Property Keyframe"), |m, _| {
+                match prop {
+                    Some(p) => {
+                        m.remove_value(p, f - st);
+                    }
+                    None => {
+                        m.clear_keys_at(f - st);
+                    }
+                }
+            });
+            Ok(Value::Null)
+        }
+        "motion.set_ease" => {
+            target(ed, a)?;
+            let name = string(a, "prop").unwrap_or("position");
+            let p = if name.eq_ignore_ascii_case("position") { crate::motion::Prop::X } else { prop_arg(a)? };
+            let ease = parse_ease(a.get("ease"))?;
+            if ed.current_motion().is_none() {
+                return Err("no motion tween at the target".into());
+            }
+            ed.edit_motion(Some("Property Ease"), |m, _| m.set_ease(p, ease));
             Ok(Value::Null)
         }
         "timeline.set_label" => {
@@ -815,6 +981,47 @@ pub fn execute(ed: &mut Editor, id: &str, a: &Value) -> Result<Value, String> {
             ed.set_camera(m);
             Ok(Value::Null)
         }
+        "selection.swap_symbol" => {
+            let id = symbol_arg(ed, a)?;
+            if ed.selection.is_empty() {
+                return Err("nothing selected".into());
+            }
+            ed.swap_symbol(id);
+            Ok(Value::Null)
+        }
+        "selection.color_effect" => {
+            let style = string(a, "style").unwrap_or("none").to_ascii_lowercase();
+            let amount = num(a, "amount");
+            let color = color_arg(a, "color")?.flatten();
+            let arr = |k: &str| -> Option<Vec<f32>> { a.get(k)?.as_array().map(|v| v.iter().map(|x| x.as_f64().unwrap_or(0.0) as f32).collect()) };
+            let (mul, add) = (arr("mul"), arr("add"));
+            if !["none", "brightness", "tint", "advanced", "alpha"].contains(&style.as_str()) {
+                return Err(format!("unknown style '{style}' (none, brightness, tint, advanced, alpha)"));
+            }
+            ed.modify_selected("Color Effect", move |e| {
+                e.tint = None;
+                e.color_fx = None;
+                match style.as_str() {
+                    "none" => e.alpha = 1.0,
+                    "brightness" => e.tint = crate::motion::brightness_tint(amount.unwrap_or(0.0) / 100.0, None),
+                    "tint" => e.tint = Some((color.unwrap_or(Color::rgb(255, 0, 0)), amount.unwrap_or(50.0) / 100.0)),
+                    "alpha" => e.alpha = amount.unwrap_or(100.0).clamp(0.0, 100.0) / 100.0,
+                    _ => {
+                        let mut x = ColorXform::IDENTITY;
+                        for i in 0..4 {
+                            if let Some(m) = mul.as_ref().and_then(|m| m.get(i)) {
+                                x.mul[i] = m / 100.0;
+                            }
+                            if let Some(v) = add.as_ref().and_then(|m| m.get(i)) {
+                                x.add[i] = *v;
+                            }
+                        }
+                        e.color_fx = Some(x);
+                    }
+                }
+            });
+            Ok(Value::Null)
+        }
         "selection.arrange" => {
             need_selection(ed)?;
             ed.arrange(boolean(a, "front").unwrap_or(true));
@@ -867,4 +1074,70 @@ pub fn reference() -> String {
         s += &format!("{:<32} {:<60} {}\n", c.id, c.args, c.summary);
     }
     s
+}
+
+fn prop_id(p: crate::motion::Prop) -> &'static str {
+    use crate::motion::Prop::*;
+    match p {
+        X => "x",
+        Y => "y",
+        Rotation => "rotation",
+        Skew => "skew",
+        ScaleX => "scale_x",
+        ScaleY => "scale_y",
+        Alpha => "alpha",
+        Brightness => "brightness",
+    }
+}
+
+fn prop_arg(a: &Value) -> Result<crate::motion::Prop, String> {
+    let s = string(a, "prop").ok_or("prop is required")?;
+    crate::motion::Prop::ALL
+        .into_iter()
+        .find(|p| prop_id(*p) == s.to_ascii_lowercase() || p.name().eq_ignore_ascii_case(s))
+        .ok_or_else(|| format!("unknown property '{s}' (x, y, rotation, skew, scale_x, scale_y, alpha, brightness)"))
+}
+
+/// `"Quad In"`, `"none"`/null, `"custom"` or `[[x,y,in_dx,in_dy,out_dx,out_dy]...]`.
+fn parse_ease(v: Option<&Value>) -> Result<Option<crate::motion::Ease>, String> {
+    use crate::motion::{CurvePt, Ease};
+    match v {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(s)) if s.eq_ignore_ascii_case("none") || s.eq_ignore_ascii_case("simple") => Ok(None),
+        Some(Value::String(s)) => Ease::from_name(s).map(Some).ok_or_else(|| format!("unknown ease '{s}' (e.g. 'Quad In', 'Cubic Out', 'Sine In Out', 'Back', 'Bounce', 'Elastic', 'Stop and Start', 'custom')")),
+        Some(Value::Array(pts)) => {
+            let mut points = vec![];
+            for p in pts {
+                let n: Vec<f32> = p.as_array().ok_or("each point is [x, y, ...]")?.iter().map(|x| x.as_f64().unwrap_or(0.0) as f32).collect();
+                if n.len() < 2 {
+                    return Err("each point needs at least x and y".into());
+                }
+                let g = |i: usize| n.get(i).copied().unwrap_or(0.0);
+                points.push(CurvePt { x: g(0).clamp(0.0, 1.0), y: g(1), h_in: pt(g(2), g(3)), h_out: pt(g(4), g(5)) });
+            }
+            points.sort_by(|a, b| a.x.total_cmp(&b.x));
+            if points.len() < 2 {
+                return Err("a custom ease needs at least two points".into());
+            }
+            Ok(Some(Ease::Custom { points }))
+        }
+        _ => Err("ease must be a name, null or a list of points".into()),
+    }
+}
+
+/// Scene by 1-based number or name.
+fn scene_arg(ed: &Editor, a: &Value, k: &str) -> Result<Option<usize>, String> {
+    let n = ed.doc.scene_count();
+    match a.get(k) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::Number(v)) => {
+            let i = v.as_u64().unwrap_or(0) as usize;
+            if i == 0 || i > n {
+                return Err(format!("scene {i} out of range (1..={n})"));
+            }
+            Ok(Some(i - 1))
+        }
+        Some(Value::String(s)) => ed.doc.scenes().position(|t| t.name == *s).map(Some).ok_or_else(|| format!("no scene named '{s}'")),
+        Some(o) => Err(format!("bad scene {o}")),
+    }
 }

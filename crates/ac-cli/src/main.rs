@@ -26,11 +26,11 @@ fn run(args: &[String]) -> Result<(), String> {
     match arg(0)? {
         "info" => {
             let d = load(arg(1)?)?;
-            println!("Stage {}x{} @ {} fps, {} frames", d.width, d.height, d.fps, d.scene.frame_count());
+            println!("Stage {}x{} @ {} fps, {} frames", d.width, d.height, d.fps, d.total_frames());
             println!("Layers (top first):");
             for l in &d.scene.layers {
                 let kfs: Vec<String> = l.keyframes.iter().map(|(f, k)| {
-                    let t = match k.tween { Tween::None => "", Tween::Classic { .. } => " classic→", Tween::Shape { .. } => " shape→" };
+                    let t = match k.tween { Tween::None => "", Tween::Classic { .. } => " classic→", Tween::Shape { .. } => " shape→", Tween::Motion { .. } => " motion" };
                     format!("{}{}", f + 1, t)
                 }).collect();
                 println!("  {:<8} frames 1-{:<3} keyframes [{}]", l.name, l.end, kfs.join(", "));

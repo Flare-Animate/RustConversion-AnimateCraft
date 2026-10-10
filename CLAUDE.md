@@ -30,11 +30,12 @@ Status: ✅ in the demo · 🟡 partial · ⬜ planned
 - ✅ Stage with pasteboard, zoom/pan, document size, FPS, stage colour
 - ✅ Panels: Tools, Timeline, Properties (context-sensitive), Library (search,
   sortable columns, animated preview; fills the column or docks left), Transform
-- ✅ Scenes breadcrumb + edit-symbol mode · ⬜ edit-in-place, multiple scenes
+- ✅ Scenes breadcrumb + edit-symbol mode, multiple scenes (Scene panel, Shift+F2) · ⬜ edit-in-place
 - ✅ Multi-select (click, Shift+click, marquee, Select All), move/scale/rotate groups, arrow nudge,
   cut/copy/paste/paste-in-place/duplicate, Delete, Break Apart, stage right-click menu
 - ✅ Library: drag to stage, rename, duplicate, change type, delete (removes instances)
 - ✅ Rulers, guides, grid + snapping, Align panel, Info panel; native file dialogs, recent files, autosave + crash recovery
+- ✅ Motion Editor (per-property graphs, key drag/retime, smooth/corner points, per-property eases)
 - ⬜ Docking/workspaces, Color & Swatches, History, preferences
 
 **Drawing**
@@ -76,22 +77,27 @@ Status: ✅ in the demo · 🟡 partial · ⬜ planned
   F5/F6/F7 on ranges, right-click frame menu, layer reorder by drag
 - ✅ Camera layer (pan / zoom / rotate, keyframed + classic-tweened)
 - ✅ Layer folders (collapse, drag in/out), mask layers, guide + classic motion guide (orient to path), Layer Properties, duplicate layer
-- ⬜ Layer parenting, layer depth (2.5D), multi-frame edit,
-  audio layers with waveform + lip-sync
+- ✅ Layer parenting (layer menu ▸ Parent Layer), onion markers (drag, anchor, Onion 2/5/All, outlines),
+  Edit Multiple Frames, Reverse Frames, Convert to Frame-by-Frame, Ctrl+drag a layer's end
+- ⬜ Layer depth (2.5D), parent-view link column, audio layers with waveform + lip-sync
 
 **Symbols**
 - ✅ Graphic (synced to parent timeline: Loop / Play Once / Single Frame,
-  first frame), Movie Clip (own clock), Button (static for now)
+  first frame), Movie Clip (own clock), Button (Up/Over/Down/Hit; Control ▸ Enable Simple Buttons)
 - ✅ Convert to Symbol (F8), New Symbol (Ctrl+F8), nested symbols, Library
 - ✅ Filters (drop shadow, blur, glow, bevel, adjust color; tweenable) and all 14 blend modes; instance names readable/settable from frame scripts
-- ⬜ Button states (Up/Over/Down/Hit), 9-slice scaling, swap symbol, cache-as-bitmap
+- ✅ Swap Symbol; colour effects None / Brightness / Tint / Advanced / Alpha
+- ⬜ 9-slice scaling, cache-as-bitmap
 
 **Animation**
 - ✅ Classic tween: Animate-style matrix decomposition (scale, skew, rotation
   via shortest path, extra CW turns), alpha + tint interpolation, −100…+100 ease
 - ✅ Shape tween with automatic correspondence
-- ⬜ Shape hints, Motion tweens (property keyframes on a span + motion path +
-  Motion Editor curves), custom ease graphs and presets, rig mapping,
+- ✅ Custom ease curves + 30 presets (classic, shape and motion tweens), shape hints
+- ✅ Motion tweens: object spans, property keyframes (position on an editable Bezier motion
+  path, rotation, skew, scale, alpha, brightness), Orient to path, rotate N times; F6/Shift+F6
+  add/clear property keys; keys survive splitting, reversing and span stretching
+- ⬜ 3D/filter/colour properties in motion tweens, tween presets, rig mapping,
   bone springiness / joint constraints, armature layers
 - ✅ Bones (FK at evaluation, CCD inverse kinematics), Asset Warp pins, 3D
   properties and gradients all tween with Classic tweens
@@ -121,7 +127,7 @@ Status: ✅ in the demo · 🟡 partial · ⬜ planned
 
 ```
 crates/
-  ac-core    model, timeline evaluation, tweens, editor commands, XFL bits   (no UI, wasm-portable)
+  ac-core    model, timeline evaluation, tweens (motion.rs: eases + motion tweens), editor commands, XFL bits   (no UI, wasm-portable)
   ac-render  tiny-skia rasteriser shared by stage + exports (filters, blend modes, masks);
              SVG, GIF, PNG, PNG sequence, video via ffmpeg; system fonts
   ac-script  scripting: sandboxed frame scripts (QuickJS), authoring scripts (JS embedded, others via JSON bridge)
@@ -154,6 +160,7 @@ The full feature-by-feature comparison with Animate and the current build order
 | **M0.2 (done)** | Toolbar overhaul (17 working tools), command registry, multi-language scripting, frame scripts; 40 tests |
 | **M0.3 (done)** | Every toolbar tool works (31): skew/distort/envelope, Transform panel, 3D tools, gradients, Fluid Brush, Width, Bone/IK, Asset Warp, Camera, view rotation; Library fills the panel / docks left; 48 tests |
 | **Phase 1 (done)** | Native file dialogs, recent files, autosave/recovery; groups, Align/Info; folders, masks, motion guides; filters + blend modes; bitmaps + SVG import; system fonts; PNG sequence + video export; rulers/guides/grid; frame-script instance access; 59 tests |
+| **Phase 2 (done)** | Custom eases + presets, motion tweens + Motion Editor + editable motion path, shape hints, Reverse / Frame-by-Frame / span-end drag, onion markers + Edit Multiple Frames, button states + Simple Buttons, Swap Symbol, Brightness/Advanced colour, scenes, layer parenting; 73 tests |
 | **M1** | Route every menu item through the registry; MCP server; rulers/guides, Align panel, native file dialogs |
 | **M2** | Merge Drawing planar-map engine, Brush/Eraser/Pen/Subselection, gradients, Selection-tool edge bending |
 | **M3** | `.fla`/XFL import with a corpus of real files; XFL export; round-trip tests |

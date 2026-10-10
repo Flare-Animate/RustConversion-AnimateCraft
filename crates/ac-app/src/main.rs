@@ -4,6 +4,7 @@
 
 mod files;
 mod import;
+mod motion_ui;
 mod panels;
 mod publish;
 mod rulers;
@@ -61,7 +62,7 @@ pub struct App {
     pub(crate) loop_play: bool,
     play_accum: f64,
     pub(crate) onion: bool,
-    pub(crate) onion_n: u32,
+    pub(crate) onion_opts: timeline::OnionOpts,
     pub(crate) stage_tex: Option<egui::TextureHandle>,
     pub(crate) lib_tex: Option<egui::TextureHandle>,
     pub(crate) lib_selected: Option<SymbolId>,
@@ -103,6 +104,11 @@ pub struct App {
     pub(crate) align_open: bool,
     pub(crate) align_to_stage: bool,
     pub(crate) info_open: bool,
+    pub(crate) motion: motion_ui::MotionUi,
+    /// Control ▸ Enable Simple Buttons: buttons react to the pointer on the stage.
+    pub(crate) simple_buttons: bool,
+    pub(crate) scene_open: bool,
+    pub(crate) scene_rename: Option<(usize, String)>,
     pub(crate) info_cache: Option<((u64, u32), tiny_skia::Pixmap)>,
     last_sel: (Vec<ac_core::Selection>, Option<ac_core::FrameSel>),
     screenshot: Option<(String, u32)>,
@@ -144,7 +150,7 @@ impl App {
             loop_play: true,
             play_accum: 0.0,
             onion: false,
-            onion_n: 2,
+            onion_opts: Default::default(),
             stage_tex: None,
             lib_tex: None,
             lib_selected: None,
@@ -181,12 +187,21 @@ impl App {
             align_open: false,
             align_to_stage: false,
             info_open: false,
+            motion: Default::default(),
+            simple_buttons: false,
+            scene_open: false,
+            scene_rename: None,
             info_cache: None,
             last_sel: (vec![], None),
             screenshot: None,
         };
         app.lib.left = app.settings.library_left;
-        if std::env::var_os("AC_SCREENSHOT").is_none() {
+        // `animationcraft file.acx.json` opens that document
+        let arg = std::env::args().nth(1).filter(|a| !a.starts_with('-'));
+        if let Some(path) = &arg {
+            app.do_file(files::FileAction::Open, path);
+        }
+        if std::env::var_os("AC_SCREENSHOT").is_none() && arg.is_none() {
             app.check_recovery();
         }
         // Headless screenshot hook used by CI/docs: AC_SCREENSHOT=out.png [AC_SCREENSHOT_FRAME=n]
@@ -367,6 +382,8 @@ impl App {
         if k(cmd | sh, Key::Semicolon) { self.view.snap_guides = !self.view.snap_guides; }
         if k(cmd, Key::Semicolon) { self.view.guides = !self.view.guides; }
         if k(cmd, Key::I) { self.info_open = !self.info_open; }
+        if k(cmd | sh, Key::H) { self.add_shape_hint(); }
+        if k(cmd | Modifiers::ALT, Key::B) { self.simple_buttons = !self.simple_buttons; self.status = format!("Simple buttons {}", if self.simple_buttons { "on" } else { "off" }); }
         if k(cmd | sh, Key::G) { let n = self.ed.ungroup_selected(); if n > 0 { self.status = format!("Ungrouped {n} group(s)"); } }
         if k(cmd, Key::G) { let n = self.ed.group_selected(); if n > 0 { self.status = "Grouped".into(); } }
         if k(cmd, Key::L) { self.lib.open = !self.lib.open; }
@@ -382,6 +399,7 @@ impl App {
         if k(cmd, Key::Minus) { self.zoom /= 1.25; }
         if k(cmd, Key::Num1) { self.zoom = 1.0; }
         if k(cmd, Key::Num2) { self.fit_pending = true; }
+        if k(sh, Key::F2) { self.scene_open = !self.scene_open; }
         if k(sh, Key::F5) { self.ed.remove_frame(); }
         if k(none, Key::F5) { self.ed.insert_frame(); }
         if k(sh, Key::F6) { self.ed.clear_keyframe(); }
@@ -416,6 +434,22 @@ impl App {
 
     // ------------------------------------------------------------ menus
     /// Object commands shared by the Edit/Modify menus and the stage context menu.
+    /// Onion-skin range (inclusive), from the markers.
+    pub(crate) fn onion_range(&self) -> (u32, u32) {
+        let o = &self.onion_opts;
+        match o.anchor {
+            Some(r) => r,
+            None => (self.ed.frame.saturating_sub(o.before), self.ed.frame + o.after),
+        }
+    }
+
+    pub(crate) fn add_shape_hint(&mut self) {
+        match self.ed.add_shape_hint() {
+            Some(i) => self.status = format!("Shape hint '{}' added: drag it onto the outline on both keyframes", (b'a' + i as u8) as char),
+            None => self.status = "Shape hints need a shape tween: put the playhead on its first or last keyframe".into(),
+        }
+    }
+
     pub(crate) fn object_menu(&mut self, ui: &mut egui::Ui) {
         let has_sel = !self.ed.selection.is_empty();
         if ui.add_enabled(has_sel, egui::Button::new("Cut").shortcut_text("Ctrl+X")).clicked() { self.cut(); ui.close_menu(); }
@@ -437,6 +471,11 @@ impl App {
         if ui.add_enabled(has_sel, egui::Button::new("Group").shortcut_text("Ctrl+G")).clicked() { self.ed.group_selected(); ui.close_menu(); }
         let has_group = self.ed.selection.iter().any(|s| matches!(self.ed.element_at(*s).map(|e| e.kind), Some(ElementKind::Group(_))));
         if ui.add_enabled(has_group, egui::Button::new("Ungroup").shortcut_text("Ctrl+Shift+G")).clicked() { self.ed.ungroup_selected(); ui.close_menu(); }
+        ui.menu_button("Shape", |ui| {
+            let ok = self.ed.shape_tween_keys().is_some();
+            if ui.add_enabled(ok, egui::Button::new("Add Shape Hint").shortcut_text("Ctrl+Shift+H")).clicked() { self.add_shape_hint(); ui.close_menu(); }
+            if ui.add_enabled(ok, egui::Button::new("Remove All Hints")).clicked() { self.ed.remove_all_shape_hints(); ui.close_menu(); }
+        });
         ui.menu_button("Align", |ui| {
             use ac_core::editor::AlignOp::*;
             ui.checkbox(&mut self.align_to_stage, "To Stage");
@@ -593,6 +632,7 @@ impl App {
                 ui.menu_button("Insert", |ui| {
                     if ui.add(egui::Button::new("New Symbol…").shortcut_text("Ctrl+F8")).clicked() { self.open_symbol_dialog(false); ui.close_menu(); }
                     if ui.button("New Layer").clicked() { self.ed.add_layer(); ui.close_menu(); }
+                    if ui.button("Scene").clicked() { self.ed.add_scene(); self.fit_pending = true; self.status = format!("Added {}", self.ed.scene_tl().name); ui.close_menu(); }
                     if ui.button("Layer Folder").clicked() { self.ed.wrap_layer(ac_core::LayerKind::Folder, "Folder"); ui.close_menu(); }
                     if ui.button("Classic Motion Guide").clicked() { self.ed.wrap_layer(ac_core::LayerKind::Guide, "Motion Guide"); ui.close_menu(); }
                     if ui.button("Mask Layer").on_hover_text("Makes a mask above the current layer").clicked() { self.ed.wrap_layer(ac_core::LayerKind::Mask, "Mask"); ui.close_menu(); }
@@ -617,6 +657,7 @@ impl App {
                     ui.checkbox(&mut self.loop_play, "Loop Playback");
                     ui.checkbox(&mut self.onion, "Onion Skin");
                     ui.checkbox(&mut self.scripting.frame_scripts, "Enable Frame Scripts");
+                    ui.checkbox(&mut self.simple_buttons, "Enable Simple Buttons  (Ctrl+Alt+B)");
                 });
                 ui.menu_button("Commands", |ui| {
                     if ui.button("Run Script…").clicked() { self.scripting.console_open = true; ui.close_menu(); }
@@ -638,6 +679,8 @@ impl App {
                     if ui.add(egui::SelectableLabel::new(self.transform_open, "Transform  (Ctrl+T)")).clicked() { self.transform_open = !self.transform_open; ui.close_menu(); }
                     if ui.add(egui::SelectableLabel::new(self.align_open, "Align  (Ctrl+K)")).clicked() { self.align_open = !self.align_open; ui.close_menu(); }
                     if ui.add(egui::SelectableLabel::new(self.info_open, "Info  (Ctrl+I)")).clicked() { self.info_open = !self.info_open; ui.close_menu(); }
+                    if ui.add(egui::SelectableLabel::new(self.motion.open, "Motion Editor")).clicked() { self.motion.open = !self.motion.open; ui.close_menu(); }
+                    if ui.add(egui::SelectableLabel::new(self.scene_open, "Scene  (Shift+F2)")).clicked() { self.scene_open = !self.scene_open; ui.close_menu(); }
                     if ui.add(egui::Button::new("Output").shortcut_text("F2")).clicked() { self.scripting.output_open = true; ui.close_menu(); }
                     if ui.button("Script Console").clicked() { self.scripting.console_open = true; ui.close_menu(); }
                     if ui.button("Command Reference").clicked() { self.scripting.reference_open = true; ui.close_menu(); }
@@ -988,7 +1031,10 @@ impl eframe::App for App {
         publish::window(self, ctx);
         scripting::windows(self, ctx);
         panels::transform_window(self, ctx);
+        self.ed.multi_frame = self.onion_opts.multi.then(|| self.onion_range());
         windows::align_window(self, ctx);
+        motion_ui::motion_editor(self, ctx);
+        windows::scene_window(self, ctx);
         rulers::edit_grid_window(self, ctx);
         windows::info_window(self, ctx);
 

@@ -516,6 +516,128 @@ pub fn morph_paths(a: &Path, b: &Path, t: f32) -> Path {
     Path::from_cubic_subpaths(&out)
 }
 
+impl CubicSubpath {
+    fn anchor_before(&self, i: usize) -> Pt {
+        if i == 0 {
+            self.start
+        } else {
+            self.curves[i - 1][2]
+        }
+    }
+    /// Nearest point to `p`: (curve index, parameter, distance).
+    fn nearest(&self, p: Pt) -> (usize, f32, f32) {
+        let mut best = (0, 0.0, f32::MAX);
+        for i in 0..self.curves.len() {
+            let p0 = self.anchor_before(i);
+            let [c1, c2, p3] = self.curves[i];
+            for k in 0..=32 {
+                let s = k as f32 / 32.0;
+                let d = cubic_at(p0, c1, c2, p3, s).dist(p);
+                if d < best.2 {
+                    best = (i, s, d);
+                }
+            }
+        }
+        best
+    }
+    /// Make the point nearest `p` an anchor; returns its curve index (the
+    /// curve that now ends there).
+    fn split_near(&mut self, p: Pt) -> usize {
+        let (i, s, _) = self.nearest(p);
+        if s < 0.02 {
+            return if i == 0 { self.curves.len() - 1 } else { i - 1 };
+        }
+        if s > 0.98 {
+            return i;
+        }
+        let p0 = self.anchor_before(i);
+        let [c1, c2, p3] = self.curves[i];
+        let m01 = p0.lerp(c1, s);
+        let m12 = c1.lerp(c2, s);
+        let m23 = c2.lerp(p3, s);
+        let a = m01.lerp(m12, s);
+        let b = m12.lerp(m23, s);
+        let mid = a.lerp(b, s);
+        self.curves[i] = [m01, a, mid];
+        self.curves.insert(i + 1, [b, m23, p3]);
+        i
+    }
+}
+
+/// Shape tween with shape hints: hint i on `a` morphs onto hint i on `b`.
+/// Hints apply to the first subpath (as Animate's hints apply to one shape);
+/// further subpaths use the automatic correspondence.
+pub fn morph_paths_hinted(a: &Path, b: &Path, t: f32, ha: &[Pt], hb: &[Pt]) -> Path {
+    let mut sa = a.to_cubic_subpaths();
+    let mut sb = b.to_cubic_subpaths();
+    if sa.is_empty() || sb.is_empty() || ha.is_empty() || !sa[0].closed || !sb[0].closed {
+        return morph_paths(a, b, t);
+    }
+    let (x, y) = (sa.remove(0), sb.remove(0));
+    let (x, y) = hinted_pair(x, y, ha, hb);
+    let first = CubicSubpath {
+        start: x.start.lerp(y.start, t),
+        curves: x.curves.iter().zip(&y.curves).map(|(p, q)| [p[0].lerp(q[0], t), p[1].lerp(q[1], t), p[2].lerp(q[2], t)]).collect(),
+        closed: true,
+    };
+    let rest = morph_paths(&Path::from_cubic_subpaths(&sa), &Path::from_cubic_subpaths(&sb), t);
+    let mut out = vec![first];
+    out.extend(rest.to_cubic_subpaths());
+    Path::from_cubic_subpaths(&out)
+}
+
+/// Rebuild two closed subpaths so their hint points are anchors at matching
+/// curve indices (equal curve counts between consecutive hints).
+fn hinted_pair(mut x: CubicSubpath, mut y: CubicSubpath, ha: &[Pt], hb: &[Pt]) -> (CubicSubpath, CubicSubpath) {
+    // hint order along `a`
+    let mut order: Vec<usize> = (0..ha.len()).collect();
+    let pos = |sp: &CubicSubpath, p: Pt| {
+        let (i, s, _) = sp.nearest(p);
+        i as f32 + s
+    };
+    order.sort_by(|&i, &j| pos(&x, ha[i]).total_cmp(&pos(&x, ha[j])));
+    let anchor_pts = |sp: &mut CubicSubpath, hs: &[Pt]| -> Vec<Pt> {
+        let mut pts = vec![];
+        for &h in hs {
+            let i = sp.split_near(h);
+            pts.push(sp.curves[i][2]);
+        }
+        pts
+    };
+    let pa = anchor_pts(&mut x, &order.iter().map(|&i| ha[i]).collect::<Vec<_>>());
+    let pb = anchor_pts(&mut y, &order.iter().map(|&i| hb[i]).collect::<Vec<_>>());
+    let segs = |sp: &CubicSubpath, pts: &[Pt]| -> Vec<CubicSubpath> {
+        let n = sp.curves.len();
+        let idx: Vec<usize> = pts.iter().map(|p| (0..n).min_by(|&i, &j| sp.curves[i][2].dist(*p).total_cmp(&sp.curves[j][2].dist(*p))).unwrap_or(0)).collect();
+        let k = idx.len();
+        (0..k)
+            .map(|m| {
+                let (from, to) = (idx[m], idx[(m + 1) % k]);
+                let mut curves = vec![];
+                let mut i = (from + 1) % n;
+                let steps = if k == 1 { n } else { (to + n - from) % n };
+                for _ in 0..steps {
+                    curves.push(sp.curves[i]);
+                    i = (i + 1) % n;
+                }
+                let start = sp.curves[from][2];
+                if curves.is_empty() {
+                    curves.push([start, start, start]);
+                }
+                CubicSubpath { start, curves, closed: false }
+            })
+            .collect()
+    };
+    let (mut xa, mut yb) = (segs(&x, &pa), segs(&y, &pb));
+    let join = |parts: &[CubicSubpath]| CubicSubpath { start: parts[0].start, curves: parts.iter().flat_map(|p| p.curves.clone()).collect(), closed: true };
+    for (p, q) in xa.iter_mut().zip(yb.iter_mut()) {
+        let n = p.curves.len().max(q.curves.len());
+        p.subdivide_to(n);
+        q.subdivide_to(n);
+    }
+    (join(&xa), join(&yb))
+}
+
 fn cubic_at(p0: Pt, p1: Pt, p2: Pt, p3: Pt, t: f32) -> Pt {
     let u = 1.0 - t;
     let (a, b, c, d) = (u * u * u, 3.0 * u * u * t, 3.0 * u * t * t, t * t * t);

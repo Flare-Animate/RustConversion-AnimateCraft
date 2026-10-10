@@ -9,6 +9,7 @@ pub mod editor;
 pub mod frames;
 pub mod geom;
 pub mod model;
+pub mod motion;
 pub mod text;
 pub mod commands;
 pub mod xfl;
@@ -573,5 +574,301 @@ mod tests {
         let h = xfl::parse_edges("!#14.00 #28.80").unwrap();
         assert_eq!(h.segs[0], Seg::M(pt(1.0, 40.5 / 20.0)));
         assert!(xfl::parse_edges("!0 0 ?").is_err());
+    }
+
+    #[test]
+    fn custom_ease_on_classic_tween() {
+        let mut ed = Editor::new(Document::default());
+        ed.add_element(Element::shape("box", Shape::new(Path::rect(0., 0., 10., 10.), Some(Color::rgb(0, 0, 0)), None)));
+        ed.set_frame(10);
+        ed.insert_keyframe();
+        ed.selection = vec![Selection { layer: 0, element: 0 }];
+        ed.modify_selected("Move", |e| e.matrix = Matrix::translate(100.0, 0.0));
+        ed.set_frame(0);
+        ed.set_tween(Tween::Classic { ease: 0.0, rotate_turns: 0 });
+        ed.frame_sel = None;
+        ed.set_ease_curve(Some(motion::Ease::preset(motion::EaseFamily::Cubic, motion::EaseDir::In)));
+        let x = ed.evaluate_current(5)[0].matrix.tx;
+        assert!(close(x, 100.0 * 0.125), "cubic in at t=.5: {x}");
+        // survives save/load
+        let json = serde_json::to_string(&ed.doc).unwrap();
+        let back: Document = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.scene.layers[0].keyframes[&0].ease_curve, ed.doc.scene.layers[0].keyframes[&0].ease_curve);
+    }
+
+    #[test]
+    fn motion_tween_workflow() {
+        let mut ed = Editor::new(Document { fps: 12.0, ..Document::default() });
+        ed.add_element(Element::shape("box", Shape::new(Path::rect(0., 0., 20., 20.), Some(Color::rgb(0, 0, 0)), None)));
+        ed.set_tween(Tween::Motion { ease: 0.0 });
+        let l = &ed.timeline().layers[0];
+        assert_eq!(l.end, 12, "one-frame span grows to one second");
+        assert!(l.keyframes[&0].motion.is_some());
+        assert_eq!(l.keyframes.len(), 1, "no closing keyframe");
+        // move at frame 11 -> property keyframes, no new timeline keyframe
+        ed.set_frame(11);
+        ed.selection = vec![Selection { layer: 0, element: 0 }];
+        ed.modify_selected("Move", |e| e.matrix.tx += 110.0);
+        assert_eq!(ed.timeline().layers[0].keyframes.len(), 1);
+        let m = ed.timeline().layers[0].keyframes[&0].motion.clone().unwrap();
+        assert_eq!(m.path.len(), 2);
+        let center = |ed: &Editor, f| {
+            let it = &ed.evaluate_current(f)[0];
+            it.matrix.apply(pt(10.0, 10.0))
+        };
+        assert!(close(center(&ed, 0).x, 10.0));
+        assert!(close(center(&ed, 11).x, 120.0));
+        assert!(close(center(&ed, 5).x, 10.0 + 110.0 * 5.0 / 11.0));
+        // rotate at frame 6 -> rotation keys at 0 and 6 only
+        ed.set_frame(6);
+        ed.selection = vec![Selection { layer: 0, element: 0 }];
+        ed.modify_selected("Rotate", |e| {
+            let c = e.matrix.apply(pt(10.0, 10.0));
+            e.matrix = Matrix::translate(c.x, c.y).concat(&Matrix::rotate(std::f32::consts::FRAC_PI_2)).concat(&Matrix::translate(-c.x, -c.y)).concat(&e.matrix);
+        });
+        let m = ed.timeline().layers[0].keyframes[&0].motion.clone().unwrap();
+        assert_eq!(m.rotation.keys.iter().map(|k| k.frame).collect::<Vec<_>>(), vec![0, 6]);
+        assert!(close(m.rotation.keys[1].value, 90.0));
+        assert_eq!(m.path.len(), 2, "rotating about the pivot adds no position key");
+        // F6 keys everything; Shift+F6 clears them
+        ed.set_frame(3);
+        ed.insert_keyframe();
+        assert!(ed.timeline().layers[0].keyframes[&0].motion.as_ref().unwrap().scale_x.has_key(3));
+        ed.clear_keyframe();
+        assert!(!ed.timeline().layers[0].keyframes[&0].motion.as_ref().unwrap().scale_x.has_key(3));
+        // splitting the span (F7 elsewhere / pinning) keeps what each frame shows
+        let before: Vec<Pt> = (0..12).map(|f| center(&ed, f)).collect();
+        frames::convert_to_keyframes(&mut ed.timeline_mut().layers[0], 8, 8, false);
+        let after: Vec<Pt> = (0..12).map(|f| center(&ed, f)).collect();
+        for (a, b) in before.iter().zip(&after) {
+            assert!(a.dist(*b) < 0.05, "{a:?} vs {b:?}");
+        }
+        // round trip
+        let json = serde_json::to_string(&ed.doc).unwrap();
+        let back: Document = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, ed.doc);
+    }
+
+    #[test]
+    fn reverse_frames_plays_backwards() {
+        let mut ed = Editor::new(Document::default());
+        ed.add_element(Element::shape("box", Shape::new(Path::rect(0., 0., 10., 10.), Some(Color::rgb(0, 0, 0)), None)));
+        ed.set_frame(9);
+        ed.insert_keyframe();
+        ed.selection = vec![Selection { layer: 0, element: 0 }];
+        ed.modify_selected("Move", |e| e.matrix = Matrix::translate(90.0, 0.0));
+        ed.set_frame(0);
+        ed.set_tween(Tween::Classic { ease: 50.0, rotate_turns: 0 });
+        ed.set_frame(14);
+        ed.insert_frame(); // a static tail after the tween: frames 10-14 hold x=90
+        let x = |ed: &Editor, f| ed.evaluate_current(f)[0].matrix.tx;
+        let before: Vec<f32> = (0..15).map(|f| x(&ed, f)).collect();
+        ed.select_frames(FrameSel { layer0: 0, layer1: 0, f0: 0, f1: 14 });
+        ed.reverse_frames();
+        for f in 0..=14 {
+            assert!(close(x(&ed, f), before[14 - f as usize]), "frame {f}: {} vs {}", x(&ed, f), before[14 - f as usize]);
+        }
+        ed.reverse_frames();
+        for f in 0..=14 {
+            assert!(close(x(&ed, f), before[f as usize]), "twice = original at {f}");
+        }
+    }
+
+    #[test]
+    fn frame_by_frame_keeps_the_animation() {
+        let mut ed = Editor::new(Document::default());
+        ed.add_element(Element::shape("box", Shape::new(Path::rect(0., 0., 10., 10.), Some(Color::rgb(0, 0, 0)), None)));
+        ed.set_frame(8);
+        ed.insert_keyframe();
+        ed.selection = vec![Selection { layer: 0, element: 0 }];
+        ed.modify_selected("Move", |e| e.matrix = Matrix::translate(80.0, 40.0));
+        ed.set_frame(0);
+        ed.set_tween(Tween::Classic { ease: -100.0, rotate_turns: 0 });
+        let before: Vec<Matrix> = (0..9).map(|f| ed.evaluate_current(f)[0].matrix).collect();
+        ed.select_frames(FrameSel { layer0: 0, layer1: 0, f0: 0, f1: 8 });
+        ed.convert_to_frame_by_frame();
+        assert_eq!(ed.timeline().layers[0].keyframes.len(), 9);
+        assert!(ed.timeline().layers[0].keyframes.values().all(|k| matches!(k.tween, Tween::None)));
+        for f in 0..9 {
+            assert_eq!(ed.evaluate_current(f)[0].matrix, before[f as usize]);
+        }
+    }
+
+    #[test]
+    fn shape_hints_steer_the_morph() {
+        // square -> square rotated by one corner: without hints the corners
+        // pair up nearest-first; with hints a (top-left) goes to top-right.
+        let sq = Path::rect(0., 0., 100., 100.);
+        let mut doc = Document::default();
+        let mut l = Layer::new("L", 0);
+        l.end = 11;
+        let mut a = Keyframe::with(vec![Element::shape("s", Shape::new(sq.clone(), Some(Color::rgb(0, 0, 0)), None))]);
+        a.tween = Tween::Shape { ease: 0.0 };
+        a.shape_hints = vec![pt(0.0, 0.0)];
+        let mut b = Keyframe::with(vec![Element::shape("s", Shape::new(sq.clone(), Some(Color::rgb(0, 0, 0)), None))]);
+        b.shape_hints = vec![pt(100.0, 0.0)];
+        l.keyframes.insert(0, a);
+        l.keyframes.insert(10, b);
+        doc.scene.layers = vec![l];
+        let (els, _) = layer_elements_at(&doc.scene.layers[0], 5).unwrap();
+        let ElementKind::Shape(s) = &els[0].kind else { panic!() };
+        // the hinted corner is halfway along the top edge at t = 0.5
+        let anchors: Vec<Pt> = s.path.anchors().into_iter().map(|(_, p)| p).collect();
+        assert!(anchors.iter().any(|p| p.dist(pt(50.0, 0.0)) < 0.5), "{anchors:?}");
+        // and the hint pair maps onto itself at the ends
+        let (e0, _) = layer_elements_at(&doc.scene.layers[0], 0).unwrap();
+        let ElementKind::Shape(s0) = &e0[0].kind else { panic!() };
+        assert_eq!(s0.path, sq);
+    }
+
+    #[test]
+    fn reverse_motion_tween() {
+        let mut ed = Editor::new(Document { fps: 10.0, ..Document::default() });
+        ed.add_element(Element::shape("box", Shape::new(Path::rect(0., 0., 20., 20.), Some(Color::rgb(0, 0, 0)), None)));
+        ed.set_tween(Tween::Motion { ease: 0.0 });
+        ed.set_frame(9);
+        ed.selection = vec![Selection { layer: 0, element: 0 }];
+        ed.modify_selected("Move", |e| e.matrix.tx += 90.0);
+        ed.set_frame(5);
+        ed.selection = vec![Selection { layer: 0, element: 0 }];
+        ed.modify_selected("Fade", |e| e.alpha = 0.2);
+        let snap = |ed: &Editor| (0..10).map(|f| { let it = &ed.evaluate_current(f)[0]; (it.matrix.tx, it.alpha) }).collect::<Vec<_>>();
+        let before = snap(&ed);
+        ed.select_frames(FrameSel { layer0: 0, layer1: 0, f0: 0, f1: 9 });
+        ed.reverse_frames();
+        let after = snap(&ed);
+        for f in 0..10 {
+            let (a, b) = (after[f], before[9 - f]);
+            assert!(close(a.0, b.0) && close(a.1, b.1), "frame {f}: {a:?} vs {b:?}");
+        }
+        // span end drag stretches the keys
+        ed.set_layer_end(0, 20, Some("Span"));
+        let it = &ed.evaluate_current(19)[0];
+        assert!(close(it.matrix.tx, before[0].0), "stretched end shows the reversed end pose");
+    }
+
+    #[test]
+    fn edit_multiple_frames_moves_every_keyframe() {
+        let mut ed = Editor::new(Document::default());
+        ed.add_element(Element::shape("box", Shape::new(Path::rect(0., 0., 10., 10.), Some(Color::rgb(0, 0, 0)), None)));
+        for f in [4, 8] {
+            ed.set_frame(f);
+            ed.insert_keyframe();
+            ed.selection = vec![Selection { layer: 0, element: 0 }];
+            ed.modify_selected("Move", |e| e.matrix.tx += 20.0);
+        }
+        ed.set_frame(0);
+        ed.multi_frame = Some((0, 8));
+        ed.selection = vec![Selection { layer: 0, element: 0 }];
+        ed.modify_selected("Move", |e| e.matrix.ty += 50.0);
+        let l = &ed.timeline().layers[0];
+        assert_eq!(l.keyframes.len(), 3, "no keyframes added");
+        assert!(l.keyframes.values().all(|k| k.elements[0].matrix.ty == 50.0));
+        assert_eq!(l.keyframes[&8].elements[0].matrix.tx, 40.0, "x offsets kept");
+    }
+
+    #[test]
+    fn buttons_colour_effects_and_swap() {
+        let mut doc = Document::default();
+        let mut tl = Timeline::new("btn");
+        let rect = |c: Color, w: f32| Element::shape("r", Shape::new(Path::rect(0., 0., w, 20.), Some(c), None));
+        tl.layers[0].end = 4;
+        for (f, c, w) in [(0, Color::rgb(255, 0, 0), 20.0), (1, Color::rgb(0, 255, 0), 20.0), (2, Color::rgb(0, 0, 255), 20.0), (3, Color::rgb(0, 0, 0), 60.0)] {
+            tl.layers[0].keyframes.insert(f, Keyframe::with(vec![rect(c, w)]));
+        }
+        let btn = doc.add_symbol("Button", SymbolKind::Button, tl);
+        let other = doc.add_symbol("Other", SymbolKind::Graphic, Timeline::new("o"));
+        let mut inst = Element::instance("b", btn, Matrix::translate(100.0, 100.0));
+        inst.color_fx = Some(ColorXform { mul: [0.5, 1.0, 1.0, 1.0], add: [0.0, 0.0, 10.0, 0.0] });
+        doc.scene.layers[0].keyframes.insert(0, Keyframe::with(vec![inst]));
+        doc.scene.layers[0].end = 1;
+        let mut ed = Editor::new(doc);
+        let fill = |ed: &Editor| ed.evaluate_current(0)[0].fill.unwrap();
+        assert_eq!(fill(&ed), Color::rgb(255, 0, 0), "Up");
+        ed.button_state = Some(((0, 0), 1));
+        assert_eq!(fill(&ed), Color::rgb(0, 255, 0), "Over");
+        ed.button_state = Some(((0, 0), 2));
+        assert_eq!(fill(&ed), Color::rgb(0, 0, 255), "Down");
+        ed.button_state = Some(((0, 0), 3));
+        assert_eq!(fill(&ed), Color::rgb(0, 0, 255), "the Hit frame never shows");
+        // the hit area (60 px wide) is bigger than the visible button (20 px)
+        assert_eq!(ed.button_at(pt(150.0, 110.0)), Some((0, 0)));
+        assert_eq!(ed.button_at(pt(170.0, 110.0)), None);
+        // advanced colour: red × 50%, blue + 10, composed onto the item
+        let it = &ed.evaluate_current(0)[0];
+        assert_eq!(it.cx.unwrap().apply(Color::rgb(200, 0, 0)), Color::rgb(100, 0, 10));
+        // swap keeps transform and effect
+        ed.selection = vec![Selection { layer: 0, element: 0 }];
+        ed.swap_symbol(other);
+        let el = ed.selected_element().unwrap();
+        assert!(matches!(el.kind, ElementKind::Instance(Instance { symbol, .. }) if symbol == other));
+        assert_eq!(el.matrix, Matrix::translate(100.0, 100.0));
+        assert!(el.color_fx.is_some());
+    }
+
+    #[test]
+    fn scenes_play_in_order() {
+        let mut ed = Editor::new(Document::default());
+        ed.add_element(Element::shape("a", Shape::new(Path::rect(0., 0., 10., 10.), Some(Color::rgb(255, 0, 0)), None)));
+        ed.set_frame(4);
+        ed.insert_frame();
+        assert_eq!(ed.add_scene(), 1);
+        assert_eq!(ed.timeline().name, "Scene 2");
+        ed.add_element(Element::shape("b", Shape::new(Path::rect(0., 0., 10., 10.), Some(Color::rgb(0, 0, 255)), None)));
+        ed.set_frame(2);
+        ed.insert_frame();
+        assert_eq!(ed.doc.total_frames(), 8);
+        assert_eq!(ed.doc.locate_frame(6), (1, 1));
+        let fill = |doc: &Document, f| evaluate_scene(doc, f)[0].fill.unwrap();
+        assert_eq!(fill(&ed.doc, 4), Color::rgb(255, 0, 0));
+        assert_eq!(fill(&ed.doc, 5), Color::rgb(0, 0, 255));
+        // reorder: scene 2 first
+        ed.move_scene(1, 0);
+        assert_eq!(fill(&ed.doc, 0), Color::rgb(0, 0, 255));
+        assert_eq!(ed.scene, 0, "current scene follows the move");
+        ed.delete_scene(0);
+        assert_eq!(ed.doc.scene_count(), 1);
+        assert_eq!(fill(&ed.doc, 0), Color::rgb(255, 0, 0));
+        ed.undo();
+        assert_eq!(ed.doc.scene_count(), 2);
+        let json = serde_json::to_string(&ed.doc).unwrap();
+        assert_eq!(serde_json::from_str::<Document>(&json).unwrap(), ed.doc);
+    }
+
+    #[test]
+    fn layer_parenting_follows_and_keeps_place() {
+        let mut ed = Editor::new(Document::default());
+        // layer 0 (top): child at x=100; layer 1: parent at x=0, moves to x=50 by frame 10
+        ed.add_element(Element::shape("child", Shape::new(Path::rect(100., 0., 10., 10.), Some(Color::rgb(0, 0, 0)), None)));
+        ed.set_frame(10);
+        ed.insert_frame();
+        ed.set_frame(0);
+        ed.add_layer();
+        ed.layer = 0;
+        ed.timeline_mut().layers.swap(0, 1);
+        let parent_layer = 1;
+        ed.layer = parent_layer;
+        ed.add_element(Element::shape("parent", Shape::new(Path::rect(0., 0., 10., 10.), Some(Color::rgb(0, 0, 0)), None)));
+        ed.set_frame(10);
+        ed.insert_keyframe();
+        ed.selection = vec![Selection { layer: parent_layer, element: 0 }];
+        ed.modify_selected("Move", |e| e.matrix.tx += 50.0);
+        ed.set_frame(0);
+        ed.set_tween(Tween::Classic { ease: 0.0, rotate_turns: 0 });
+        let child_x = |ed: &Editor, f| ed.evaluate_current(f).iter().find(|i| i.src == Some((0, 0))).map(|i| i.matrix.apply(pt(100.0, 0.0)).x).unwrap();
+        assert!(close(child_x(&ed, 10), 100.0));
+        ed.set_anim_parent(0, Some(parent_layer));
+        assert!(close(child_x(&ed, 0), 100.0), "nothing jumps when parenting");
+        assert!(close(child_x(&ed, 10), 150.0), "the child follows its parent");
+        assert!(close(child_x(&ed, 5), 125.0));
+        // moving the child on the stage moves it by exactly that much
+        ed.set_frame(10);
+        ed.selection = vec![Selection { layer: 0, element: 0 }];
+        ed.modify_selected("Move", |e| e.matrix.tx += 7.0);
+        assert!(close(child_x(&ed, 10), 157.0));
+        assert!(ed.parent_candidates(parent_layer).is_empty(), "no cycles");
+        let at0 = child_x(&ed, 0);
+        ed.set_anim_parent(0, None);
+        assert!(close(child_x(&ed, 0), at0), "unparenting keeps the place on keyframes");
     }
 }

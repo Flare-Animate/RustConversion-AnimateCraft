@@ -1,7 +1,8 @@
 # AnimationCraft (demo)
 
 Open-source 2D animation authoring in Rust, following the Adobe Animate workflow:
-symbols, layers, keyframes, classic and shape tweens, onion skin, and a familiar
+symbols, layers, keyframes, classic, shape and motion tweens with a Motion Editor,
+onion skin, scenes, and a familiar
 Tools / Stage / Timeline / Properties / Library workspace.
 
 Not affiliated with Adobe.
@@ -109,12 +110,45 @@ the layer below follow the first stroke on the guide; tick *Orient to path* in
 Frame properties), **Layer Properties**. Drag layers into and out of folders;
 click a folder's triangle to collapse it.
 
+### Animation
+
+- **Eases**: Properties ▸ Frame ▸ *Ease* picks the simple −100…100 ease, one of
+  30 presets (Quad … Elastic, In / Out / In Out) or a **custom curve**: drag
+  points and handles, double-click to add, right-click to delete (Alt breaks a
+  handle). Works for classic, shape and motion tweens.
+- **Motion tweens**: right-click a frame ▸ *Create Motion Tween* (a one-frame
+  span grows to one second). Move to any frame and move/rotate/scale/fade the
+  object: that writes property keyframes (diamonds), not new keyframes. The
+  **motion path** shows on the stage: drag its squares to move positions, drag
+  the line to bend it, use Subselection (A) for Bezier handles. F6 keys every
+  property at the playhead, Shift+F6 clears them. Ctrl+drag (or just drag, for a
+  motion tween) a layer's last frame to lengthen/shorten it; keys stretch.
+- **Motion Editor** (double-click a motion span, or Window ▸ Motion Editor):
+  one graph per property; drag keys up/down for values, left/right to retime,
+  click a graph to move the playhead, right-click a key for Smooth / Corner /
+  Delete, and give each property its own ease.
+- **Shape hints**: on the first or last keyframe of a shape tween press
+  Ctrl+Shift+H, then drag the lettered hint onto the outline on both keyframes
+  (yellow/green = placed, red = off the outline).
+- **Reverse Frames** and **Convert to Frame-by-Frame** in the frame menu.
+- **Onion skin**: drag the markers above the frames; *Markers* ▸ Anchor /
+  Onion 2 / 5 / All; *Outlines*; **Edit Multiple** shows every keyframe in the
+  range and moves them together.
+- **Layer parenting**: right-click a layer ▸ *Parent Layer*: its objects follow
+  the first object on the parent layer (shown as an arrow and name).
+- **Scenes**: Insert ▸ Scene, Window ▸ Scene (Shift+F2) to switch, rename,
+  reorder, duplicate or delete. Exports play the scenes in order.
+
 ### Objects
 
 - **Group / Ungroup** (Ctrl+G / Ctrl+Shift+G), **Align panel** (Ctrl+K) and
   **Info panel** (Ctrl+I), also in Modify › Align.
 - **Filters and blending** in Properties › Object: Drop Shadow, Blur, Glow,
   Bevel, Adjust Color (they tween), and 14 blend modes.
+- **Color effect** for symbol instances: Brightness, Tint, **Advanced**
+  (per-channel % and offset) or Alpha; **Swap Symbol** keeps the transform.
+- **Buttons**: a Button symbol's first four frames are Up / Over / Down / Hit.
+  Control ▸ **Enable Simple Buttons** (Ctrl+Alt+B) makes them react on the stage.
 - **Instance names** for symbols, text, bitmaps and groups; frame scripts can
   use them (`this.ball.x += 5`).
 - Text can use any **installed font** (searchable picker).
@@ -159,6 +193,8 @@ See [SCRIPTING.md](SCRIPTING.md) for the API, examples and the safety model.
 | Ctrl+R | Import to stage | Ctrl+Shift+F12 | Publish Settings |
 | Ctrl+N / Ctrl+O / Ctrl+S | New / Open / Save | Ctrl+' / Ctrl+; | Grid / Guides |
 | W / G | 3D Rotation / Translation | M / U / B | Bone / Width / Fluid Brush |
+| Ctrl+Shift+H | Add shape hint | Shift+F2 | Scene panel |
+| Ctrl+Alt+B | Enable Simple Buttons | Ctrl+drag last frame | Lengthen / shorten a layer |
 
 ## UI smoke testing
 

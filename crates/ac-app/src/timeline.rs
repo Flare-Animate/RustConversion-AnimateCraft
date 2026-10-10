@@ -6,8 +6,27 @@ use crate::{c32, App, ACCENT};
 use ac_core::{FrameSel, LayerFlag, LayerKind, Tween};
 use eframe::egui::{self, pos2, vec2, Align2, Color32, FontId, Rect, Sense, Stroke};
 
+/// Onion skin markers and modes (timeline toolbar).
+pub struct OnionOpts {
+    pub before: u32,
+    pub after: u32,
+    /// Anchored markers: a fixed frame range instead of one around the playhead.
+    pub anchor: Option<(u32, u32)>,
+    pub outline: bool,
+    /// Edit Multiple Frames: show and edit every keyframe between the markers.
+    pub multi: bool,
+}
+
+impl Default for OnionOpts {
+    fn default() -> Self {
+        OnionOpts { before: 2, after: 2, anchor: None, outline: false, multi: false }
+    }
+}
+
 #[derive(Default)]
 pub struct TimelineState {
+    /// Onion marker being dragged (true = start marker).
+    marker_drag: Option<bool>,
     /// First visible frame column.
     pub scroll: f32,
     /// First visible layer row.
@@ -27,6 +46,8 @@ enum Gesture {
     Select,
     /// Dragging selected frames; value = current frame offset.
     Move(i64),
+    /// Dragging the end of a layer's last span (Ctrl+drag, or any motion tween).
+    SpanEnd { layer: usize, end: u32 },
 }
 
 const LW: f32 = 230.0; // layer column width
@@ -36,6 +57,7 @@ const CW: f32 = 11.0; // frame cell width
 
 const CLASSIC: Color32 = Color32::from_rgb(0x6E, 0x5B, 0xB0);
 const SHAPE: Color32 = Color32::from_rgb(0x4E, 0x8F, 0x57);
+const MOTION: Color32 = Color32::from_rgb(0x3F, 0x78, 0xB5);
 const PLAYHEAD: Color32 = Color32::from_rgb(0xE5, 0x3B, 0x3B);
 
 /// Frame commands (Insert menu, Edit › Timeline, and the right-click menu).
@@ -49,8 +71,12 @@ pub fn frame_menu(app: &mut App, ui: &mut egui::Ui) {
     if item(ui, "Clear Frames", "Del") { app.ed.clear_frames(); ui.close_menu(); }
     ui.separator();
     if item(ui, "Create Classic Tween", "") { app.ed.set_tween(Tween::Classic { ease: 0.0, rotate_turns: 0 }); ui.close_menu(); }
+    if item(ui, "Create Motion Tween", "") { app.ed.set_tween(Tween::Motion { ease: 0.0 }); app.status = "Motion tween: move to a frame and change the object to add property keyframes".into(); ui.close_menu(); }
     if item(ui, "Create Shape Tween", "") { app.ed.set_tween(Tween::Shape { ease: 0.0 }); ui.close_menu(); }
     if item(ui, "Remove Tween", "") { app.ed.set_tween(Tween::None); ui.close_menu(); }
+    if app.ed.motion_span(app.ed.layer, app.ed.frame).is_some() && item(ui, "Motion Editor…", "") { app.motion.open = true; ui.close_menu(); }
+    if item(ui, "Convert to Frame-by-Frame", "") { app.ed.convert_to_frame_by_frame(); ui.close_menu(); }
+    if item(ui, "Reverse Frames", "") { app.ed.reverse_frames(); ui.close_menu(); }
     ui.separator();
     if item(ui, "Cut Frames", "") { app.ed.cut_frames(); ui.close_menu(); }
     if item(ui, "Copy Frames", "") { app.ed.copy_frames(); ui.close_menu(); }
@@ -61,6 +87,16 @@ pub fn frame_menu(app: &mut App, ui: &mut egui::Ui) {
         app.ed.select_frames(FrameSel { layer0: 0, layer1: n.saturating_sub(1), f0: 0, f1: f.saturating_sub(1) });
         ui.close_menu();
     }
+}
+
+/// Does a drag starting at (layer, frame) grab the end of the layer's last
+/// span? Ctrl+drag on any last frame, plain drag on a motion tween's end.
+fn span_end_at(app: &App, layer: usize, frame: u32, ctrl: bool) -> bool {
+    let Some(l) = app.ed.timeline().layers.get(layer) else { return false };
+    if l.end == 0 || frame + 1 != l.end || l.kind == LayerKind::Folder {
+        return false;
+    }
+    ctrl || l.keyframes.values().next_back().map(|k| k.tween.is_motion()).unwrap_or(false)
 }
 
 /// Layer commands (right-click a layer name, Insert › Timeline).
@@ -86,6 +122,19 @@ pub fn layer_menu(app: &mut App, ui: &mut egui::Ui, i: usize) {
         ui.close_menu();
     }
     ui.separator();
+    if kind == LayerKind::Normal {
+        let cur = app.ed.timeline().layers.get(i).and_then(|l| l.anim_parent);
+        ui.menu_button("Parent Layer", |ui| {
+            if ui.selectable_label(cur.is_none(), "None").clicked() { app.ed.set_anim_parent(i, None); ui.close_menu(); }
+            for p in app.ed.parent_candidates(i) {
+                let name = app.ed.timeline().layers[p].name.clone();
+                if ui.selectable_label(cur == Some(p), name).on_hover_text("This layer's objects follow the first object on that layer").clicked() {
+                    app.ed.set_anim_parent(i, Some(p));
+                    ui.close_menu();
+                }
+            }
+        });
+    }
     if ui.button("Layer Properties…").clicked() { app.open_layer_props(i); ui.close_menu(); }
 }
 
@@ -107,9 +156,29 @@ fn toolbar(app: &mut App, ui: &mut egui::Ui) {
         if ui.button("⏭").on_hover_text("Last frame").clicked() { app.step(100_000); }
         ui.toggle_value(&mut app.loop_play, "🔁").on_hover_text("Loop playback");
         ui.separator();
-        ui.toggle_value(&mut app.onion, "Onion skin").on_hover_text("Show previous (blue) and next (green) frames");
-        if app.onion {
-            ui.add(egui::DragValue::new(&mut app.onion_n).range(1..=10).prefix("±"));
+        ui.toggle_value(&mut app.onion, "Onion skin").on_hover_text("Show previous (blue) and next (green) frames; drag the markers above the frames to change the range");
+        ui.toggle_value(&mut app.onion_opts.outline, "Outlines").on_hover_text("Onion Skin Outlines");
+        ui.toggle_value(&mut app.onion_opts.multi, "Edit Multiple").on_hover_text("Edit Multiple Frames: show every keyframe between the markers and move them together");
+        if app.onion || app.onion_opts.multi {
+            ui.menu_button("Markers", |ui| {
+                let anchored = app.onion_opts.anchor.is_some();
+                if ui.selectable_label(anchored, "Anchor Markers").clicked() {
+                    app.onion_opts.anchor = if anchored { None } else { Some(app.onion_range()) };
+                    ui.close_menu();
+                }
+                for (label, n) in [("Onion 2", 2u32), ("Onion 5", 5), ("Onion All", u32::MAX)] {
+                    if ui.button(label).clicked() {
+                        if n == u32::MAX {
+                            app.onion_opts.anchor = Some((0, app.ed.frame_count().saturating_sub(1)));
+                        } else {
+                            app.onion_opts.anchor = None;
+                            app.onion_opts.before = n;
+                            app.onion_opts.after = n;
+                        }
+                        ui.close_menu();
+                    }
+                }
+            });
         }
         ui.separator();
         let n = app.ed.frame_count();
@@ -195,8 +264,57 @@ fn grid(app: &mut App, ui: &mut egui::Ui) {
             p.text(pos2(x + 1.0, header.top() + 3.0), Align2::LEFT_TOP, format!("{}", f + 1), FontId::monospace(10.0), Color32::from_gray(175));
         }
     }
+    // Button symbols: the first four frames are the Up / Over / Down / Hit states.
+    let is_button = app.ed.editing.and_then(|id| app.ed.doc.symbol(id)).map(|s| s.kind == ac_core::SymbolKind::Button).unwrap_or(false);
+    if is_button {
+        for (f, name) in ["Up", "Over", "Down", "Hit"].iter().enumerate() {
+            let f = f as u32;
+            if f >= first && f < first + visible_cols {
+                let r = Rect::from_min_size(pos2(x_of(f), header.top()), vec2(CW, HH - 6.0));
+                p.rect_filled(r, 0.0, Color32::from_gray(0x33));
+                p.text(pos2(x_of(f) + 1.0, header.top() + 3.0), Align2::LEFT_TOP, &name[..1], FontId::proportional(10.0), Color32::from_rgb(0xFF, 0xC8, 0x60));
+            }
+        }
+    }
+    // Onion skin markers: brackets at the ends of the range, draggable.
+    let show_markers = app.onion || app.onion_opts.multi;
+    let (oa, ob) = app.onion_range();
+    let (mx0, mx1) = (x_of(oa), x_of(ob + 1));
+    if show_markers {
+        let col = if app.onion_opts.anchor.is_some() { Color32::from_rgb(0x9A, 0xB8, 0xFF) } else { Color32::from_gray(210) };
+        let (yt, yb) = (header.top() + 2.0, header.bottom() - 2.0);
+        p.rect_filled(Rect::from_min_max(pos2(mx0, header.bottom() - 4.0), pos2(mx1, header.bottom() - 2.0)), 0.0, col.gamma_multiply(0.35));
+        for (x, dir) in [(mx0, 1.0), (mx1, -1.0)] {
+            if x >= grid_x0 - 1.0 && x <= rect.right() {
+                p.line_segment([pos2(x, yt), pos2(x, yb)], Stroke::new(2.0_f32, col));
+                p.add(egui::Shape::convex_polygon(vec![pos2(x, yt), pos2(x + 6.0 * dir, yt), pos2(x, yt + 6.0)], col, Stroke::NONE));
+            }
+        }
+    }
     let hresp = ui.interact(header, ui.id().with("tl-header"), Sense::click_and_drag());
-    if let Some(pos) = hresp.interact_pointer_pos() {
+    if hresp.drag_started() && show_markers {
+        if let Some(o) = ui.input(|i| i.pointer.press_origin()) {
+            if (o.x - mx0).abs() < 5.0 {
+                app.tl.marker_drag = Some(true);
+            } else if (o.x - mx1).abs() < 5.0 {
+                app.tl.marker_drag = Some(false);
+            }
+        }
+    }
+    if hresp.drag_stopped() {
+        app.tl.marker_drag = None;
+    }
+    if let (Some(start), Some(pos)) = (app.tl.marker_drag, hresp.interact_pointer_pos()) {
+        let edge = ((pos.x - grid_x0) / CW + first as f32).round().max(0.0) as u32;
+        let cur = app.ed.frame;
+        let o = &mut app.onion_opts;
+        match (&mut o.anchor, start) {
+            (Some(r), true) => r.0 = edge.min(r.1),
+            (Some(r), false) => r.1 = edge.saturating_sub(1).max(r.0),
+            (None, true) => o.before = cur.saturating_sub(edge.min(cur)),
+            (None, false) => o.after = edge.saturating_sub(1).max(cur) - cur,
+        }
+    } else if let Some(pos) = hresp.interact_pointer_pos() {
         if hresp.clicked() || hresp.dragged() {
             app.playing = false;
             let (_, f) = cell_at(pos);
@@ -234,10 +352,19 @@ fn grid(app: &mut App, ui: &mut egui::Ui) {
                 }
             } else if cresp.double_clicked() {
                 app.ed.select_span(l, f);
+                if app.ed.motion_span(l, f).is_some() {
+                    // as in Animate: double-clicking a motion tween opens its Motion Editor
+                    app.ed.frame_sel = None;
+                    app.ed.layer = l;
+                    app.ed.frame = f;
+                    app.motion.open = true;
+                }
             } else if shift {
                 let a = app.tl.anchor.unwrap_or((app.ed.layer, app.ed.frame));
                 app.ed.select_frames(FrameSel::between(a, (l, f)));
                 app.ed.frame = f;
+            } else if cresp.drag_started() && span_end_at(app, l, f, ui.input(|i| i.modifiers.command)) {
+                app.tl.gesture = Gesture::SpanEnd { layer: l, end: f + 1 };
             } else if inside && cresp.drag_started() {
                 app.tl.anchor = Some((l, f));
                 app.tl.gesture = Gesture::Move(0);
@@ -262,11 +389,20 @@ fn grid(app: &mut App, ui: &mut egui::Ui) {
                         app.tl.gesture = Gesture::Move(f as i64 - a.1 as i64);
                     }
                 }
+                Gesture::SpanEnd { layer, .. } => {
+                    app.tl.gesture = Gesture::SpanEnd { layer, end: f + 1 };
+                    app.status = format!("Span ends at frame {}", f + 1);
+                }
                 Gesture::None => {}
             }
         }
     }
     if cresp.drag_stopped() {
+        if let Gesture::SpanEnd { layer, end } = app.tl.gesture {
+            if app.ed.timeline().layers.get(layer).map(|l| l.end != end).unwrap_or(false) {
+                app.ed.set_layer_end(layer, end, Some("Span Length"));
+            }
+        }
         if let Gesture::Move(delta) = app.tl.gesture {
             if delta != 0 {
                 app.ed.move_frames(delta);
@@ -344,7 +480,17 @@ fn grid(app: &mut App, ui: &mut egui::Ui) {
             }
         } else {
             let lock_note = if layer.locked { "  🔒" } else { "" };
-            p.text(name_rect.left_center(), Align2::LEFT_CENTER, format!("{}{lock_note}", layer.name), FontId::proportional(13.0), if layer.visible { Color32::from_gray(225) } else { Color32::from_gray(120) });
+            let r = p.text(name_rect.left_center(), Align2::LEFT_CENTER, format!("{}{lock_note}", layer.name), FontId::proportional(13.0), if layer.visible { Color32::from_gray(225) } else { Color32::from_gray(120) });
+            if let Some(pn) = layer.anim_parent.and_then(|pi| layers.get(pi)).map(|pl| pl.name.clone()) {
+                // layer parenting: "→ Parent" after the name, in the parent's colour
+                let col = layer.anim_parent.and_then(|pi| layers.get(pi)).map(|pl| c32(pl.color)).unwrap_or(Color32::GRAY);
+                let (x, yc) = (r.right() + 6.0, name_rect.center().y);
+                let st = Stroke::new(1.2_f32, col);
+                p.line_segment([pos2(x, yc), pos2(x + 8.0, yc)], st);
+                p.line_segment([pos2(x + 5.0, yc - 3.0), pos2(x + 8.0, yc)], st);
+                p.line_segment([pos2(x + 5.0, yc + 3.0), pos2(x + 8.0, yc)], st);
+                p.text(pos2(x + 11.0, yc), Align2::LEFT_CENTER, pn, FontId::proportional(10.0), col);
+            }
             let r = ui.interact(name_rect, ui.id().with(("ln", i)), Sense::click_and_drag());
             if r.clicked() {
                 app.ed.select_layer_frames(i);
@@ -440,6 +586,16 @@ fn grid(app: &mut App, ui: &mut egui::Ui) {
                         }
                     }
                 }
+                Tween::Motion { .. } => {
+                    rp.rect_filled(span, 0.0, MOTION);
+                    if let Some(m) = &kf.motion {
+                        for k in m.key_frames().into_iter().filter(|&k| k > 0 && start + k < end) {
+                            let c = pos2(x_of(start + k) + CW / 2.0, y + RH - 7.0);
+                            let d = 3.2;
+                            rp.add(egui::Shape::convex_polygon(vec![c + vec2(0.0, -d), c + vec2(d, 0.0), c + vec2(0.0, d), c + vec2(-d, 0.0)], Color32::from_gray(20), Stroke::NONE));
+                        }
+                    }
+                }
                 Tween::None => {
                     if end > start + 1 {
                         let r = Rect::from_center_size(pos2(x1 - CW / 2.0, y + RH - 7.0), vec2(5.0, 7.0));
@@ -455,6 +611,13 @@ fn grid(app: &mut App, ui: &mut egui::Ui) {
             }
             if let Some(label) = &kf.label {
                 rp.text(pos2(x0 + 2.0, y + 2.0), Align2::LEFT_TOP, format!("⚑{label}"), FontId::proportional(10.0), Color32::from_rgb(0xFF, 0x60, 0x60));
+            }
+        }
+        if let Gesture::SpanEnd { layer: gl, end } = app.tl.gesture {
+            if gl == i {
+                let start = layer.keyframes.keys().next_back().copied().unwrap_or(0);
+                let r = Rect::from_min_max(pos2(x_of(start), y + 1.0), pos2(x_of(end.max(start + 1)), y + RH - 1.0));
+                rp.rect_stroke(r, 0.0, Stroke::new(2.0_f32, Color32::WHITE));
             }
         }
         // Frame selection highlight (and its ghost while dragging).

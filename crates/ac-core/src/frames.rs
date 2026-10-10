@@ -30,14 +30,43 @@ fn ensure_first(layer: &mut Layer) {
     layer.keyframes.entry(0).or_insert_with(Keyframe::blank);
 }
 
+/// A keyframe holding what frame `f` shows: content, the span's tween and,
+/// inside a motion tween, the rest of its property keys (rebased to `f`).
+pub fn keyframe_at(layer: &Layer, f: u32) -> Keyframe {
+    let (els, tween) = content_at(layer, f);
+    let mut kf = Keyframe::with(els);
+    kf.tween = tween;
+    if let Some((s, src, _)) = layer.span_at(f) {
+        kf.ease_curve = src.ease_curve.clone();
+        kf.orient_to_path = src.orient_to_path;
+        if let (Some(m), Some(el)) = (&src.motion, kf.elements.first()) {
+            let mut head = (**m).clone();
+            let pose = crate::motion::Pose::of(el, m.pivot);
+            kf.motion = Some(Box::new(head.split(f - s, &pose)));
+        }
+    }
+    kf
+}
+
+/// Insert a keyframe at `f` that keeps what the frame shows, and end a
+/// motion tween's keys there.
+fn split_at(layer: &mut Layer, f: u32) {
+    let kf = keyframe_at(layer, f);
+    if let Some((s, _, _)) = layer.span_at(f) {
+        if let Some(pose) = kf.elements.first().zip(kf.motion.as_ref()).map(|(el, m)| crate::motion::Pose::of(el, m.pivot)) {
+            if let Some(m) = layer.keyframes.get_mut(&s).and_then(|k| k.motion.as_mut()) {
+                m.split(f - s, &pose);
+            }
+        }
+    }
+    layer.keyframes.insert(f, kf);
+}
+
 /// Pin the content that frame `f` currently shows into a keyframe at `f`, so
 /// edits before `f` can't change it. No-op past the layer end.
 fn pin(layer: &mut Layer, f: u32) {
     if f < layer.end && !layer.keyframes.contains_key(&f) {
-        let (els, tween) = content_at(layer, f);
-        let mut kf = Keyframe::with(els);
-        kf.tween = tween;
-        layer.keyframes.insert(f, kf);
+        split_at(layer, f);
     }
 }
 
@@ -86,15 +115,14 @@ pub fn convert_to_keyframes(layer: &mut Layer, f0: u32, f1: u32, blank: bool) {
         if layer.keyframes.contains_key(&f) {
             continue;
         }
-        let kf = if blank {
-            Keyframe::blank()
+        if blank {
+            layer.keyframes.insert(f, Keyframe::blank());
+        } else if f < layer.end {
+            split_at(layer, f);
         } else {
-            let (els, tween) = content_at(layer, f);
-            let mut kf = Keyframe::with(els);
-            kf.tween = tween;
-            kf
-        };
-        layer.keyframes.insert(f, kf);
+            let (els, _) = content_at(layer, f);
+            layer.keyframes.insert(f, Keyframe::with(els));
+        }
     }
     layer.end = layer.end.max(f1 + 1);
 }
@@ -144,6 +172,7 @@ pub fn set_tween(layer: &mut Layer, f0: u32, f1: u32, tween: Tween) {
         let has_next = !keys_in(layer, s + 1, layer.end.saturating_sub(1)).is_empty();
         if let Some(k) = layer.keyframes.get_mut(&s) {
             k.tween = if has_next { tween } else { Tween::None };
+            k.motion = None;
         }
     }
 }
@@ -157,11 +186,7 @@ pub struct FrameClip {
 
 pub fn copy_frames(layer: &Layer, f0: u32, f1: u32) -> FrameClip {
     let mut keyframes = Vec::new();
-    let (els, tween) = content_at(layer, f0);
-    let mut first = layer.keyframes.get(&f0).cloned().unwrap_or_else(|| Keyframe::with(els));
-    if !layer.keyframes.contains_key(&f0) {
-        first.tween = tween;
-    }
+    let first = layer.keyframes.get(&f0).cloned().unwrap_or_else(|| keyframe_at(layer, f0));
     keyframes.push((0, first));
     for k in keys_in(layer, f0 + 1, f1) {
         keyframes.push((k - f0, layer.keyframes[&k].clone()));
@@ -196,10 +221,7 @@ pub fn move_frames(layer: &mut Layer, f0: u32, f1: u32, delta: i64) {
     let f1 = f1.min(layer.end - 1);
     let keys = keys_in(layer, f0, f1);
     let block: Vec<(u32, Keyframe)> = if keys.is_empty() {
-        let (els, tween) = content_at(layer, f0);
-        let mut kf = Keyframe::with(els);
-        kf.tween = tween;
-        vec![(0, kf)]
+        vec![(0, keyframe_at(layer, f0))]
     } else {
         let b = keys.iter().map(|k| (k - f0, layer.keyframes[k].clone())).collect();
         for k in &keys {
@@ -217,4 +239,124 @@ pub fn move_frames(layer: &mut Layer, f0: u32, f1: u32, delta: i64) {
     }
     layer.end = layer.end.max(n1 + 1);
     ensure_first(layer);
+}
+
+/// Convert to Frame-by-Frame Animation: every frame of the tweens in
+/// `f0..=f1` becomes a keyframe holding what it showed.
+pub fn convert_to_frame_by_frame(layer: &mut Layer, f0: u32, f1: u32) {
+    if f0 >= layer.end {
+        return;
+    }
+    let f1 = f1.min(layer.end - 1);
+    // cut the tweens at the range ends first so the rest keeps its timing
+    pin(layer, f0);
+    pin(layer, f1 + 1);
+    let starts: Vec<u32> = layer.keyframes.iter().filter(|(&s, k)| s <= f1 && layer.span_end(s) > f0 && !matches!(k.tween, Tween::None)).map(|(s, _)| *s).collect();
+    let mut out = vec![];
+    for s in starts {
+        let e = layer.span_end(s);
+        for f in s.max(f0)..e.min(f1 + 1) {
+            if let Some((els, _)) = layer_elements_at(layer, f) {
+                let mut kf = Keyframe::with(els);
+                if f == s {
+                    let src = &layer.keyframes[&s];
+                    kf.label = src.label.clone();
+                    kf.script = src.script.clone();
+                }
+                out.push((f, kf));
+            }
+        }
+    }
+    for (f, kf) in out {
+        layer.keyframes.insert(f, kf);
+    }
+}
+
+/// Reverse Frames: frame f in `f0..=f1` shows what frame `f0 + f1 − f` showed.
+/// Tweens keep working (backwards, with mirrored eases).
+pub fn reverse_frames(layer: &mut Layer, f0: u32, f1: u32) {
+    if f0 >= layer.end {
+        return;
+    }
+    let f1 = f1.min(layer.end - 1);
+    if f1 <= f0 {
+        return;
+    }
+    pin(layer, f1 + 1);
+    if !layer.keyframes.contains_key(&f0) {
+        if layer.span_at(f0).is_some() {
+            split_at(layer, f0);
+        } else {
+            return;
+        }
+    }
+    let keys = keys_in(layer, f0, f1);
+    let mirror = |f: u32| f0 + f1 - f;
+    let mut placed: std::collections::BTreeMap<u32, Keyframe> = Default::default();
+    let mut tween_starts: Vec<(u32, Keyframe)> = vec![];
+    for &k in &keys {
+        let e = layer.span_end(k).min(f1 + 1);
+        let kf = layer.keyframes[&k].clone();
+        let (r0, r1) = (mirror(e - 1), mirror(k));
+        let target = layer.keyframes.get(&layer.span_end(k)).filter(|_| layer.span_end(k) <= f1 + 1);
+        match kf.tween {
+            Tween::Motion { .. } => {
+                let mut kf2 = kf.clone();
+                if let Some(m) = kf2.motion.as_mut() {
+                    m.reverse(e - k);
+                }
+                kf2.ease_curve = kf.ease_curve.as_ref().map(|c| c.reversed());
+                kf2.tween = Tween::Motion { ease: -kf.tween.ease() };
+                placed.insert(r0, kf2);
+            }
+            Tween::Classic { .. } | Tween::Shape { .. } if target.is_some() => {
+                let mut end = kf.clone();
+                end.tween = Tween::None;
+                end.ease_curve = None;
+                placed.entry(r1).or_insert(end);
+                let mut start = if r0 > f0 {
+                    target.unwrap().clone()
+                } else {
+                    let (els, _) = content_at(layer, e - 1);
+                    Keyframe::with(els)
+                };
+                start.label = None;
+                start.script = None;
+                start.tween = match kf.tween {
+                    Tween::Classic { ease, rotate_turns } => Tween::Classic { ease: -ease, rotate_turns: -rotate_turns },
+                    Tween::Shape { ease } => Tween::Shape { ease: -ease },
+                    t => t,
+                };
+                start.ease_curve = kf.ease_curve.as_ref().map(|c| c.reversed());
+                start.orient_to_path = kf.orient_to_path;
+                start.motion = None;
+                tween_starts.push((if r0 > f0 { r0 - 1 } else { r0 }, start));
+            }
+            _ => {
+                let mut st = kf.clone();
+                st.tween = Tween::None;
+                placed.entry(r0).or_insert(st);
+            }
+        }
+    }
+    for (f, kf) in tween_starts {
+        placed.insert(f, kf);
+    }
+    for k in keys {
+        layer.keyframes.remove(&k);
+    }
+    layer.keyframes.extend(placed);
+}
+
+/// Drag the end of a layer's last span: lengthen/shorten the layer. Motion
+/// tween keys stretch with the span (as in Animate).
+pub fn set_last_span_end(layer: &mut Layer, new_end: u32) {
+    let Some((&start, _)) = layer.keyframes.iter().next_back() else { return };
+    let new_end = new_end.max(start + 1);
+    let old_len = layer.end.saturating_sub(start);
+    let new_len = new_end - start;
+    if let Some(m) = layer.keyframes.get_mut(&start).and_then(|k| k.motion.as_mut()) {
+        m.fit(old_len, new_len, true);
+    }
+    layer.end = new_end;
 }

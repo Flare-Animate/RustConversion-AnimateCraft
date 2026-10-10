@@ -128,6 +128,36 @@ ac.import.image({ path: "badge.png", x: 20, y: 20 });  // PNG into the library +
 ac.draw.text({ x: 40, y: 40, text: "Hi", font: "DejaVu Serif" }); // any installed font
 ```
 
+### Eases, motion tweens, scenes and buttons
+
+```js
+// eases: a preset, a custom curve [x, y, in_dx, in_dy, out_dx, out_dy], or "none"
+ac.timeline.set_ease({ ease: "Bounce Out", layer: "Ball", frame: 1 });
+ac.timeline.set_ease({ ease: [[0, 0, 0, 0, 0.4, 0], [1, 1, -0.1, 0, 0, 0]] });
+
+// motion tween: one object on a span, property keyframes (frames are 1-based)
+ac.timeline.set_tween({ kind: "motion", layer: "Ball", frame: 1, rotate: 1 });
+ac.motion.set_key({ prop: "x", frame: 24, value: 400 });
+ac.motion.set_key({ prop: "rotation", frame: 12, value: 90 });
+ac.motion.set_key({ prop: "alpha", frame: 24, value: 0.2 });   // scale/alpha 0..1
+ac.motion.set_ease({ prop: "position", ease: "Sine In Out" });
+ac.motion.info({ layer: "Ball", frame: 1 });                    // keys per property
+
+ac.timeline.reverse_frames({ layer: 1, frame: 1, to_frame: 24 });
+ac.timeline.to_frame_by_frame({ layer: 1, frame: 1, to_frame: 24 });
+ac.timeline.set_layer_end({ layer: "Ball", end: 48 });          // motion keys stretch
+ac.shape_hint.add({ x: 0, y: 0, to_x: 100, to_y: 0 });          // on a shape tween's first keyframe
+
+ac.layer.set_parent({ layer: "Hat", parent: "Head" });          // layer parenting (0 = none)
+ac.scene.add({ name: "Credits" });                              // scene.list / goto / rename / move / delete
+ac.selection.swap_symbol({ symbol: "Ball 2" });
+ac.selection.color_effect({ style: "advanced", mul: [100, 60, 60, 100], add: [40, 0, 0, 0] });
+ac.selection.color_effect({ style: "brightness", amount: -30 });
+```
+
+Exports (`export.gif`, `export.video`, …) play every scene in order; `doc.info`
+reports `movie_frames` and `scenes` next to the current timeline's `frames`.
+
 ### Any other language
 
 Python, Node and Ruby use tiny helper libraries, but the protocol is simple

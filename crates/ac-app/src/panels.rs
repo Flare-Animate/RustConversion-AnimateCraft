@@ -445,18 +445,27 @@ fn object_properties(app: &mut App, ui: &mut egui::Ui) {
                         apply(app, &r, "First Frame", |e| if let ElementKind::Instance(i) = &mut e.kind { i.first_frame = ff - 1 });
                     });
                 }
-                section(ui, "Color effect: tint");
-                let mut tint = el.tint.map(|(c, _)| c32(c)).unwrap_or(Color32::WHITE);
-                let mut amt = el.tint.map(|(_, a)| a * 100.0).unwrap_or(0.0);
+                color_effect(app, ui, &el);
+                if kind == Some(SymbolKind::Button) {
+                    ui.label(RichText::new("Button: Up / Over / Down / Hit frames. Control ▸ Enable Simple Buttons to try it on the stage.").small().color(Color32::from_gray(150)));
+                }
                 ui.horizontal(|ui| {
-                    if ui.color_edit_button_srgba(&mut tint).changed() {
-                        let c = from32(tint);
-                        let a = (amt / 100.0).max(0.5);
-                        app.ed.modify_selected("Tint", move |e| e.tint = Some((c, a)));
+                    ui.label("Symbol");
+                    let cur = app.ed.doc.symbol(id).map(|s| s.name.clone()).unwrap_or_default();
+                    let mut pick = None;
+                    egui::ComboBox::from_id_salt("swap-symbol").selected_text(cur).show_ui(ui, |ui| {
+                        for sym in &app.ed.doc.library {
+                            if Some(sym.id) == app.ed.editing {
+                                continue; // a symbol can't contain itself
+                            }
+                            if ui.selectable_label(sym.id == id, &sym.name).clicked() && sym.id != id {
+                                pick = Some(sym.id);
+                            }
+                        }
+                    }).response.on_hover_text("Swap Symbol: keep this instance's transform and effects, show another symbol");
+                    if let Some(new_id) = pick {
+                        app.ed.swap_symbol(new_id);
                     }
-                    let r = ui.add(egui::DragValue::new(&mut amt).range(0.0..=100.0).suffix("%"));
-                    let c = from32(tint);
-                    apply(app, &r, "Tint", |e| e.tint = if amt <= 0.0 { None } else { Some((c, amt / 100.0)) });
                 });
                 ui.horizontal(|ui| {
                     if ui.button("Edit Symbol").clicked() { app.edit_symbol(id); }
@@ -624,43 +633,60 @@ fn frame_properties(app: &mut App, ui: &mut egui::Ui) {
         });
     }
     // Tween
-    let cur = match kf.tween { Tween::None => 0, Tween::Classic { .. } => 1, Tween::Shape { .. } => 2 };
+    let cur = match kf.tween { Tween::None => 0, Tween::Classic { .. } => 1, Tween::Shape { .. } => 2, Tween::Motion { .. } => 3 };
     let mut kind = cur;
     ui.horizontal(|ui| {
         ui.label("Tween");
-        egui::ComboBox::from_id_salt("tween").selected_text(["None", "Classic", "Shape"][kind]).show_ui(ui, |ui| {
+        egui::ComboBox::from_id_salt("tween").selected_text(["None", "Classic", "Shape", "Motion"][kind]).show_ui(ui, |ui| {
             ui.selectable_value(&mut kind, 0, "None");
             ui.selectable_value(&mut kind, 1, "Classic");
             ui.selectable_value(&mut kind, 2, "Shape");
+            ui.selectable_value(&mut kind, 3, "Motion");
         });
     });
     let ease = kf.tween.ease();
-    let turns = if let Tween::Classic { rotate_turns, .. } = kf.tween { rotate_turns } else { 0 };
+    let turns = match kf.tween {
+        Tween::Classic { rotate_turns, .. } => rotate_turns,
+        Tween::Motion { .. } => kf.motion.as_ref().map(|m| m.rotate_turns).unwrap_or(0),
+        _ => 0,
+    };
     if kind != cur {
         app.ed.set_tween(match kind {
             1 => Tween::Classic { ease, rotate_turns: turns },
             2 => Tween::Shape { ease },
+            3 => Tween::Motion { ease },
             _ => Tween::None,
         });
     } else if kind != 0 {
         let (mut e, mut t) = (ease, turns);
         let mut changed = false;
-        ui.horizontal(|ui| {
-            ui.label("Ease");
-            changed |= ui.add(egui::Slider::new(&mut e, -100.0..=100.0).step_by(1.0)).changed();
-        });
-        ui.label(RichText::new("−100 = ease in (slow start) · +100 = ease out (slow end)").small().color(Color32::from_gray(140)));
-        if kind == 1 && ac_core::layer_effect_parent(app.ed.timeline(), target.layer0, ac_core::LayerKind::Guide).is_some() {
+        if kf.ease_curve.is_none() {
+            ui.horizontal(|ui| {
+                ui.label("Amount");
+                changed |= ui.add(egui::Slider::new(&mut e, -100.0..=100.0).step_by(1.0)).changed();
+            });
+            ui.label(RichText::new("−100 = ease in (slow start) · +100 = ease out (slow end)").small().color(Color32::from_gray(140)));
+        }
+        crate::motion_ui::span_ease_ui(app, ui, kf.ease_curve.as_ref(), ease);
+        let guided = kind == 1 && ac_core::layer_effect_parent(app.ed.timeline(), target.layer0, ac_core::LayerKind::Guide).is_some();
+        if guided || kind == 3 {
             let mut orient = kf.orient_to_path;
-            if ui.checkbox(&mut orient, "Orient to path").on_hover_text("Rotate with the motion guide's direction").changed() {
+            if ui.checkbox(&mut orient, "Orient to path").on_hover_text("Rotate with the path's direction").changed() {
                 app.ed.set_orient_to_path(orient);
             }
         }
-        if kind == 1 {
+        if kind == 1 || kind == 3 {
             ui.horizontal(|ui| {
                 ui.label("Rotate");
                 changed |= edited(&ui.add(egui::DragValue::new(&mut t).range(-10..=10).suffix(" × CW")));
             });
+        }
+        if kind == 3 {
+            let n = kf.motion.as_ref().map(|m| m.key_frames().len()).unwrap_or(0);
+            ui.label(RichText::new(format!("{n} frame(s) with property keyframes. Move to a frame and change the object to add one.")).small().color(Color32::from_gray(150)));
+            if ui.button("Open Motion Editor").clicked() {
+                app.motion.open = true;
+            }
         }
         if changed {
             app.ed.set_tween_params(e, t);
@@ -1620,4 +1646,129 @@ fn quality_row(ui: &mut egui::Ui, q: &mut u8, changed: &mut bool) {
         }
     });
     ui.end_row();
+}
+
+/// Properties ▸ Color Effect: None / Brightness / Tint / Advanced / Alpha.
+fn color_effect(app: &mut App, ui: &mut egui::Ui, el: &Element) {
+    use ac_core::ColorXform;
+    #[derive(PartialEq, Clone, Copy)]
+    enum Style {
+        None,
+        Brightness,
+        Tint,
+        Advanced,
+        Alpha,
+    }
+    let bright = ac_core::motion::brightness_of(el.tint);
+    let style = if el.color_fx.is_some() {
+        Style::Advanced
+    } else if bright != 0.0 {
+        Style::Brightness
+    } else if el.tint.is_some() {
+        Style::Tint
+    } else if el.alpha < 1.0 {
+        Style::Alpha
+    } else {
+        Style::None
+    };
+    section(ui, "Color effect");
+    let mut pick = style;
+    let names = [(Style::None, "None"), (Style::Brightness, "Brightness"), (Style::Tint, "Tint"), (Style::Advanced, "Advanced"), (Style::Alpha, "Alpha")];
+    ui.horizontal(|ui| {
+        ui.label("Style");
+        egui::ComboBox::from_id_salt("color-style").selected_text(names.iter().find(|n| n.0 == style).unwrap().1).show_ui(ui, |ui| {
+            for (st, n) in names {
+                ui.selectable_value(&mut pick, st, n);
+            }
+        });
+    });
+    if pick != style {
+        let alpha_keep = el.alpha;
+        app.ed.modify_selected("Color Effect", move |e| {
+            e.tint = None;
+            e.color_fx = None;
+            match pick {
+                Style::None => e.alpha = 1.0,
+                Style::Brightness => e.tint = Some((ac_core::Color::rgb(255, 255, 255), 0.0001)),
+                Style::Tint => e.tint = Some((ac_core::Color::rgb(255, 0, 0), 0.5)),
+                Style::Advanced => {
+                    e.color_fx = Some(ColorXform { mul: [1.0, 1.0, 1.0, alpha_keep], add: [0.0; 4] });
+                    e.alpha = 1.0;
+                }
+                Style::Alpha => e.alpha = alpha_keep.min(0.5),
+            }
+        });
+        return;
+    }
+    match style {
+        Style::None => {}
+        Style::Brightness => {
+            let mut b = bright * 100.0;
+            ui.horizontal(|ui| {
+                ui.label("Bright");
+                let r = ui.add(egui::Slider::new(&mut b, -100.0..=100.0).suffix("%"));
+                apply_slider(app, &r, "Brightness", move |e| e.tint = ac_core::motion::brightness_tint(b / 100.0, None).or(Some((ac_core::Color::rgb(255, 255, 255), 0.0001))));
+            });
+        }
+        Style::Tint => {
+            let (c, a) = el.tint.unwrap();
+            let mut col = c32(c);
+            let mut amt = a * 100.0;
+            ui.horizontal(|ui| {
+                if ui.color_edit_button_srgba(&mut col).changed() {
+                    let c = from32(col);
+                    app.ed.modify_selected("Tint", move |e| e.tint = Some((c, a)));
+                }
+                let r = ui.add(egui::Slider::new(&mut amt, 0.0..=100.0).suffix("%"));
+                apply_slider(app, &r, "Tint", move |e| e.tint = Some((c, (amt / 100.0).max(0.0001))));
+            });
+        }
+        Style::Alpha => {
+            let mut a = el.alpha * 100.0;
+            ui.horizontal(|ui| {
+                ui.label("Alpha");
+                let r = ui.add(egui::Slider::new(&mut a, 0.0..=100.0).suffix("%"));
+                apply_slider(app, &r, "Alpha", move |e| e.alpha = a / 100.0);
+            });
+        }
+        Style::Advanced => {
+            let cx = el.color_fx.unwrap();
+            egui::Grid::new("adv-color").num_columns(3).show(ui, |ui| {
+                for (i, ch) in ["Alpha", "Red", "Green", "Blue"].iter().enumerate() {
+                    let k = [3, 0, 1, 2][i];
+                    ui.label(*ch);
+                    let mut m = cx.mul[k] * 100.0;
+                    let mut ad = cx.add[k];
+                    let r = ui.add(egui::DragValue::new(&mut m).range(-100.0..=100.0).speed(0.5).suffix("% ×"));
+                    if edited(&r) || r.drag_stopped() {
+                        apply_slider(app, &r, "Advanced Color", move |e| if let Some(c) = &mut e.color_fx { c.mul[k] = m / 100.0 });
+                    }
+                    let r = ui.add(egui::DragValue::new(&mut ad).range(-255.0..=255.0).speed(1.0).prefix("+ "));
+                    if edited(&r) || r.drag_stopped() {
+                        apply_slider(app, &r, "Advanced Color", move |e| if let Some(c) = &mut e.color_fx { c.add[k] = ad });
+                    }
+                    ui.end_row();
+                }
+            });
+        }
+    }
+}
+
+/// Like `apply` for sliders (which report `changed` while dragging only).
+fn apply_slider(app: &mut App, resp: &egui::Response, label: &str, f: impl Fn(&mut Element)) {
+    if resp.drag_stopped() {
+        app.prop_dragging = false;
+    }
+    if !resp.changed() {
+        return;
+    }
+    if resp.dragged() {
+        if !app.prop_dragging {
+            app.ed.begin_edit(label);
+            app.prop_dragging = true;
+        }
+        app.ed.modify_selected_continuous(f);
+    } else {
+        app.ed.modify_selected(label, f);
+    }
 }

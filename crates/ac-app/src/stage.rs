@@ -36,6 +36,10 @@ pub enum Drag {
     GuideNew { vertical: bool, pos: f32 },
     /// An existing guide being moved (drop it on a ruler to remove it).
     Guide { vertical: bool, index: usize, pos: f32, started: bool },
+    /// Dragging a shape hint.
+    Hint { key: u32, index: usize, started: bool },
+    /// Editing a motion tween's path on the stage.
+    MotionPath { grab: crate::motion_ui::PathGrab, started: bool },
 }
 
 #[derive(Clone, Copy)]
@@ -577,6 +581,24 @@ pub fn stage(app: &mut App, ctx: &egui::Context) {
             ui.set_width(ui.available_width());
             ui.horizontal(|ui| {
                 let crumbs = app.ed.breadcrumb();
+                // Edit Scene: switch scenes from the stage header (as Animate's clapper menu)
+                if app.ed.doc.scene_count() > 1 {
+                    ui.menu_button("Scenes", |ui| {
+                        let names: Vec<String> = app.ed.doc.scenes().map(|t| t.name.clone()).collect();
+                        for (i, n) in names.iter().enumerate() {
+                            if ui.selectable_label(i == app.ed.scene, n).clicked() {
+                                app.ed.goto_scene(i);
+                                app.fit_pending = true;
+                                ui.close_menu();
+                            }
+                        }
+                        ui.separator();
+                        if ui.button("Scene panel…").clicked() {
+                            app.scene_open = true;
+                            ui.close_menu();
+                        }
+                    });
+                }
                 for (i, c) in crumbs.iter().enumerate() {
                     if i > 0 {
                         ui.label("›");
@@ -688,6 +710,18 @@ fn stage_input(app: &mut App, ui: &egui::Ui, rect: Rect, resp: &egui::Response) 
         app.poly_lasso.clear();
     }
 
+    // Enable Simple Buttons: buttons show Over/Down and take the clicks.
+    if app.simple_buttons && app.ed.editing.is_none() && matches!(app.drag, Drag::None) {
+        let down = ui.input(|i| i.pointer.primary_down());
+        let hit = resp.hover_pos().and_then(|h| app.ed.button_at(app.to_doc(rect, h)));
+        app.ed.button_state = hit.map(|s| (s, if down { 2 } else { 1 }));
+        if hit.is_some() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+            return;
+        }
+    } else if !app.simple_buttons {
+        app.ed.button_state = None;
+    }
     let Some(pos) = resp.interact_pointer_pos() else { return };
     let p = app.to_doc(rect, pos);
     let origin = if resp.drag_started() { ui.input(|i| i.pointer.press_origin()).unwrap_or(pos) } else { pos };
@@ -823,7 +857,22 @@ fn press(app: &mut App, rect: Rect, tool: Tool, origin: Pos2, p0: Pt, shift: boo
                 app.drag = Drag::Guide { vertical, index, pos, started: false };
                 return;
             }
+            if let Some((key, index)) = crate::motion_ui::hint_at(app, rect, origin) {
+                app.drag = Drag::Hint { key, index, started: false };
+                return;
+            }
+            // Motion path: drag a position point, or bend the path where no object is in the way.
+            if let Some(g) = crate::motion_ui::path_grab(app, rect, origin, false) {
+                if matches!(g, crate::motion_ui::PathGrab::Anchor(_)) || app.ed.hit_test(p0).is_none() {
+                    app.drag = Drag::MotionPath { grab: g, started: false };
+                    return;
+                }
+            }
             select_press(app, p0, shift);
+        }
+        Tool::Subselect if crate::motion_ui::path_grab(app, rect, origin, true).is_some() => {
+            let g = crate::motion_ui::path_grab(app, rect, origin, true).unwrap();
+            app.drag = Drag::MotionPath { grab: g, started: false };
         }
         Tool::Subselect => {
             if let Some((s, inv, path)) = app.shape_for_points(p0, true) {
@@ -1197,6 +1246,16 @@ fn drag(app: &mut App, ui: &egui::Ui, rect: Rect, pos: Pos2, p: Pt, shift: bool,
             last.1 = pt(p.x - last.0.x, p.y - last.0.y);
         }
     }
+    if let Drag::Hint { key, index, mut started } = app.drag {
+        crate::motion_ui::hint_drag(app, key, index, p, &mut started);
+        app.drag = Drag::Hint { key, index, started };
+        return;
+    }
+    if let Drag::MotionPath { grab, mut started } = app.drag {
+        crate::motion_ui::path_drag(app, grab, p, &mut started, alt);
+        app.drag = Drag::MotionPath { grab, started };
+        return;
+    }
     match &mut app.drag {
         Drag::Pan { last } => {
             app.pan += pos - *last;
@@ -1544,7 +1603,7 @@ fn drag(app: &mut App, ui: &egui::Ui, rect: Rect, pos: Pos2, p: Pt, shift: bool,
                 *last = p;
             }
         }
-        Drag::None => {}
+        Drag::None | Drag::MotionPath { .. } | Drag::Hint { .. } => {}
     }
 }
 
@@ -1747,17 +1806,33 @@ fn render_stage(app: &mut App, ui: &egui::Ui, rect: Rect) {
     }
     let content_view = Matrix::scale(ppp, ppp).concat(&app.view_content());
     let n = app.ed.frame_count();
-    if app.onion && !app.playing {
-        for k in (1..=app.onion_n).rev() {
-            let fade = 0.45 / k as f32;
-            if app.ed.frame >= k {
-                let items = app.ed.evaluate_current(app.ed.frame - k);
-                ac_render::draw_items(&mut pix.as_mut(), &items, &ac_render::RenderOpts { view: content_view, alpha: fade, tint: Some((Color::rgb(0x30, 0x60, 0xFF), 0.85)) });
+    if (app.onion || app.onion_opts.multi) && !app.playing {
+        let (a, b) = app.onion_range();
+        let cur = app.ed.frame;
+        let span = (cur - a.min(cur)).max(b.saturating_sub(cur)).max(1) as f32;
+        let keys: std::collections::BTreeSet<u32> = app.ed.timeline().layers.iter().filter(|l| l.visible).flat_map(|l| l.keyframes.keys().copied().collect::<Vec<_>>()).collect();
+        // far frames first so nearer ones draw on top
+        let mut frames: Vec<u32> = (a..=b.min(n.saturating_sub(1))).filter(|&f| f != cur).collect();
+        frames.sort_by_key(|&f| std::cmp::Reverse((f as i64 - cur as i64).abs()));
+        for f in frames {
+            let multi = app.onion_opts.multi;
+            if multi && !keys.contains(&f) {
+                continue; // Edit Multiple Frames shows the keyframes
             }
-            if app.ed.frame + k < n {
-                let items = app.ed.evaluate_current(app.ed.frame + k);
-                ac_render::draw_items(&mut pix.as_mut(), &items, &ac_render::RenderOpts { view: content_view, alpha: fade, tint: Some((Color::rgb(0x20, 0xC0, 0x40), 0.85)) });
-            }
+            let dist = (f as i64 - cur as i64).unsigned_abs() as f32;
+            let mut items = app.ed.evaluate_current(f);
+            let col = if f < cur { Color::rgb(0x30, 0x60, 0xFF) } else { Color::rgb(0x20, 0xC0, 0x40) };
+            let opts = if multi {
+                ac_render::RenderOpts { view: content_view, alpha: 1.0, tint: None }
+            } else if app.onion_opts.outline {
+                for it in &mut items {
+                    it.outline = Some(col);
+                }
+                ac_render::RenderOpts { view: content_view, alpha: (1.0 - (dist - 1.0) / (span + 1.0)).clamp(0.25, 1.0), tint: None }
+            } else {
+                ac_render::RenderOpts { view: content_view, alpha: 0.5 * (1.0 - (dist - 1.0) / (span + 1.0)).clamp(0.15, 1.0), tint: Some((col, 0.85)) }
+            };
+            ac_render::draw_items(&mut pix.as_mut(), &items, &opts);
         }
     }
     let mut items = app.ed.evaluate_current(app.ed.frame);
@@ -1796,6 +1871,10 @@ fn overlays(app: &App, ui: &egui::Ui, rect: Rect) {
         painter.line_segment([c - vec2(0.0, 9.0), c + vec2(0.0, 9.0)], s);
     }
     crate::rulers::draw(app, &painter, rect);
+    if matches!(app.tool, Tool::Select | Tool::Subselect | Tool::FreeTransform) && !app.playing {
+        crate::motion_ui::draw_path(app, &painter, rect, app.tool == Tool::Subselect);
+        crate::motion_ui::draw_hints(app, &painter, rect);
+    }
     // Camera frame
     if app.ed.camera_view {
         let cam_col = Color32::from_rgb(0xFF, 0xA0, 0x30);

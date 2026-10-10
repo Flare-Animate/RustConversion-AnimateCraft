@@ -194,6 +194,61 @@ pub struct Element {
     pub filters: Vec<crate::fx::Filter>,
     #[serde(default, skip_serializing_if = "is_normal_blend")]
     pub blend: crate::fx::BlendMode,
+    /// Color effect › Advanced: per-channel multiplier and offset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub color_fx: Option<ColorXform>,
+}
+
+/// Animate's Advanced colour effect: `out = in × mul + add` per channel
+/// (r, g, b, a). Multipliers are fractions (1 = 100%), offsets −255…255.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ColorXform {
+    pub mul: [f32; 4],
+    pub add: [f32; 4],
+}
+
+impl Default for ColorXform {
+    fn default() -> Self {
+        ColorXform::IDENTITY
+    }
+}
+
+impl ColorXform {
+    pub const IDENTITY: ColorXform = ColorXform { mul: [1.0; 4], add: [0.0; 4] };
+    pub fn apply(&self, c: Color) -> Color {
+        let ch = |v: u8, i: usize| (v as f32 * self.mul[i] + self.add[i]).round().clamp(0.0, 255.0) as u8;
+        Color { r: ch(c.r, 0), g: ch(c.g, 1), b: ch(c.b, 2), a: ch(c.a, 3) }
+    }
+    /// `self` applied after `inner`.
+    pub fn after(&self, inner: &ColorXform) -> ColorXform {
+        let mut o = ColorXform::IDENTITY;
+        for i in 0..4 {
+            o.mul[i] = self.mul[i] * inner.mul[i];
+            o.add[i] = self.mul[i] * inner.add[i] + self.add[i];
+        }
+        o
+    }
+    pub fn compose(outer: Option<ColorXform>, inner: Option<ColorXform>) -> Option<ColorXform> {
+        match (outer, inner) {
+            (Some(o), Some(i)) => Some(o.after(&i)),
+            (o, i) => o.or(i),
+        }
+    }
+    pub fn lerp(a: Option<ColorXform>, b: Option<ColorXform>, t: f32) -> Option<ColorXform> {
+        if a.is_none() && b.is_none() {
+            return None;
+        }
+        let (a, b) = (a.unwrap_or_default(), b.unwrap_or_default());
+        let mut o = a;
+        for i in 0..4 {
+            o.mul[i] = a.mul[i] + (b.mul[i] - a.mul[i]) * t;
+            o.add[i] = a.add[i] + (b.add[i] - a.add[i]) * t;
+        }
+        Some(o)
+    }
+    pub fn is_identity(&self) -> bool {
+        *self == ColorXform::IDENTITY
+    }
 }
 
 fn is_normal_blend(b: &crate::fx::BlendMode) -> bool {
@@ -202,7 +257,7 @@ fn is_normal_blend(b: &crate::fx::BlendMode) -> bool {
 
 impl Element {
     fn base(name: &str, matrix: Matrix, kind: ElementKind) -> Self {
-        Element { name: name.into(), matrix, alpha: 1.0, tint: None, kind, three_d: None, filters: vec![], blend: Default::default() }
+        Element { name: name.into(), matrix, alpha: 1.0, tint: None, kind, three_d: None, filters: vec![], blend: Default::default(), color_fx: None }
     }
     pub fn group(children: Vec<Element>) -> Self {
         Element::base("", Matrix::IDENTITY, ElementKind::Group(children))
@@ -233,14 +288,20 @@ pub enum Tween {
     Classic { ease: f32, rotate_turns: i32 },
     /// Path + color morph (Animate "Shape Tween").
     Shape { ease: f32 },
+    /// Property keyframes on a span (Animate "Motion Tween"); the keys live
+    /// in `Keyframe::motion`, the span needs no closing keyframe.
+    Motion { ease: f32 },
 }
 
 impl Tween {
     pub fn ease(&self) -> f32 {
         match *self {
             Tween::None => 0.0,
-            Tween::Classic { ease, .. } | Tween::Shape { ease } => ease,
+            Tween::Classic { ease, .. } | Tween::Shape { ease } | Tween::Motion { ease } => ease,
         }
+    }
+    pub fn is_motion(&self) -> bool {
+        matches!(self, Tween::Motion { .. })
     }
 }
 
@@ -262,6 +323,16 @@ pub struct Keyframe {
     /// Classic tween along a motion guide: rotate with the path's direction.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub orient_to_path: bool,
+    /// Custom/preset ease for this span (overrides the −100…100 simple ease).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ease_curve: Option<crate::motion::Ease>,
+    /// Shape hints (a, b, c…) for shape tweens, in the first shape's local
+    /// coordinates; hint i here matches hint i on the next keyframe.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub shape_hints: Vec<Pt>,
+    /// Property keyframes of a motion tween span.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub motion: Option<Box<crate::motion::Motion>>,
 }
 
 impl Keyframe {
@@ -269,7 +340,7 @@ impl Keyframe {
         Keyframe::with(vec![])
     }
     pub fn with(elements: Vec<Element>) -> Self {
-        Keyframe { elements, tween: Tween::None, label: None, script: None, orient_to_path: false }
+        Keyframe { elements, tween: Tween::None, label: None, script: None, orient_to_path: false, ease_curve: None, shape_hints: vec![], motion: None }
     }
 }
 
@@ -322,6 +393,10 @@ pub struct Layer {
     /// Folder collapsed in the Timeline panel.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub collapsed: bool,
+    /// Layer parenting: this layer's objects are in the coordinate space of
+    /// the first object on that layer, and follow it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub anim_parent: Option<usize>,
 }
 
 const LAYER_COLORS: [Color; 6] = [
@@ -349,6 +424,7 @@ impl Layer {
             bones: vec![],
             parent: None,
             collapsed: false,
+            anim_parent: None,
         }
     }
 
@@ -412,6 +488,9 @@ pub struct Document {
     /// Ruler guides (View › Guides), in stage coordinates.
     #[serde(default, skip_serializing_if = "Guides::is_empty")]
     pub guides: Guides,
+    /// Scenes after the first (`scene`); the movie plays them in order.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub more_scenes: Vec<Timeline>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -446,11 +525,57 @@ impl Default for Document {
             vanishing_point: None,
             bitmaps: vec![],
             guides: Guides::default(),
+            more_scenes: vec![],
         }
     }
 }
 
 impl Document {
+    /// Number of scenes (at least one).
+    pub fn scene_count(&self) -> usize {
+        1 + self.more_scenes.len()
+    }
+    pub fn scene_at(&self, i: usize) -> Option<&Timeline> {
+        if i == 0 {
+            Some(&self.scene)
+        } else {
+            self.more_scenes.get(i - 1)
+        }
+    }
+    pub fn scene_at_mut(&mut self, i: usize) -> Option<&mut Timeline> {
+        if i == 0 {
+            Some(&mut self.scene)
+        } else {
+            self.more_scenes.get_mut(i - 1)
+        }
+    }
+    pub fn scenes(&self) -> impl Iterator<Item = &Timeline> {
+        std::iter::once(&self.scene).chain(self.more_scenes.iter())
+    }
+    pub fn scenes_mut(&mut self) -> impl Iterator<Item = &mut Timeline> {
+        std::iter::once(&mut self.scene).chain(self.more_scenes.iter_mut())
+    }
+    /// Frames in the whole movie (all scenes).
+    pub fn total_frames(&self) -> u32 {
+        self.scenes().map(|t| t.frame_count()).sum::<u32>().max(1)
+    }
+    /// Movie frame → (scene index, frame in that scene). Past the end: the last frame.
+    pub fn locate_frame(&self, frame: u32) -> (usize, u32) {
+        let mut f = frame;
+        let n = self.scene_count();
+        for (i, t) in self.scenes().enumerate() {
+            let c = t.frame_count();
+            if f < c || i + 1 == n {
+                return (i, f.min(c - 1));
+            }
+            f -= c;
+        }
+        (0, 0)
+    }
+    /// First movie frame of scene `i`.
+    pub fn scene_start(&self, i: usize) -> u32 {
+        self.scenes().take(i).map(|t| t.frame_count()).sum()
+    }
     pub fn symbol(&self, id: SymbolId) -> Option<&Symbol> {
         self.library.iter().find(|s| s.id == id)
     }
@@ -503,6 +628,8 @@ pub struct DrawItem {
     pub clips: Vec<Arc<Clip>>,
     /// Bitmap drawn into `path` (a 0,0,w,h rectangle) when set.
     pub image: Option<Arc<Image>>,
+    /// Advanced colour effect (composed through nested symbols).
+    pub cx: Option<ColorXform>,
 }
 
 /// The shapes of a mask layer, in the same space as item matrices.
@@ -513,7 +640,7 @@ pub struct Clip {
 
 impl DrawItem {
     pub fn new(path: Path, matrix: Matrix) -> DrawItem {
-        DrawItem { path, fill: None, stroke: None, matrix, alpha: 1.0, tint: None, outline: None, src: None, gradient: None, fx: vec![], clips: vec![], image: None }
+        DrawItem { path, fill: None, stroke: None, matrix, alpha: 1.0, tint: None, outline: None, src: None, gradient: None, fx: vec![], clips: vec![], image: None, cx: None }
     }
 }
 
@@ -536,11 +663,17 @@ pub fn layer_elements_at(layer: &Layer, frame: u32) -> Option<(Vec<Element>, u32
     let (start, kf, next) = layer.span_at(frame)?;
     let local = frame - start;
     let tweened = match (kf.tween, next) {
+        (Tween::Motion { ease }, _) => {
+            let len = next.unwrap_or(layer.end).min(layer.end) - start;
+            Some(motion_elements(kf, local as f32, len, ease))
+        }
         (Tween::None, _) | (_, None) => None,
         (tween, Some(next_start)) if frame > start => {
             let to = &layer.keyframes[&next_start];
-            let t = apply_ease(local as f32 / (next_start - start) as f32, tween.ease());
-            Some(interpolate_elements(&kf.elements, &to.elements, t, tween))
+            let t = crate::motion::tween_progress(local as f32 / (next_start - start) as f32, tween.ease(), kf.ease_curve.as_ref());
+            let n = kf.shape_hints.len().min(to.shape_hints.len());
+            let hints = (n > 0).then(|| (&kf.shape_hints[..n], &to.shape_hints[..n]));
+            Some(interpolate_elements(&kf.elements, &to.elements, t, tween, hints))
         }
         _ => None,
     };
@@ -549,6 +682,21 @@ pub fn layer_elements_at(layer: &Layer, frame: u32) -> Option<(Vec<Element>, u32
         apply_bones(&layer.bones, &mut els);
     }
     Some((els, local))
+}
+
+/// The motion tween's target (the first element) posed at `local` frame.
+pub fn motion_elements(kf: &Keyframe, local: f32, len: u32, simple: f32) -> Vec<Element> {
+    let mut els = kf.elements.clone();
+    let (Some(m), Some(el)) = (&kf.motion, els.first_mut()) else { return els };
+    let base = crate::motion::Pose::of(el, m.pivot);
+    let mut pose = m.pose_at(&base, local, len, simple, kf.ease_curve.as_ref());
+    if kf.orient_to_path {
+        if let (Some(a), Some(a0)) = (m.path_angle(local), m.path_angle(0.0)) {
+            pose.rotation += a - a0;
+        }
+    }
+    pose.apply(el, m.pivot);
+    els
 }
 
 /// Forward kinematics: move each bone's child so its joint sits on the
@@ -579,7 +727,7 @@ pub fn apply_bones(bones: &[Bone], els: &mut [Element]) {
     }
 }
 
-fn interpolate_elements(from: &[Element], to: &[Element], t: f32, tween: Tween) -> Vec<Element> {
+fn interpolate_elements(from: &[Element], to: &[Element], t: f32, tween: Tween, hints: Option<(&[Pt], &[Pt])>) -> Vec<Element> {
     from.iter()
         .enumerate()
         .map(|(i, a)| {
@@ -595,6 +743,7 @@ fn interpolate_elements(from: &[Element], to: &[Element], t: f32, tween: Tween) 
                 (None, None) => None,
             };
             out.three_d = Transform3D::lerp(a.three_d, b.three_d, t);
+            out.color_fx = ColorXform::lerp(a.color_fx, b.color_fx, t);
             out.filters = Filter::lerp_list(&a.filters, &b.filters, t);
             if let (Tween::Shape { .. }, ElementKind::Shape(sa), ElementKind::Shape(sb)) = (tween, &a.kind, &b.kind) {
                 out.kind = ElementKind::Shape(Shape {
@@ -604,7 +753,10 @@ fn interpolate_elements(from: &[Element], to: &[Element], t: f32, tween: Tween) 
                     },
                     width_profile: if t < 0.5 { sa.width_profile.clone() } else { sb.width_profile.clone() },
                     warp: None,
-                    path: morph_paths(&sa.path, &sb.path, t),
+                    path: match hints.filter(|_| i == 0) {
+                        Some((ha, hb)) => crate::geom::morph_paths_hinted(&sa.path, &sb.path, t, ha, hb),
+                        None => morph_paths(&sa.path, &sb.path, t),
+                    },
                     fill: match (sa.fill, sb.fill) {
                         (Some(x), Some(y)) => Some(x.lerp(y, t)),
                         (x, y) => if t < 0.5 { x } else { y },
@@ -624,11 +776,15 @@ pub struct EvalCtx<'a> {
     pub doc: &'a Document,
     /// Global frame (used by movie clips, which run on their own clock).
     pub global_frame: u32,
+    /// A live button: (top-level layer, element) and the state frame it shows.
+    pub button: Option<((usize, usize), u32)>,
+    /// Top-level element being evaluated (set by `evaluate` at depth 0).
+    pub top: std::cell::Cell<Option<(usize, usize)>>,
 }
 
 impl<'a> EvalCtx<'a> {
     pub fn new(doc: &'a Document, global_frame: u32) -> Self {
-        EvalCtx { doc, global_frame }
+        EvalCtx { doc, global_frame, button: None, top: Default::default() }
     }
 }
 
@@ -680,6 +836,12 @@ pub fn evaluate(ctx: &EvalCtx, tl: &Timeline, frame: u32, parent: &Matrix, alpha
             continue;
         }
         let Some((mut elements, local)) = layer_elements_at(layer, frame) else { continue };
+        if layer.anim_parent.is_some() {
+            let pm = layer_parent_matrix(tl, li, frame);
+            for el in &mut elements {
+                el.matrix = pm.concat(&el.matrix);
+            }
+        }
         if let Some(g) = layer_effect_parent(tl, li, LayerKind::Guide) {
             apply_motion_guide(ctx, tl, li, g, frame, &mut elements);
         }
@@ -687,6 +849,9 @@ pub fn evaluate(ctx: &EvalCtx, tl: &Timeline, frame: u32, parent: &Matrix, alpha
         let layer_first = out.len();
         for (ei, el) in elements.iter().enumerate() {
             let first = out.len();
+            if depth == 0 {
+                ctx.top.set(Some((li, ei)));
+            }
             eval_element(ctx, el, parent, alpha, local, outline, depth, out);
             if depth == 0 {
                 for it in &mut out[first..] {
@@ -707,6 +872,22 @@ pub fn evaluate(ctx: &EvalCtx, tl: &Timeline, frame: u32, parent: &Matrix, alpha
             }
         }
     }
+}
+
+/// Layer parenting: the transform that layer `li`'s objects inherit at
+/// `frame` (the parent layer's first object, through its own parents).
+pub fn layer_parent_matrix(tl: &Timeline, li: usize, frame: u32) -> Matrix {
+    let mut m = Matrix::IDENTITY;
+    let mut cur = tl.layers.get(li).and_then(|l| l.anim_parent);
+    let mut guard = 0;
+    while let (Some(p), true) = (cur, guard < 32) {
+        let Some(pl) = tl.layers.get(p) else { break };
+        let pm = layer_elements_at(pl, frame).and_then(|(els, _)| els.first().map(|e| e.matrix)).unwrap_or(Matrix::IDENTITY);
+        m = pm.concat(&m);
+        cur = pl.anim_parent;
+        guard += 1;
+    }
+    m
 }
 
 /// Shapes on mask layer `m` at `frame`, as a clip.
@@ -753,7 +934,11 @@ pub fn eval_element(ctx: &EvalCtx, el: &Element, parent: &Matrix, alpha: f32, lo
             let dur = sym.timeline.frame_count();
             let f = match sym.kind {
                 SymbolKind::MovieClip => ctx.global_frame % dur,
-                SymbolKind::Button => 0,
+                // Up, or Over/Down while live; the Hit frame (4th) never shows
+                SymbolKind::Button => match ctx.button {
+                    Some((src, state)) if ctx.top.get() == Some(src) => state.min(2).min(dur.saturating_sub(1)),
+                    _ => 0,
+                },
                 SymbolKind::Graphic => {
                     let raw = inst.first_frame + local;
                     match inst.loop_mode {
@@ -772,6 +957,11 @@ pub fn eval_element(ctx: &EvalCtx, el: &Element, parent: &Matrix, alpha: f32, lo
                     it.outline = outline;
                 }
             }
+        }
+    }
+    if el.color_fx.is_some() {
+        for it in &mut out[first..] {
+            it.cx = ColorXform::compose(el.color_fx, it.cx);
         }
     }
     // 3D: project everything this object produced.
@@ -891,11 +1081,14 @@ pub fn apply_view(items: &mut [DrawItem], view: &Matrix) {
     }
 }
 
+/// The whole movie at `frame`: scenes play one after another.
 pub fn evaluate_scene(doc: &Document, frame: u32) -> Vec<DrawItem> {
+    let (si, local) = doc.locate_frame(frame);
+    let scene = doc.scene_at(si).unwrap_or(&doc.scene);
     let ctx = EvalCtx::new(doc, frame);
     let mut out = Vec::new();
-    evaluate(&ctx, &doc.scene, frame, &Matrix::IDENTITY, 1.0, 0, &mut out);
-    if let Some(v) = camera_view(doc, &doc.scene, frame) {
+    evaluate(&ctx, scene, local, &Matrix::IDENTITY, 1.0, 0, &mut out);
+    if let Some(v) = camera_view(doc, scene, local) {
         apply_view(&mut out, &v);
     }
     out

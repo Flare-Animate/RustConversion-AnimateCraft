@@ -179,3 +179,74 @@ pub fn info_window(app: &mut App, ctx: &egui::Context) {
         app.info_open = false;
     }
 }
+
+type SceneAction = Box<dyn FnOnce(&mut App)>;
+
+/// Window ▸ Scene (Shift+F2): list, switch, add, duplicate, delete, rename, reorder.
+pub fn scene_window(app: &mut App, ctx: &egui::Context) {
+    if !app.scene_open {
+        return;
+    }
+    let mut open = true;
+    egui::Window::new("Scene").open(&mut open).resizable(false).default_width(240.0).default_pos(app.stage_rect.right_top() + egui::vec2(-280.0, 80.0)).show(ctx, |ui| {
+        let n = app.ed.doc.scene_count();
+        let names: Vec<(String, u32)> = app.ed.doc.scenes().map(|t| (t.name.clone(), t.frame_count())).collect();
+        let mut action: Option<SceneAction> = None;
+        for (i, (name, frames)) in names.iter().enumerate() {
+            ui.horizontal(|ui| {
+                let renaming = app.scene_rename.as_ref().map(|r| r.0 == i).unwrap_or(false);
+                if renaming {
+                    let (_, buf) = app.scene_rename.as_mut().unwrap();
+                    let r = ui.add(egui::TextEdit::singleline(buf).desired_width(130.0));
+                    r.request_focus();
+                    if r.lost_focus() {
+                        let (_, nm) = app.scene_rename.take().unwrap();
+                        action = Some(Box::new(move |app: &mut App| app.ed.rename_scene(i, &nm)));
+                    }
+                } else {
+                    let cur = i == app.ed.scene && app.ed.editing.is_none();
+                    let r = ui.selectable_label(cur, RichText::new(format!("{}. {name}", i + 1)).strong()).on_hover_text("Click to edit this scene · double-click to rename");
+                    if r.double_clicked() {
+                        app.scene_rename = Some((i, name.clone()));
+                    } else if r.clicked() {
+                        action = Some(Box::new(move |app: &mut App| {
+                            app.ed.goto_scene(i);
+                            app.fit_pending = true;
+                        }));
+                    }
+                    ui.label(RichText::new(format!("{frames} f")).small().color(Color32::from_gray(140)));
+                }
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.add_enabled(i + 1 < n, egui::Button::new("v").small()).on_hover_text("Move down (plays later)").clicked() {
+                        action = Some(Box::new(move |app: &mut App| app.ed.move_scene(i, i + 1)));
+                    }
+                    if ui.add_enabled(i > 0, egui::Button::new("^").small()).on_hover_text("Move up (plays earlier)").clicked() {
+                        action = Some(Box::new(move |app: &mut App| app.ed.move_scene(i, i - 1)));
+                    }
+                });
+            });
+        }
+        ui.separator();
+        ui.horizontal(|ui| {
+            if ui.button("Add").on_hover_text("Insert ▸ Scene").clicked() {
+                action = Some(Box::new(|app: &mut App| {
+                    app.ed.add_scene();
+                    app.fit_pending = true;
+                }));
+            }
+            if ui.button("Duplicate").clicked() {
+                let i = app.ed.scene;
+                action = Some(Box::new(move |app: &mut App| app.ed.duplicate_scene(i)));
+            }
+            if ui.add_enabled(n > 1, egui::Button::new("Delete")).clicked() {
+                let i = app.ed.scene;
+                action = Some(Box::new(move |app: &mut App| app.ed.delete_scene(i)));
+            }
+        });
+        ui.label(RichText::new(format!("The movie plays the scenes in this order: {} frames in all.", app.ed.doc.total_frames())).small().color(Color32::from_gray(140)));
+        if let Some(a) = action {
+            a(app);
+        }
+    });
+    app.scene_open = open;
+}

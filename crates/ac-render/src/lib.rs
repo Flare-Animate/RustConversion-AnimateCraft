@@ -40,11 +40,12 @@ pub(crate) fn to_sk_transform(m: &Matrix) -> sk::Transform {
     sk::Transform::from_row(m.a, m.b, m.c, m.d, m.tx, m.ty)
 }
 
-fn shade(c: Color, alpha: f32, tint: Option<(Color, f32)>) -> sk::Color {
+fn shade_cx(c: Color, alpha: f32, tint: Option<(Color, f32)>, cx: Option<ac_core::ColorXform>) -> sk::Color {
     let c = match tint {
         Some((t, amt)) => Color { a: c.a, ..c.lerp(Color { a: c.a, ..t }, amt.clamp(0.0, 1.0)) },
         None => c,
     };
+    let c = cx.map(|x| x.apply(c)).unwrap_or(c);
     sk::Color::from_rgba8(c.r, c.g, c.b, ((c.a as f32) * alpha.clamp(0.0, 1.0)).round() as u8)
 }
 
@@ -78,6 +79,9 @@ fn draw_item(pix: &mut sk::PixmapMut, it: &DrawItem, opts: &RenderOpts, masks: &
     let ts = to_sk_transform(&m);
     let alpha = it.alpha * opts.alpha;
     let tint = opts.tint.or(it.tint);
+    // onion skin's tint replaces colour effects
+    let cx = if opts.tint.is_some() { None } else { it.cx };
+    let shade = |c: Color, a: f32, t: Option<(Color, f32)>| shade_cx(c, a, t, cx);
     let mask = if it.clips.is_empty() { None } else { masks.get(&it.clips, &opts.view, pix.width(), pix.height()) };
     let mask = mask.as_deref();
     if !it.clips.is_empty() && mask.is_none() {
@@ -187,7 +191,7 @@ impl Default for ExportOpts {
 
 impl ExportOpts {
     pub fn frames(&self, doc: &Document) -> std::ops::RangeInclusive<u32> {
-        let n = doc.scene.frame_count().max(1);
+        let n = doc.total_frames();
         let (a, b) = self.range.unwrap_or((0, n - 1));
         a.min(n - 1)..=b.min(n - 1).max(a.min(n - 1))
     }
@@ -419,6 +423,7 @@ impl SvgWriter<'_> {
         let m = it.matrix;
         let col = |c: Color| {
             let c = match it.tint { Some((t, a)) => c.lerp(t, a), None => c };
+            let c = it.cx.map(|x| x.apply(c)).unwrap_or(c);
             (c.to_hex(), c.a as f32 / 255.0 * it.alpha)
         };
         let shape = if let (Some(img), Some((lo, hi))) = (&it.image, it.path.bounds()) {
