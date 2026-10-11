@@ -139,6 +139,32 @@ click a folder's triangle to collapse it.
 - **Scenes**: Insert ▸ Scene, Window ▸ Scene (Shift+F2) to switch, rename,
   reorder, duplicate or delete. Exports play the scenes in order.
 
+### Drawing: merge shapes and drawing objects
+
+- **Merge Drawing** is the default (as in Animate): shapes drawn on a layer
+  become one shape. A new shape **cuts** what is under it, same-coloured fills
+  **merge**, and a line drawn across a fill **splits** it. Press **J** (or
+  Tool properties ▸ Drawing model) for **Object Drawing**, where each shape is
+  its own object.
+- **Selection tool** on merge shapes: click a fill or a line to select just
+  that part (double-click: a fill with its outline, or joined lines); drag a box
+  or lasso to cut out part of a shape. A selection floats until you deselect,
+  then merges where you dropped it. Drag an **edge** to bend it, a **corner**
+  to move it.
+- **Paint Brush** modes (Normal, Fills, Behind, Selection, Inside), **Eraser**
+  modes (Normal, Fills, Lines, Selected Fills, Inside) and **Faucet**, **Paint
+  Bucket** gap size (fills areas enclosed by lines) and **Lock Fill**.
+- Modify ▸ **Combine Objects** (Union, Intersect, Punch, Crop) and ▸ **Shape**
+  (Smooth, Straighten, Optimize); Ctrl+B on a drawing object turns it into
+  merge shape.
+- **Rectangle / Oval Primitive** (in the Rectangle flyout): corner radii,
+  angles and inner radius stay editable in Properties.
+- Stroke **style** (solid, dashed, dotted), **cap** and **join**, and
+  **bitmap fills** from the library, in Properties for drawing objects.
+- **Shape bones**: with the Bone tool, drag *inside* one shape to add bones to
+  it; drag a bone with the Selection tool to bend the shape (poses tween). The
+  **Bind** tool (Bone flyout) chooses which points follow which bone.
+
 ### Objects
 
 - **Group / Ungroup** (Ctrl+G / Ctrl+Shift+G), **Align panel** (Ctrl+K) and
@@ -195,6 +221,7 @@ See [SCRIPTING.md](SCRIPTING.md) for the API, examples and the safety model.
 | W / G | 3D Rotation / Translation | M / U / B | Bone / Width / Fluid Brush |
 | Ctrl+Shift+H | Add shape hint | Shift+F2 | Scene panel |
 | Ctrl+Alt+B | Enable Simple Buttons | Ctrl+drag last frame | Lengthen / shorten a layer |
+| J | Object Drawing on/off | Esc | Deselect (merges a floating shape selection) |
 
 ## UI smoke testing
 

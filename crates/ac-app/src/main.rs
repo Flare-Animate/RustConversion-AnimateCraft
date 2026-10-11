@@ -108,6 +108,8 @@ pub struct App {
     /// Control ▸ Enable Simple Buttons: buttons react to the pointer on the stage.
     pub(crate) simple_buttons: bool,
     pub(crate) scene_open: bool,
+    /// Bind tool: the shape bone being bound to.
+    pub(crate) bind_bone: Option<(ac_core::Selection, usize)>,
     pub(crate) scene_rename: Option<(usize, String)>,
     pub(crate) info_cache: Option<((u64, u32), tiny_skia::Pixmap)>,
     last_sel: (Vec<ac_core::Selection>, Option<ac_core::FrameSel>),
@@ -190,6 +192,7 @@ impl App {
             motion: Default::default(),
             simple_buttons: false,
             scene_open: false,
+            bind_bone: None,
             scene_rename: None,
             info_cache: None,
             last_sel: (vec![], None),
@@ -422,7 +425,7 @@ impl App {
         }
         if !busy && k(none, Key::Escape) {
             if !self.ed.selection.is_empty() || self.ed.frame_sel.is_some() {
-                self.ed.selection.clear();
+                self.ed.deselect();
                 self.ed.frame_sel = None;
             } else if self.ed.editing.is_some() {
                 self.ed.exit_to_scene();
@@ -460,7 +463,7 @@ impl App {
         if ui.add_enabled(has_sel, egui::Button::new("Delete").shortcut_text("Del")).clicked() { self.delete(); ui.close_menu(); }
         ui.separator();
         if ui.add(egui::Button::new("Select All").shortcut_text("Ctrl+A")).clicked() { self.ed.select_all(); ui.close_menu(); }
-        if ui.add_enabled(has_sel, egui::Button::new("Deselect All").shortcut_text("Esc")).clicked() { self.ed.selection.clear(); ui.close_menu(); }
+        if ui.add_enabled(has_sel, egui::Button::new("Deselect All").shortcut_text("Esc")).clicked() { self.ed.deselect(); ui.close_menu(); }
         ui.separator();
         if ui.add_enabled(has_sel, egui::Button::new("Convert to Symbol…").shortcut_text("F8")).clicked() { self.open_symbol_dialog(true); ui.close_menu(); }
         let inst = self.ed.selected_element().and_then(|e| if let ElementKind::Instance(i) = e.kind { Some(i.symbol) } else { None });
@@ -471,7 +474,31 @@ impl App {
         if ui.add_enabled(has_sel, egui::Button::new("Group").shortcut_text("Ctrl+G")).clicked() { self.ed.group_selected(); ui.close_menu(); }
         let has_group = self.ed.selection.iter().any(|s| matches!(self.ed.element_at(*s).map(|e| e.kind), Some(ElementKind::Group(_))));
         if ui.add_enabled(has_group, egui::Button::new("Ungroup").shortcut_text("Ctrl+Shift+G")).clicked() { self.ed.ungroup_selected(); ui.close_menu(); }
+        ui.menu_button("Combine Objects", |ui| {
+            use ac_core::merge::BoolOp;
+            let float = self.ed.merge_float().is_some();
+            if ui.add_enabled(has_sel, egui::Button::new("Union")).on_hover_text("Drawing objects → one object; a shape selection → a drawing object").clicked() {
+                if float {
+                    self.ed.merge_to_object();
+                } else if let Err(e) = self.ed.combine_objects(BoolOp::Union) {
+                    self.status = e;
+                }
+                ui.close_menu();
+            }
+            for (label, op) in [("Intersect", BoolOp::Intersect), ("Punch", BoolOp::Punch), ("Crop", BoolOp::Crop)] {
+                if ui.add_enabled(has_sel, egui::Button::new(label)).clicked() {
+                    if let Err(e) = self.ed.combine_objects(op) {
+                        self.status = e;
+                    }
+                    ui.close_menu();
+                }
+            }
+        });
         ui.menu_button("Shape", |ui| {
+            if ui.add_enabled(has_sel, egui::Button::new("Smooth")).clicked() { self.ed.shape_cleanup("smooth"); ui.close_menu(); }
+            if ui.add_enabled(has_sel, egui::Button::new("Straighten")).clicked() { self.ed.shape_cleanup("straighten"); ui.close_menu(); }
+            if ui.add_enabled(has_sel, egui::Button::new("Optimize")).clicked() { self.ed.shape_cleanup("optimize"); ui.close_menu(); }
+            ui.separator();
             let ok = self.ed.shape_tween_keys().is_some();
             if ui.add_enabled(ok, egui::Button::new("Add Shape Hint").shortcut_text("Ctrl+Shift+H")).clicked() { self.add_shape_hint(); ui.close_menu(); }
             if ui.add_enabled(ok, egui::Button::new("Remove All Hints")).clicked() { self.ed.remove_all_shape_hints(); ui.close_menu(); }

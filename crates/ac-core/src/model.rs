@@ -63,6 +63,93 @@ pub struct Shape {
     /// Asset Warp pins (non-destructive: `path` is the warped result).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub warp: Option<Warp>,
+    /// Rectangle / Oval Primitive: parameters stay editable; `path` follows them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub primitive: Option<Primitive>,
+    /// Stroke style: dashes, caps and joins.
+    #[serde(default, skip_serializing_if = "StrokeStyle::is_default")]
+    pub stroke_style: StrokeStyle,
+    /// Bitmap fill (a library bitmap, tiled); overrides fill and gradient.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bitmap_fill: Option<BitmapFill>,
+    /// Shape armature (bones inside this shape, bound with the Bind tool).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rig: Option<crate::rig::ShapeRig>,
+}
+
+/// Rectangle / Oval Primitive parameters (in the shape's own coordinates).
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub enum Primitive {
+    /// Corner radii: top-left, top-right, bottom-right, bottom-left (negative = inset).
+    Rect { x: f32, y: f32, w: f32, h: f32, radius: [f32; 4] },
+    /// Angles in degrees (start = end: full oval); inner radius in % (0 = solid).
+    Oval { cx: f32, cy: f32, rx: f32, ry: f32, start: f32, end: f32, inner: f32, close: bool },
+}
+
+impl Primitive {
+    pub fn path(&self) -> Path {
+        match *self {
+            Primitive::Rect { x, y, w, h, radius } => Path::rounded_rect4(x, y, w, h, radius),
+            Primitive::Oval { cx, cy, rx, ry, start, end, inner, close } => Path::oval_arc(cx, cy, rx, ry, start, end, inner, close),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Dash {
+    #[default]
+    Solid,
+    Dashed,
+    Dotted,
+}
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Cap {
+    None,
+    #[default]
+    Round,
+    Square,
+}
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Join {
+    Miter,
+    #[default]
+    Round,
+    Bevel,
+}
+
+/// Properties ▸ Fill and stroke ▸ Style / Cap / Join.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct StrokeStyle {
+    pub dash: Dash,
+    pub cap: Cap,
+    pub join: Join,
+    /// Dash length and gap, in stroke widths (Dashed).
+    #[serde(default = "default_dash")]
+    pub dash_len: f32,
+    #[serde(default = "default_dash")]
+    pub gap: f32,
+}
+fn default_dash() -> f32 {
+    3.0
+}
+
+impl Default for StrokeStyle {
+    fn default() -> Self {
+        StrokeStyle { dash: Dash::Solid, cap: Cap::Round, join: Join::Round, dash_len: 3.0, gap: 3.0 }
+    }
+}
+
+impl StrokeStyle {
+    pub fn is_default(&self) -> bool {
+        self.dash == Dash::Solid && self.cap == Cap::Round && self.join == Join::Round
+    }
+}
+
+/// Fill a shape with a library bitmap (tiled, in the shape's coordinates).
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct BitmapFill {
+    pub bitmap: crate::bitmap::BitmapId,
+    pub matrix: Matrix,
 }
 
 impl Shape {
@@ -162,6 +249,8 @@ impl TextEl {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+// Elements live in Vecs on keyframes; boxing Shape would only add indirection.
+#[allow(clippy::large_enum_variant)]
 pub enum ElementKind {
     Shape(Shape),
     Instance(Instance),
@@ -170,6 +259,9 @@ pub enum ElementKind {
     Group(Vec<Element>),
     /// A library bitmap placed on stage (drawn at 0,0 … width,height).
     Bitmap(BitmapRef),
+    /// Merge Drawing: the layer's raw shape, where drawing cuts and merges
+    /// (Flash's planar shape). At most one per keyframe, kept at the bottom.
+    Canvas(crate::merge::MergeShape),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
@@ -531,6 +623,31 @@ impl Default for Document {
 }
 
 impl Document {
+    /// A copy with every floating merge selection merged back (for saving).
+    pub fn with_floats_committed(&self) -> Document {
+        fn fix(els: &mut [Element]) {
+            for el in els {
+                match &mut el.kind {
+                    ElementKind::Canvas(c) => {
+                        c.commit_float();
+                    }
+                    ElementKind::Group(ch) => fix(ch),
+                    _ => {}
+                }
+            }
+        }
+        let mut d = self.clone();
+        let mut tls: Vec<&mut Timeline> = std::iter::once(&mut d.scene).chain(d.more_scenes.iter_mut()).collect();
+        tls.extend(d.library.iter_mut().map(|s| &mut s.timeline));
+        for t in tls {
+            for l in &mut t.layers {
+                for kf in l.keyframes.values_mut() {
+                    fix(&mut kf.elements);
+                }
+            }
+        }
+        d
+    }
     /// Number of scenes (at least one).
     pub fn scene_count(&self) -> usize {
         1 + self.more_scenes.len()
@@ -630,6 +747,9 @@ pub struct DrawItem {
     pub image: Option<Arc<Image>>,
     /// Advanced colour effect (composed through nested symbols).
     pub cx: Option<ColorXform>,
+    pub stroke_style: StrokeStyle,
+    /// Bitmap fill: the image and its placement in the item's space.
+    pub pattern: Option<(Arc<Image>, Matrix)>,
 }
 
 /// The shapes of a mask layer, in the same space as item matrices.
@@ -640,7 +760,7 @@ pub struct Clip {
 
 impl DrawItem {
     pub fn new(path: Path, matrix: Matrix) -> DrawItem {
-        DrawItem { path, fill: None, stroke: None, matrix, alpha: 1.0, tint: None, outline: None, src: None, gradient: None, fx: vec![], clips: vec![], image: None, cx: None }
+        DrawItem { path, fill: None, stroke: None, matrix, alpha: 1.0, tint: None, outline: None, src: None, gradient: None, fx: vec![], clips: vec![], image: None, cx: None, stroke_style: StrokeStyle { dash: Dash::Solid, cap: Cap::Round, join: Join::Round, dash_len: 3.0, gap: 3.0 }, pattern: None }
     }
 }
 
@@ -745,6 +865,15 @@ fn interpolate_elements(from: &[Element], to: &[Element], t: f32, tween: Tween, 
             out.three_d = Transform3D::lerp(a.three_d, b.three_d, t);
             out.color_fx = ColorXform::lerp(a.color_fx, b.color_fx, t);
             out.filters = Filter::lerp_list(&a.filters, &b.filters, t);
+            // shape armatures: poses tween with classic and shape tweens
+            if let (ElementKind::Shape(sa), ElementKind::Shape(sb)) = (&a.kind, &b.kind) {
+                if let (Some(ra), Some(rb), ElementKind::Shape(so)) = (&sa.rig, &sb.rig, &mut out.kind) {
+                    so.rig = Some(crate::rig::ShapeRig::lerp(ra, rb, t));
+                }
+            }
+            if let (Tween::Shape { .. }, ElementKind::Canvas(ca), ElementKind::Canvas(cb)) = (tween, &a.kind, &b.kind) {
+                out.kind = ElementKind::Canvas(crate::merge::morph(ca, cb, t));
+            }
             if let (Tween::Shape { .. }, ElementKind::Shape(sa), ElementKind::Shape(sb)) = (tween, &a.kind, &b.kind) {
                 out.kind = ElementKind::Shape(Shape {
                     gradient: match (&sa.gradient, &sb.gradient) {
@@ -753,6 +882,13 @@ fn interpolate_elements(from: &[Element], to: &[Element], t: f32, tween: Tween, 
                     },
                     width_profile: if t < 0.5 { sa.width_profile.clone() } else { sb.width_profile.clone() },
                     warp: None,
+                    primitive: None,
+                    stroke_style: if t < 0.5 { sa.stroke_style } else { sb.stroke_style },
+                    bitmap_fill: if t < 0.5 { sa.bitmap_fill } else { sb.bitmap_fill },
+                    rig: match (&sa.rig, &sb.rig) {
+                        (Some(x), Some(y)) => Some(crate::rig::ShapeRig::lerp(x, y, t)),
+                        _ => None,
+                    },
                     path: match hints.filter(|_| i == 0) {
                         Some((ha, hb)) => crate::geom::morph_paths_hinted(&sa.path, &sb.path, t, ha, hb),
                         None => morph_paths(&sa.path, &sb.path, t),
@@ -908,7 +1044,24 @@ pub fn eval_element(ctx: &EvalCtx, el: &Element, parent: &Matrix, alpha: f32, lo
     let a = alpha * el.alpha;
     let first = out.len();
     match &el.kind {
-        ElementKind::Shape(s) => shape_items(s, m, a, el.tint, outline, out),
+        ElementKind::Shape(s) => {
+            let posed;
+            let s = match &s.rig {
+                Some(r) if !r.bones.is_empty() => {
+                    posed = Shape { path: r.deform(&s.path), ..s.clone() };
+                    &posed
+                }
+                _ => s,
+            };
+            shape_items(s, m, a, el.tint, outline, out);
+            let pattern = s.bitmap_fill.and_then(|b| ctx.doc.bitmap(b.bitmap).and_then(|asset| asset.image()).map(|img| (img, b.matrix)));
+            for it in &mut out[first..] {
+                it.stroke_style = s.stroke_style;
+                if it.fill.is_some() || it.gradient.is_some() {
+                    it.pattern = pattern.clone();
+                }
+            }
+        }
         ElementKind::Text(t) => out.push(DrawItem { fill: Some(t.color), alpha: a, tint: el.tint, outline, ..DrawItem::new(t.outline(), m) }),
         ElementKind::Group(children) => {
             for c in children {
@@ -917,6 +1070,16 @@ pub fn eval_element(ctx: &EvalCtx, el: &Element, parent: &Matrix, alpha: f32, lo
             for it in &mut out[first..] {
                 if it.tint.is_none() {
                     it.tint = el.tint;
+                }
+            }
+        }
+        ElementKind::Canvas(c) => {
+            for part in std::iter::once(c).chain(c.float.as_deref()) {
+                for r in &part.fills {
+                    out.push(DrawItem { fill: r.fill, gradient: r.gradient.clone(), alpha: a, tint: el.tint, outline, ..DrawItem::new(r.path(), m) });
+                }
+                for st in &part.strokes {
+                    out.push(DrawItem { stroke: Some(st.stroke), alpha: a, tint: el.tint, outline, ..DrawItem::new(st.path(), m) });
                 }
             }
         }

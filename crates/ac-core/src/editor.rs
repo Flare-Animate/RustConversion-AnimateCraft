@@ -2,7 +2,7 @@
 //! the CLI and (later) the MCP/scripting surface all share one command set.
 
 use crate::frames::{self, FrameClip};
-use crate::geom::{pt, Matrix, Pt};
+use crate::geom::{pt, Matrix, Path, Pt};
 use crate::model::*;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -64,6 +64,8 @@ pub struct Editor {
     pub button_state: Option<((usize, usize), u32)>,
     /// Current scene (index into `doc.scenes()`).
     pub scene: usize,
+    /// Scripts: draw.* commands draw into the merge shape instead of adding objects.
+    pub script_merge: bool,
 }
 
 #[derive(Clone)]
@@ -92,6 +94,7 @@ impl Editor {
             multi_frame: None,
             button_state: None,
             scene: 0,
+            script_merge: false,
         }
     }
 
@@ -269,6 +272,7 @@ impl Editor {
     /// Move the playhead. Keeps the stage selection only if it stays valid.
     pub fn set_frame(&mut self, f: u32) {
         if f != self.frame {
+            self.commit_floats();
             self.frame = f;
             self.selection.clear();
         }
@@ -411,6 +415,7 @@ impl Editor {
     fn for_each_layer(&mut self, label: &str, mut f: impl FnMut(&mut Layer, &FrameSel)) {
         let sel = self.frame_target();
         self.checkpoint(label);
+        self.commit_floats();
         let tl = self.timeline_mut();
         for li in sel.layer0..=sel.layer1.min(tl.layers.len().saturating_sub(1)) {
             f(&mut tl.layers[li], &sel);
@@ -722,6 +727,7 @@ impl Editor {
         if self.layer_locked() {
             return None;
         }
+        self.commit_floats();
         self.checkpoint(&format!("Add {}", el.name));
         let li = self.layer;
         let mut el = el;
@@ -763,6 +769,9 @@ impl Editor {
     }
     /// Click: replace selection. Shift-click: toggle.
     pub fn select(&mut self, s: Option<Selection>, toggle: bool) {
+        if !toggle && s.map(|x| !self.selection.contains(&x)).unwrap_or(true) {
+            self.commit_floats();
+        }
         match (s, toggle) {
             (Some(s), true) => {
                 if let Some(i) = self.selection.iter().position(|x| *x == s) {
@@ -782,6 +791,8 @@ impl Editor {
         }
     }
     pub fn select_all(&mut self) {
+        self.commit_floats();
+        self.lift_all_canvases();
         let items = self.evaluate_current(self.frame);
         let mut v: Vec<Selection> = items.iter().filter_map(|it| it.src).filter(|(l, _)| self.layer_editable(*l)).map(|(layer, element)| Selection { layer, element }).collect();
         v.sort();
@@ -791,6 +802,9 @@ impl Editor {
     }
     /// Marquee: select elements whose bounds lie fully inside the rectangle.
     pub fn select_in_rect(&mut self, a: Pt, b: Pt, add: bool) {
+        if !add {
+            self.commit_floats();
+        }
         let (lo, hi) = (pt(a.x.min(b.x), a.y.min(b.y)), pt(a.x.max(b.x), a.y.max(b.y)));
         let mut found: Vec<Selection> = Vec::new();
         let items = self.evaluate_current(self.frame);
@@ -806,6 +820,10 @@ impl Editor {
             }
         }
         for ((layer, element), (l, h)) in bounds {
+            // merge shapes are cut by the marquee instead (merge_select_area)
+            if matches!(self.element_at(Selection { layer, element }).map(|e| e.kind), Some(ElementKind::Canvas(_))) {
+                continue;
+            }
             if l.x >= lo.x && l.y >= lo.y && h.x <= hi.x && h.y <= hi.y {
                 found.push(Selection { layer, element });
             }
@@ -837,7 +855,28 @@ impl Editor {
     pub fn bounds_of(&self, sels: &[Selection]) -> Option<(Pt, Pt)> {
         let items = self.evaluate_current(self.frame);
         let mut b: Option<(Pt, Pt)> = None;
-        for it in items.iter().filter(|it| it.src.map(|(l, e)| sels.contains(&Selection { layer: l, element: e })).unwrap_or(false)) {
+        // merge shapes with a floating selection: only the selection counts
+        let mut floats = vec![];
+        for s in sels {
+            if let Some(el) = self.element_at(*s) {
+                if let ElementKind::Canvas(c) = &el.kind {
+                    if let Some((lo, hi)) = c.float.as_ref().and_then(|f| f.bounds()) {
+                        let q = [lo, pt(hi.x, lo.y), hi, pt(lo.x, hi.y)].map(|x| el.matrix.apply(x));
+                        let (mut a, mut c2) = (q[0], q[0]);
+                        for x in q {
+                            a = pt(a.x.min(x.x), a.y.min(x.y));
+                            c2 = pt(c2.x.max(x.x), c2.y.max(x.y));
+                        }
+                        b = Some(match b {
+                            None => (a, c2),
+                            Some((p0, p1)) => (pt(p0.x.min(a.x), p0.y.min(a.y)), pt(p1.x.max(c2.x), p1.y.max(c2.y))),
+                        });
+                        floats.push(*s);
+                    }
+                }
+            }
+        }
+        for it in items.iter().filter(|it| it.src.map(|(l, e)| sels.contains(&Selection { layer: l, element: e }) && !floats.contains(&Selection { layer: l, element: e })).unwrap_or(false)) {
             if let Some((lo, hi)) = it.path.transformed(&it.matrix).bounds() {
                 b = Some(match b {
                     None => (lo, hi),
@@ -871,13 +910,30 @@ impl Editor {
             }
             // parented layers store objects in the parent's space; tools work in stage space
             let pm = self.layer_parent_at(li).and_then(|m| m.invert().map(|i| (m, i)));
-            let wrapped = |el: &mut Element| match pm {
+            let parented = |el: &mut Element| match pm {
                 Some((m, inv)) => {
                     el.matrix = m.concat(&el.matrix);
                     f(el);
                     el.matrix = inv.concat(&el.matrix);
                 }
                 None => f(el),
+            };
+            // a merge shape with a floating selection: the edit moves the selection only
+            let wrapped = |el: &mut Element| {
+                if let ElementKind::Canvas(c) = &el.kind {
+                    if c.float.is_some() {
+                        let mut tmp = el.clone();
+                        parented(&mut tmp);
+                        let d = el.matrix.invert().unwrap_or(Matrix::IDENTITY).concat(&tmp.matrix);
+                        if let ElementKind::Canvas(c) = &mut el.kind {
+                            if let Some(fl) = c.float.as_mut() {
+                                fl.transform(&d);
+                            }
+                        }
+                        return;
+                    }
+                }
+                parented(el)
             };
             let f = &wrapped;
             if self.motion_span(li, self.frame).is_some() {
@@ -1094,6 +1150,18 @@ impl Editor {
         self.checkpoint(if sels.len() == 1 { "Delete" } else { "Delete Objects" });
         sels.sort();
         let mut removed = 0;
+        // merge shapes: delete the floating selection, keep the rest of the shape
+        sels.retain(|s| {
+            let Some((key, ei)) = self.canvas_at(s.layer).filter(|(_, ei)| *ei == s.element) else { return true };
+            match self.canvas_mut(s.layer, key, ei) {
+                Some(c) if c.float.is_some() => {
+                    c.float = None;
+                    removed += 1;
+                    false
+                }
+                _ => true,
+            }
+        });
         for s in sels.iter().rev() {
             let e = s.element;
             self.remap_bones(s.layer, |i| if i == e { None } else if i > e { Some(i - 1) } else { Some(i) });
@@ -1122,7 +1190,20 @@ impl Editor {
     }
 
     pub fn copy_selected(&mut self) -> usize {
-        self.element_clip = self.selection.iter().filter_map(|s| self.element_at(*s).map(|e| (e, s.layer))).collect();
+        // a merge selection copies just the selected piece
+        self.element_clip = self
+            .selection
+            .iter()
+            .filter_map(|s| {
+                let mut e = self.element_at(*s)?;
+                if let ElementKind::Canvas(c) = &e.kind {
+                    if let Some(f) = &c.float {
+                        e.kind = ElementKind::Canvas((**f).clone());
+                    }
+                }
+                Some((e, s.layer))
+            })
+            .collect();
         self.element_clip.len()
     }
     pub fn cut_selected(&mut self) {
@@ -1140,18 +1221,40 @@ impl Editor {
         }
         let clip = self.element_clip.clone();
         self.checkpoint(if in_place { "Paste in Place" } else { "Paste" });
+        self.commit_floats();
         let li = self.layer;
+        // merge-shape pieces land on the layer's shape as a floating selection
+        let (pieces, objects): (Vec<_>, Vec<_>) = clip.into_iter().partition(|(e, _)| matches!(e.kind, ElementKind::Canvas(_)));
+        let mut sel = vec![];
+        if !pieces.is_empty() {
+            let inv = self.canvas_inv(li);
+            let has = self.canvas_at(li).is_some();
+            if let Some((key, ei)) = self.canvas_for_drawing(li) {
+                for (el, _) in pieces {
+                    let ElementKind::Canvas(mut piece) = el.kind else { continue };
+                    piece.float = None;
+                    let off = if in_place { Matrix::IDENTITY } else { Matrix::translate(10.0, 10.0) };
+                    let m = if has { inv } else { Matrix::IDENTITY }.concat(&off).concat(&el.matrix);
+                    piece.transform(&m);
+                    if let Some(c) = self.canvas_mut(li, key, ei) {
+                        c.add_to_float(piece);
+                    }
+                }
+                sel.push(Selection { layer: li, element: ei });
+            }
+        }
         let Some(start) = self.target_keyframe(li, false) else { return };
         let kf = self.timeline_mut().layers[li].keyframes.get_mut(&start).unwrap();
         let first = kf.elements.len();
-        for (mut el, _) in clip {
+        for (mut el, _) in objects {
             if !in_place {
                 el.matrix = Matrix::translate(10.0, 10.0).concat(&el.matrix);
             }
             kf.elements.push(el);
         }
         let n = kf.elements.len();
-        self.selection = (first..n).map(|element| Selection { layer: li, element }).collect();
+        sel.extend((first..n).map(|element| Selection { layer: li, element }));
+        self.selection = sel;
         self.frame_sel = None;
     }
     pub fn duplicate(&mut self) {
@@ -1200,6 +1303,7 @@ impl Editor {
     /// F8 – Convert to Symbol. All selected objects on the first selected
     /// layer go into the new symbol; registration point = centre of their bounds.
     pub fn convert_to_symbol(&mut self, name: &str, kind: SymbolKind) -> Option<SymbolId> {
+        self.detach_floats();
         let first = *self.selection.first()?;
         let sels: Vec<Selection> = self.selection.iter().copied().filter(|s| s.layer == first.layer).collect();
         let els: Vec<Element> = sels.iter().filter_map(|s| self.element_at(*s)).collect();
@@ -1244,6 +1348,16 @@ impl Editor {
     pub fn break_apart(&mut self) {
         let Some(&s) = self.selection.first() else { return };
         let Some(el) = self.element_at(s) else { return };
+        if matches!(el.kind, ElementKind::Shape(_)) && self.layer_editable(s.layer) {
+            // drawing objects (and text broken twice) become merge shape
+            let shapes: Vec<Selection> = self.selection.iter().rev().copied().filter(|x| matches!(self.element_at(*x).map(|e| e.kind), Some(ElementKind::Shape(_)))).collect();
+            let mark = self.undo_depth();
+            for x in shapes {
+                self.shape_to_merge(x);
+            }
+            self.squash_undo(mark, "Break Apart");
+            return;
+        }
         if matches!(el.kind, ElementKind::Group(_)) {
             self.ungroup_selected();
             return;
@@ -1517,6 +1631,641 @@ impl Editor {
             ElementKind::Shape(s) => s.fill = Some(color),
             ElementKind::Instance(_) | ElementKind::Bitmap(_) | ElementKind::Group(_) => el.tint = Some((color, 0.6)),
             ElementKind::Text(t) => t.color = color,
+            ElementKind::Canvas(c) => {
+                let all: Vec<crate::merge::Part> = (0..c.fills.len()).map(crate::merge::Part::Fill).collect();
+                c.set_fill(&all, Some(color), None);
+            }
+        });
+    }
+}
+
+// ------------------------------------------------------------ merge drawing
+impl Editor {
+    /// The merge shape (canvas) on `layer` at the playhead: (keyframe, element index).
+    pub fn canvas_at(&self, layer: usize) -> Option<(u32, usize)> {
+        let l = self.timeline().layers.get(layer)?;
+        let (st, kf, _) = l.span_at(self.frame)?;
+        let ei = kf.elements.iter().position(|e| matches!(e.kind, ElementKind::Canvas(_)))?;
+        Some((st, ei))
+    }
+    fn canvas_mut(&mut self, layer: usize, key: u32, ei: usize) -> Option<&mut crate::merge::MergeShape> {
+        match &mut self.timeline_mut().layers.get_mut(layer)?.keyframes.get_mut(&key)?.elements.get_mut(ei)?.kind {
+            ElementKind::Canvas(c) => Some(c),
+            _ => None,
+        }
+    }
+    pub fn canvas(&self, layer: usize) -> Option<&crate::merge::MergeShape> {
+        let (k, ei) = self.canvas_at(layer)?;
+        match &self.timeline().layers[layer].keyframes[&k].elements[ei].kind {
+            ElementKind::Canvas(c) => Some(c),
+            _ => None,
+        }
+    }
+    /// Stage → canvas coordinates on `layer`.
+    fn canvas_inv(&self, layer: usize) -> Matrix {
+        let (_, ei) = self.canvas_at(layer).unwrap_or((0, 0));
+        self.element_at(Selection { layer, element: ei }).and_then(|e| e.matrix.invert()).unwrap_or(Matrix::IDENTITY)
+    }
+    /// Deselect: every floating merge selection in this timeline merges back.
+    pub fn commit_floats(&mut self) -> bool {
+        let mut any = false;
+        for l in &mut self.timeline_mut().layers {
+            for kf in l.keyframes.values_mut() {
+                for el in &mut kf.elements {
+                    if let ElementKind::Canvas(c) = &mut el.kind {
+                        any |= c.commit_float();
+                    }
+                }
+            }
+        }
+        any
+    }
+    /// Commit everything in every timeline (before saving).
+    pub fn commit_all_floats(&mut self) {
+        let doc = &mut self.doc;
+        let mut tls: Vec<&mut Timeline> = std::iter::once(&mut doc.scene).chain(doc.more_scenes.iter_mut()).collect();
+        tls.extend(doc.library.iter_mut().map(|s| &mut s.timeline));
+        for t in tls {
+            for l in &mut t.layers {
+                for kf in l.keyframes.values_mut() {
+                    for el in &mut kf.elements {
+                        if let ElementKind::Canvas(c) = &mut el.kind {
+                            c.commit_float();
+                        }
+                    }
+                }
+            }
+        }
+    }
+    /// Clear the stage selection (merging floating pieces back).
+    pub fn deselect(&mut self) {
+        self.commit_floats();
+        self.selection.clear();
+    }
+
+    /// The canvas on the current layer for drawing, created (at the bottom) if needed.
+    fn canvas_for_drawing(&mut self, li: usize) -> Option<(u32, usize)> {
+        let key = self.target_keyframe(li, false)?;
+        let l = &mut self.timeline_mut().layers[li];
+        let kf = l.keyframes.get_mut(&key)?;
+        if let Some(ei) = kf.elements.iter().position(|e| matches!(e.kind, ElementKind::Canvas(_))) {
+            return Some((key, ei));
+        }
+        let mut el = Element::shape("Shape", Shape::default());
+        el.kind = ElementKind::Canvas(Default::default());
+        kf.elements.insert(0, el);
+        self.remap_bones(li, |i| Some(i + 1));
+        Some((key, 0))
+    }
+
+    /// Draw in Merge Drawing mode (Object Drawing off): the path cuts and
+    /// merges with the layer's shape. `path` is in stage coordinates.
+    pub fn merge_draw(&mut self, path: &Path, fill: Option<Color>, gradient: Option<Gradient>, stroke: Option<Stroke>) -> bool {
+        if self.layer_locked() {
+            return false;
+        }
+        self.checkpoint("Draw Shape");
+        self.commit_floats();
+        let li = self.layer;
+        let inv = self.canvas_inv(li);
+        let Some((key, ei)) = self.canvas_for_drawing(li) else { return false };
+        let local = path.transformed(&if self.canvas_at(li).is_some() { inv } else { Matrix::IDENTITY });
+        if let Some(c) = self.canvas_mut(li, key, ei) {
+            c.add_path(&local, fill, gradient, stroke);
+        }
+        self.selection.clear();
+        true
+    }
+    /// Brush in a paint mode; `area` polygons in stage coordinates; `start` is
+    /// where the stroke began (Paint Inside).
+    pub fn merge_paint(&mut self, area: &[Vec<Pt>], fill: Color, mode: crate::merge::PaintMode, start: Pt) -> bool {
+        if self.layer_locked() {
+            return false;
+        }
+        let li = self.layer;
+        let inv = self.canvas_inv(li);
+        let local: Vec<Vec<Pt>> = area.iter().map(|c| c.iter().map(|x| inv.apply(*x)).collect()).collect();
+        let selected = self.float_parts(li);
+        self.checkpoint("Brush");
+        // Paint Selection works on the floating selection's fills: merge it back first
+        let sel_bounds = self.canvas(li).and_then(|c| c.float.as_ref().map(|f| f.fills.iter().map(|r| r.contours.clone()).collect::<Vec<_>>()));
+        self.commit_floats();
+        let Some((key, ei)) = self.canvas_for_drawing(li) else { return false };
+        let Some(c) = self.canvas_mut(li, key, ei) else { return false };
+        let inside = c.fill_at(inv.apply(start));
+        let sel: Vec<crate::merge::Part> = match (&sel_bounds, mode) {
+            (Some(regions), crate::merge::PaintMode::Selection) => (0..c.fills.len()).filter(|&i| regions.iter().any(|r| r.first().and_then(|o| o.first()).map(|x| c.fills[i].contains(*x)).unwrap_or(false))).map(crate::merge::Part::Fill).collect(),
+            _ => selected,
+        };
+        c.paint(&local, fill, mode, &sel, inside);
+        true
+    }
+    /// Eraser in a mode over `area` (stage coordinates).
+    pub fn merge_erase(&mut self, area: &[Vec<Pt>], mode: crate::merge::PaintMode, start: Pt, label: Option<&str>) -> bool {
+        let li = self.layer;
+        let Some((key, ei)) = self.canvas_at(li) else { return false };
+        if !self.layer_editable(li) {
+            return false;
+        }
+        let inv = self.canvas_inv(li);
+        let local: Vec<Vec<Pt>> = area.iter().map(|c| c.iter().map(|x| inv.apply(*x)).collect()).collect();
+        match label {
+            Some(l) => self.checkpoint(l),
+            None => self.revision += 1,
+        }
+        let Some(c) = self.canvas_mut(li, key, ei) else { return false };
+        if mode == crate::merge::PaintMode::Selection {
+            if let Some(f) = c.float.as_mut() {
+                let all: Vec<crate::merge::Part> = (0..f.fills.len()).map(crate::merge::Part::Fill).collect();
+                f.erase(&local, mode, &all, None);
+            }
+            return true;
+        }
+        let inside = c.fill_at(inv.apply(start));
+        c.erase(&local, mode, &[], inside);
+        true
+    }
+    /// Faucet: delete the fill or stroke segment at `p` (stage coordinates).
+    pub fn merge_faucet(&mut self, p: Pt) -> bool {
+        let li = self.layer;
+        let Some((key, ei)) = self.canvas_at(li) else { return false };
+        if !self.layer_editable(li) {
+            return false;
+        }
+        let x = self.canvas_inv(li).apply(p);
+        let Some(part) = self.canvas(li).and_then(|c| c.hit(x, 3.0)) else { return false };
+        self.checkpoint("Faucet");
+        if let Some(c) = self.canvas_mut(li, key, ei) {
+            c.extract(&[part]);
+        }
+        true
+    }
+    fn float_parts(&self, li: usize) -> Vec<crate::merge::Part> {
+        self.canvas(li).and_then(|c| c.float.as_ref()).map(|f| (0..f.fills.len()).map(crate::merge::Part::Fill).collect()).unwrap_or_default()
+    }
+
+    /// The merge part under `p` on an editable layer: (layer, part, is it already selected).
+    pub fn merge_part_at(&self, p: Pt, tol: f32) -> Option<(usize, Option<crate::merge::Part>, bool)> {
+        let hit = self.hit_test(p)?;
+        let el = self.element_at(hit)?;
+        let ElementKind::Canvas(c) = &el.kind else { return None };
+        let x = el.matrix.invert()?.apply(p);
+        if c.float_hit(x, tol) {
+            return Some((hit.layer, None, true));
+        }
+        Some((hit.layer, c.hit(x, tol), false))
+    }
+    /// Click a merge part: lift it (double-click: with its connected strokes)
+    /// into the floating selection. `add` = Shift.
+    pub fn merge_select(&mut self, layer: usize, part: crate::merge::Part, connected: bool, add: bool) {
+        let Some((key, ei)) = self.canvas_at(layer) else { return };
+        if !add {
+            self.commit_floats();
+            self.selection.clear();
+        }
+        self.revision += 1;
+        if let Some(c) = self.canvas_mut(layer, key, ei) {
+            let parts = if connected { c.connected(part) } else { vec![part] };
+            c.lift(&parts, true);
+        }
+        let s = Selection { layer, element: ei };
+        if !self.selection.contains(&s) {
+            self.selection.push(s);
+            self.selection.sort();
+        }
+        self.layer = layer;
+        self.frame_sel = None;
+    }
+    /// Marquee / lasso over merge shapes: cuts out what is inside and selects it.
+    pub fn merge_select_area(&mut self, area: &[Vec<Pt>], add: bool) -> bool {
+        let mut any = false;
+        for li in 0..self.timeline().layers.len() {
+            if !self.layer_editable(li) {
+                continue;
+            }
+            let Some((key, ei)) = self.canvas_at(li) else { continue };
+            let inv = self.canvas_inv(li);
+            let local: Vec<Vec<Pt>> = area.iter().map(|c| c.iter().map(|x| inv.apply(*x)).collect()).collect();
+            let Some(c) = self.canvas_mut(li, key, ei) else { continue };
+            if !add {
+                c.commit_float();
+            }
+            let piece = c.extract_area(&local);
+            if piece.fills.is_empty() && piece.strokes.is_empty() {
+                continue;
+            }
+            c.add_to_float(piece);
+            any = true;
+            let s = Selection { layer: li, element: ei };
+            if !self.selection.contains(&s) {
+                self.selection.push(s);
+            }
+        }
+        if any {
+            self.revision += 1;
+            self.selection.sort();
+        }
+        any
+    }
+    /// Select All on a merge shape lifts all of it.
+    fn lift_all_canvases(&mut self) {
+        for li in 0..self.timeline().layers.len() {
+            if !self.layer_editable(li) {
+                continue;
+            }
+            let Some((key, ei)) = self.canvas_at(li) else { continue };
+            if let Some(c) = self.canvas_mut(li, key, ei) {
+                let parts: Vec<crate::merge::Part> = (0..c.fills.len()).map(crate::merge::Part::Fill).chain((0..c.strokes.len()).map(crate::merge::Part::Stroke)).collect();
+                c.lift(&parts, true);
+            }
+        }
+    }
+    /// Change the fill/stroke of the floating merge selection (Properties, bucket, ink bottle).
+    pub fn merge_set_paint(&mut self, fill: Option<Option<Color>>, gradient: Option<Option<Gradient>>, stroke: Option<Option<Stroke>>) {
+        let layers: Vec<usize> = self.selection.iter().map(|s| s.layer).collect();
+        self.checkpoint("Fill and Stroke");
+        for li in layers {
+            let Some((key, ei)) = self.canvas_at(li) else { continue };
+            let Some(c) = self.canvas_mut(li, key, ei) else { continue };
+            let Some(f) = c.float.as_mut() else { continue };
+            if fill.is_some() || gradient.is_some() {
+                let all: Vec<crate::merge::Part> = (0..f.fills.len()).map(crate::merge::Part::Fill).collect();
+                let cur = f.fills.first().map(|r| (r.fill, r.gradient.clone())).unwrap_or((None, None));
+                f.set_fill(&all, fill.unwrap_or(cur.0), gradient.clone().unwrap_or(cur.1));
+            }
+            if let Some(st) = stroke {
+                match st {
+                    Some(st) => {
+                        let all: Vec<crate::merge::Part> = (0..f.strokes.len()).map(crate::merge::Part::Stroke).collect();
+                        f.set_stroke(&all, st);
+                    }
+                    None => f.strokes.clear(),
+                }
+            }
+        }
+    }
+    /// The floating merge selection (for Properties): (layer, piece).
+    pub fn merge_float(&self) -> Option<(usize, &crate::merge::MergeShape)> {
+        self.selection.iter().find_map(|s| self.canvas(s.layer).and_then(|c| c.float.as_deref()).map(|f| (s.layer, f)))
+    }
+
+    /// Paint Bucket on merge content: recolour the fill under `p`, or fill
+    /// the area the strokes enclose (closing gaps up to `gap`).
+    pub fn merge_bucket(&mut self, p: Pt, color: Color, gap: f32) -> bool {
+        let li = self.layer;
+        if !self.layer_editable(li) {
+            return false;
+        }
+        let x = self.canvas_inv(li).apply(p);
+        let Some((key, ei)) = self.canvas_at(li) else { return false };
+        let target = self.canvas(li).map(|c| (c.fill_at(x), !c.strokes.is_empty()));
+        match target {
+            Some((Some(i), _)) => {
+                self.checkpoint("Paint Bucket");
+                self.commit_floats();
+                if let Some(c) = self.canvas_mut(li, key, ei) {
+                    c.set_fill(&[crate::merge::Part::Fill(i)], Some(color), None);
+                }
+                true
+            }
+            Some((None, true)) => {
+                let mut c2 = self.canvas(li).unwrap().clone();
+                c2.commit_float();
+                if !c2.fill_enclosed(x, color, gap) {
+                    return false;
+                }
+                self.checkpoint("Paint Bucket");
+                if let Some(c) = self.canvas_mut(li, key, ei) {
+                    *c = c2;
+                }
+                true
+            }
+            _ => false,
+        }
+    }
+    /// Ink Bottle on merge content: restyle the stroke under `p`.
+    pub fn merge_ink(&mut self, p: Pt, stroke: Stroke) -> bool {
+        let li = self.layer;
+        let x = self.canvas_inv(li).apply(p);
+        let Some((key, ei)) = self.canvas_at(li) else { return false };
+        let Some(crate::merge::Part::Stroke(i)) = self.canvas(li).and_then(|c| c.hit(x, 3.0)) else { return false };
+        self.checkpoint("Ink Bottle");
+        if let Some(c) = self.canvas_mut(li, key, ei) {
+            c.set_stroke(&[crate::merge::Part::Stroke(i)], stroke);
+        }
+        true
+    }
+
+    /// Selected merge-shape pieces become their own merge-shape elements (on
+    /// the same keyframe) so whole-object commands (group, symbol, copy) work on them.
+    pub fn detach_floats(&mut self) {
+        let sels = self.selection.clone();
+        let mut out = vec![];
+        for s in sels {
+            let piece = self.canvas_at(s.layer).filter(|(_, ei)| *ei == s.element).and_then(|(key, ei)| self.canvas_mut(s.layer, key, ei).and_then(|c| c.float.take()).map(|f| (key, f)));
+            match piece {
+                Some((key, f)) => {
+                    let mut el = Element::shape("Shape", Shape::default());
+                    el.matrix = self.timeline().layers[s.layer].keyframes[&key].elements[s.element].matrix;
+                    el.kind = ElementKind::Canvas(*f);
+                    let kf = self.timeline_mut().layers[s.layer].keyframes.get_mut(&key).unwrap();
+                    kf.elements.push(el);
+                    out.push(Selection { layer: s.layer, element: kf.elements.len() - 1 });
+                }
+                None => out.push(s),
+            }
+        }
+        out.sort();
+        self.selection = out;
+    }
+
+    /// Floating merge selection → one drawing object (Modify ▸ Combine
+    /// Objects ▸ Union on a shape selection, or Ctrl+G).
+    pub fn merge_to_object(&mut self) -> bool {
+        let Some(s) = self.selection.iter().copied().find(|s| self.canvas(s.layer).map(|c| c.float.is_some()).unwrap_or(false)) else { return false };
+        let Some((key, ei)) = self.canvas_at(s.layer) else { return false };
+        let m = self.element_at(Selection { layer: s.layer, element: ei }).map(|e| e.matrix).unwrap_or(Matrix::IDENTITY);
+        self.checkpoint("Convert to Drawing Object");
+        let Some(piece) = self.canvas_mut(s.layer, key, ei).and_then(|c| c.float.take()) else { return false };
+        let shapes = piece.to_shapes();
+        let el = if shapes.len() == 1 {
+            Element { matrix: m, ..Element::shape("Drawing Object", shapes.into_iter().next().unwrap()) }
+        } else {
+            Element { matrix: m, ..Element::group(shapes.into_iter().map(|sh| Element::shape("Shape", sh)).collect()) }
+        };
+        let kf = self.timeline_mut().layers[s.layer].keyframes.get_mut(&key).unwrap();
+        kf.elements.push(el);
+        let n = kf.elements.len() - 1;
+        self.selection = vec![Selection { layer: s.layer, element: n }];
+        true
+    }
+
+    /// Break Apart on a drawing object: it becomes part of the layer's merge shape.
+    fn shape_to_merge(&mut self, s: Selection) -> bool {
+        let Some(el) = self.element_at(s) else { return false };
+        let ElementKind::Shape(sh) = &el.kind else { return false };
+        let path = sh.path.transformed(&el.matrix);
+        let (fill, grad, stroke) = (sh.fill, sh.gradient.clone(), sh.stroke);
+        self.checkpoint("Break Apart");
+        let Some(key) = self.target_keyframe(s.layer, false) else { return false };
+        self.timeline_mut().layers[s.layer].keyframes.get_mut(&key).unwrap().elements.remove(s.element);
+        let at = s.element;
+        self.remap_bones(s.layer, |i| if i == at { None } else if i > at { Some(i - 1) } else { Some(i) });
+        let li = s.layer;
+        let inv = self.canvas_inv(li);
+        let has = self.canvas_at(li).is_some();
+        let Some((key, ei)) = self.canvas_for_drawing(li) else { return false };
+        let local = path.transformed(&if has { inv } else { Matrix::IDENTITY });
+        if let Some(c) = self.canvas_mut(li, key, ei) {
+            c.commit_float();
+            c.add_path(&local, fill, grad, stroke);
+        }
+        self.selection.clear();
+        true
+    }
+
+    /// Modify ▸ Combine Objects on the selected drawing objects (same layer).
+    pub fn combine_objects(&mut self, op: crate::merge::BoolOp) -> Result<(), String> {
+        use crate::merge::{bool_polys, path_polygons, polys_path, BoolOp};
+        let mut sels: Vec<Selection> = self.selection.clone();
+        sels.retain(|s| matches!(self.element_at(*s).map(|e| e.kind), Some(ElementKind::Shape(_))));
+        if sels.len() < 2 {
+            return Err("select two or more drawing objects (shapes drawn with Object Drawing on)".into());
+        }
+        let li = sels[0].layer;
+        if sels.iter().any(|s| s.layer != li) {
+            return Err("the objects must be on the same layer".into());
+        }
+        sels.sort();
+        let shapes: Vec<(Vec<Vec<Pt>>, Shape)> = sels
+            .iter()
+            .filter_map(|s| self.element_at(*s))
+            .filter_map(|e| if let ElementKind::Shape(sh) = &e.kind { Some((path_polygons(&sh.path.transformed(&e.matrix)), sh.clone())) } else { None })
+            .collect();
+        let (top_polys, top) = shapes.last().cloned().unwrap();
+        let mut results: Vec<Shape> = vec![];
+        match op {
+            BoolOp::Union => {
+                // same paint → one shape; otherwise the visible pieces, merged per colour
+                let mut m = crate::merge::MergeShape::default();
+                for (polys, sh) in &shapes {
+                    m.add_fill(polys, sh.fill, sh.gradient.clone(), true);
+                }
+                if shapes.iter().all(|(_, sh)| sh.fill == top.fill && sh.gradient == top.gradient) {
+                    let all: Vec<Vec<Pt>> = m.fills.iter().flat_map(|r| r.contours.clone()).collect();
+                    results.push(Shape { path: polys_path(&all), ..top.clone() });
+                } else {
+                    results.extend(m.fills.iter().map(|r| Shape { path: r.path(), fill: r.fill, gradient: r.gradient.clone(), stroke: top.stroke, ..Default::default() }));
+                }
+            }
+            BoolOp::Intersect => {
+                let mut acc = shapes[0].0.clone();
+                for (polys, _) in &shapes[1..] {
+                    acc = bool_polys(&acc, polys, BoolOp::Intersect);
+                }
+                if !acc.is_empty() {
+                    results.push(Shape { path: polys_path(&acc), width_profile: None, warp: None, ..top.clone() });
+                }
+            }
+            BoolOp::Punch | BoolOp::Crop => {
+                for (polys, sh) in &shapes[..shapes.len() - 1] {
+                    let r = bool_polys(polys, &top_polys, op);
+                    if !r.is_empty() {
+                        results.push(Shape { path: polys_path(&r), width_profile: None, warp: None, ..sh.clone() });
+                    }
+                }
+            }
+        }
+        self.checkpoint(match op {
+            BoolOp::Union => "Union",
+            BoolOp::Intersect => "Intersect",
+            BoolOp::Punch => "Punch",
+            BoolOp::Crop => "Crop",
+        });
+        let Some(key) = self.target_keyframe(li, false) else { return Ok(()) };
+        let at = sels[0].element;
+        {
+            let els = &mut self.timeline_mut().layers[li].keyframes.get_mut(&key).unwrap().elements;
+            for s in sels.iter().rev() {
+                if s.element < els.len() {
+                    els.remove(s.element);
+                }
+            }
+            for (i, sh) in results.iter().enumerate() {
+                els.insert((at + i).min(els.len()), Element::shape("Drawing Object", sh.clone()));
+            }
+        }
+        let removed: Vec<usize> = sels.iter().map(|s| s.element).collect();
+        let n = results.len();
+        self.remap_bones(li, |i| if removed.contains(&i) { None } else { Some(i - removed.iter().filter(|&&r| r < i).count() + if i >= at { n } else { 0 }) });
+        self.selection = (at..at + n).map(|element| Selection { layer: li, element }).collect();
+        Ok(())
+    }
+
+    /// Modify ▸ Shape ▸ Smooth / Straighten / Optimize on drawing objects and
+    /// the floating merge selection.
+    pub fn shape_cleanup(&mut self, kind: &str) {
+        let label = match kind {
+            "smooth" => "Smooth",
+            "straighten" => "Straighten",
+            _ => "Optimize Curves",
+        };
+        if self.selection.is_empty() {
+            return;
+        }
+        let k = kind.to_string();
+        self.modify_selected(label, move |e| match &mut e.kind {
+            ElementKind::Shape(sh) => {
+                let closed = sh.fill.is_some() || sh.gradient.is_some();
+                let mut segs = vec![];
+                for (pts, c) in sh.path.flatten(16) {
+                    let size = pts.iter().fold((f32::MAX, f32::MIN), |a, p| (a.0.min(p.x.min(p.y)), a.1.max(p.x.max(p.y))));
+                    let span = (size.1 - size.0).max(1.0);
+                    let sub = match k.as_str() {
+                        "smooth" => Path::smooth_polyline(&pts, span * 0.02),
+                        "straighten" => Path::polygon(&crate::geom::simplify(&pts, span * 0.03)),
+                        _ => Path::smooth_polyline(&pts, span * 0.008),
+                    };
+                    let mut ss = sub.segs;
+                    if !(c || closed) {
+                        ss.retain(|x| !matches!(x, crate::geom::Seg::Z));
+                    } else if !ss.iter().any(|x| matches!(x, crate::geom::Seg::Z)) {
+                        ss.push(crate::geom::Seg::Z);
+                    }
+                    segs.extend(ss);
+                }
+                if !segs.is_empty() {
+                    sh.path = Path { segs };
+                }
+            }
+            ElementKind::Canvas(c) => {
+                if let Some(f) = c.float.as_mut() {
+                    match k.as_str() {
+                        "smooth" => f.smooth(),
+                        "straighten" => f.straighten(),
+                        _ => f.optimize(0.75),
+                    }
+                }
+            }
+            _ => {}
+        });
+    }
+
+    /// Start bending an edge or dragging a corner of a merge shape at `p`.
+    pub fn merge_begin_bend(&self, p: Pt, tol: f32) -> Option<(usize, u32, usize, crate::merge::Bend, Matrix)> {
+        for li in 0..self.timeline().layers.len() {
+            if !self.layer_editable(li) {
+                continue;
+            }
+            let Some((key, ei)) = self.canvas_at(li) else { continue };
+            let inv = self.canvas_inv(li);
+            let c = self.canvas(li)?;
+            if let Some(b) = c.begin_bend(inv.apply(p), tol) {
+                return Some((li, key, ei, b, inv));
+            }
+        }
+        None
+    }
+    /// Apply a bend (during the drag; `first` makes the undo step).
+    pub fn merge_apply_bend(&mut self, li: usize, key: u32, ei: usize, shape: crate::merge::MergeShape, first: bool) {
+        if first {
+            self.checkpoint("Bend");
+        } else {
+            self.revision += 1;
+        }
+        if let Some(c) = self.canvas_mut(li, key, ei) {
+            *c = shape;
+        }
+    }
+    /// After a bend: resolve overlaps the deformation created.
+    pub fn merge_finish_bend(&mut self, li: usize, key: u32, ei: usize) {
+        if let Some(c) = self.canvas_mut(li, key, ei) {
+            c.resolve();
+        }
+    }
+}
+
+// ------------------------------------------------------------ shape armatures
+impl Editor {
+    /// Posed bones of every shape armature on the stage: (shape, bone, head, tail) in stage coordinates.
+    pub fn rig_bones(&self) -> Vec<(Selection, usize, Pt, Pt)> {
+        let mut out = vec![];
+        for (li, l) in self.timeline().layers.iter().enumerate() {
+            if !l.visible || l.kind != LayerKind::Normal {
+                continue;
+            }
+            let Some((els, _)) = layer_elements_at(l, self.frame) else { continue };
+            for ei in 0..els.len() {
+                let s = Selection { layer: li, element: ei };
+                let Some(el) = self.element_at(s) else { continue };
+                if let ElementKind::Shape(Shape { rig: Some(r), .. }) = &el.kind {
+                    for (bi, (h, t)) in r.posed().into_iter().enumerate() {
+                        out.push((s, bi, el.matrix.apply(h), el.matrix.apply(t)));
+                    }
+                }
+            }
+        }
+        out
+    }
+    /// Bone tool inside one shape: a bone from `head` to `tail` (stage coordinates).
+    pub fn rig_add_bone(&mut self, s: Selection, head: Pt, tail: Pt) -> Option<usize> {
+        let el = self.element_at(s)?;
+        if !matches!(el.kind, ElementKind::Shape(_)) || !self.layer_editable(s.layer) {
+            return None;
+        }
+        let inv = el.matrix.invert()?;
+        let (h, t) = (inv.apply(head), inv.apply(tail));
+        let snap = 6.0 / el.matrix.decompose().scale_x.abs().max(0.01);
+        let out = std::cell::Cell::new(None);
+        self.selection = vec![s];
+        self.modify_selected("Add Shape Bone", |e| {
+            if let ElementKind::Shape(sh) = &mut e.kind {
+                if sh.rig.is_none() {
+                    // enough points to bend smoothly
+                    let size = sh.path.bounds().map(|(lo, hi)| (hi.x - lo.x).max(hi.y - lo.y)).unwrap_or(100.0);
+                    sh.path = crate::rig::densify(&sh.path, (size / 24.0).max(2.0));
+                    sh.primitive = None;
+                    sh.warp = None;
+                }
+                let r = sh.rig.get_or_insert_with(Default::default);
+                out.set(Some(r.add_bone(h, t, snap)));
+            }
+        });
+        out.get()
+    }
+    /// Pose a shape armature: drag the tail of `bone` toward `target` (IK).
+    /// Mid-tween this makes a pose keyframe; call `begin_edit` first for one undo step.
+    pub fn rig_ik(&mut self, s: Selection, bone: usize, target: Pt) {
+        let Some(el) = self.element_at(s) else { return };
+        let Some(inv) = el.matrix.invert() else { return };
+        let t = inv.apply(target);
+        self.selection = vec![s];
+        self.modify_selected_continuous(|e| {
+            if let ElementKind::Shape(Shape { rig: Some(r), .. }) = &mut e.kind {
+                if bone < r.bones.len() {
+                    r.ik(bone, t);
+                }
+            }
+        });
+    }
+    /// Bind tool: point `idx` (in path order) follows `bone` (None = automatic).
+    pub fn rig_bind(&mut self, s: Selection, idx: usize, bone: Option<usize>) {
+        self.selection = vec![s];
+        self.modify_selected(if bone.is_some() { "Bind Point" } else { "Unbind Point" }, |e| {
+            if let ElementKind::Shape(Shape { rig: Some(r), .. }) = &mut e.kind {
+                r.set_bind(idx, bone);
+            }
+        });
+    }
+    /// Remove a shape's armature (keeps the posed shape).
+    pub fn rig_clear(&mut self, s: Selection) {
+        self.selection = vec![s];
+        self.modify_selected("Remove Shape Bones", |e| {
+            if let ElementKind::Shape(sh) = &mut e.kind {
+                if let Some(r) = sh.rig.take() {
+                    sh.path = r.deform(&sh.path);
+                }
+            }
         });
     }
 }
@@ -1776,6 +2525,7 @@ pub enum AlignOp {
 impl Editor {
     /// Modify › Group (Ctrl+G): selected objects on each layer become one group.
     pub fn group_selected(&mut self) -> usize {
+        self.detach_floats();
         let sels: Vec<Selection> = self.selection.iter().copied().filter(|s| self.layer_editable(s.layer)).collect();
         if sels.is_empty() {
             return 0;

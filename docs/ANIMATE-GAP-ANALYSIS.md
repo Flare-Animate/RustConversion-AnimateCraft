@@ -20,8 +20,8 @@ files.
 | Area | Coverage | Biggest gaps |
 |---|---|---|
 | Workspace and panels | ~60% | docking/workspaces, Color & Swatches, History, preferences |
-| Drawing model | ~40% | **Merge Drawing** (planar map), primitives, brush modes, bitmap fills, Selection-tool edge bending |
-| Tools | ~75% | Classic Brush modes, primitives, Magic Wand, Bind, Eraser modes, Paint Bucket gap size / Lock Fill |
+| Drawing model | ~75% | XFL edge export of merge shapes, Convert Lines to Fills / Expand / Soften, ragged/hatched strokes |
+| Tools | ~90% | Magic Wand, pressure/tilt, Art/Pattern brushes |
 | Timeline | ~80% | frame view sizes, sound, Synchronize Symbols |
 | Symbols | ~75% | 9-slice, Visible / Cache as bitmap, button sounds |
 | Animation | ~70% | 3D/filter/colour properties in motion tweens, tween presets, copy/paste motion, lip-sync, rig mapping |
@@ -35,7 +35,7 @@ files.
 The two engine milestones that unlock most of the rest:
 
 1. **Merge Drawing**, the planar-map shape model: Flash's defining feature. It's needed for
-   edge bending, brush modes, the eraser and cutting shapes, and faithful FLA import.
+   edge bending, brush modes, the eraser and cutting shapes, and faithful FLA import. ✅ Phase 3.
 2. **Motion tweens and the Motion Editor**: property keyframes along spans, motion paths and graph
    eases. Most modern Animate projects use them. ✅ Phase 2.
 
@@ -83,23 +83,23 @@ The two engine milestones that unlock most of the rest:
 
 | Feature | Animate | AnimationCraft | Status | Pri |
 |---|---|---|---|---|
-| Object Drawing mode (J) | Yes | Always on | ✅ | |
-| **Merge Drawing** (default mode): overlapping shapes cut and merge; same-colour fills merge; strokes split fills | Yes | — | ❌ | **P0 (engine)** |
-| Edge-based shape model (fill style left/right of each edge, as in XFL `<Edge fillStyle0/1 strokeStyle>`) | Yes | Path + fill + stroke per object | ❌ | P0 |
-| Selection tool: click a fill vs stroke separately, double-click to select a connected stroke | Yes | Selects whole objects | ❌ | P0 |
-| Selection tool edge bending (drag an edge to curve it; Ctrl/Alt drag adds a corner) | Yes | — | ❌ | P0 |
-| Drag a selected part of a merge shape out of it | Yes | — | ❌ | P1 |
+| Object Drawing mode (J) | Yes | Toggle (J), Tool properties | ✅ | |
+| **Merge Drawing** (default mode): overlapping shapes cut and merge; same-colour fills merge; strokes split fills | Yes | Yes (i_overlay booleans; curves flattened) | ✅ | |
+| Edge-based shape model (fill style left/right of each edge, as in XFL `<Edge fillStyle0/1 strokeStyle>`) | Yes | Disjoint fill regions + split stroke edges (convertible to XFL edges) | 🟡 | P1 (XFL edge writer, Phase 4) |
+| Selection tool: click a fill vs stroke separately, double-click to select a connected stroke | Yes | Yes (marquee/lasso cut the shape too) | ✅ | |
+| Selection tool edge bending (drag an edge to curve it; Ctrl/Alt drag adds a corner) | Yes | Edge bending + corner drag (no Ctrl-drag corner yet) | 🟡 | P2 (add corner) |
+| Drag a selected part of a merge shape out of it | Yes | Yes (floats until deselected, then merges) | ✅ | |
 | Group (Ctrl+G) / Ungroup | Yes | Yes (edit-in-place of groups pending) | 🟡 | P1 (edit group in place) |
-| Break Apart: text → letters → shapes; bitmap → bitmap fill | Yes | Instances only | 🟡 | P1 |
-| Union / Intersect / Punch / Crop (Modify › Combine Objects) | Yes | — | ❌ | P1 |
-| Smooth / Straighten / Optimize Curves | Yes | — | ❌ | P1 |
+| Break Apart: text → letters → shapes; bitmap → bitmap fill | Yes | Instances, groups, drawing objects → merge shape | 🟡 | P2 (text, bitmap) |
+| Union / Intersect / Punch / Crop (Modify › Combine Objects) | Yes | Yes | ✅ | |
+| Smooth / Straighten / Optimize Curves | Yes | Yes | ✅ | |
 | Convert Lines to Fills, Expand Fill, Soften Fill Edges | Yes | — | ❌ | P2 |
-| Rectangle / Oval **Primitives** (live corner radii, start/end angle, inner radius) | Yes | Options apply at draw time only | 🟡 | P1 |
-| Stroke styles: solid, dashed, dotted, ragged, stipple, hatched; cap/join/miter; scale mode; hinting | Yes | Solid round stroke only | ❌ | P1 |
+| Rectangle / Oval **Primitives** (live corner radii, start/end angle, inner radius) | Yes | Yes (per-corner and inverted radii, close path) | ✅ | |
+| Stroke styles: solid, dashed, dotted, ragged, stipple, hatched; cap/join/miter; scale mode; hinting | Yes | Solid / dashed / dotted, cap, join (on drawing objects) | 🟡 | P2 (ragged, stipple, hatched) |
 | Variable-width profiles (presets, save width profile) | Yes | Width tool only | 🟡 | P2 |
 | Art / Pattern brushes (from Illustrator-style brush library), brush library panel | Yes | — | ❌ | P2 |
 | Gradient fills (linear, radial, up to 15 stops, overflow: extend / reflect / repeat, linear RGB) | Yes | Linear/radial, any stops, pad only | 🟡 | P2 |
-| Bitmap fills (and Lock Fill) | Yes | Bitmaps as objects; not yet as fills | 🟡 | P1 |
+| Bitmap fills (and Lock Fill) | Yes | Bitmap fills on drawing objects; Lock Fill for gradients | 🟡 | P2 (merge shapes, Gradient Transform on bitmaps) |
 | Alpha per fill / stroke colour | Yes | Yes (colour alpha) | ✅ | |
 | Pressure / tilt (tablet) | Yes | — | ❌ | P2 |
 | Hairline strokes, stroke scaling (normal / horizontal / vertical / none) | Yes | — | ❌ | P2 |
@@ -109,7 +109,7 @@ The two engine milestones that unlock most of the rest:
 
 | Tool | Animate | AnimationCraft | Status | Pri |
 |---|---|---|---|---|
-| Selection (V) | Click, marquee, Shift add, Alt-drag copy, edge bending | Click, marquee, Shift add, IK drag | 🟡 | Alt-drag copy P1; bending P0 (needs Merge Drawing) |
+| Selection (V) | Click, marquee, Shift add, Alt-drag copy, edge bending | Click, marquee, Shift add, IK drag, edge bending | 🟡 | Alt-drag copy P1 |
 | Subselection (A) | Anchors and handles | Same | ✅ | |
 | Free Transform (Q) incl. Distort / Envelope / Rotate & Skew / Scale modes | Yes | Yes (combined mode + Distort + Envelope) | ✅ | |
 | Gradient Transform (F) | Yes (also bitmap fills) | Gradients only | 🟡 | P2 |
@@ -118,23 +118,23 @@ The two engine milestones that unlock most of the rest:
 | Pen (P) + Add / Delete / Convert Anchor | Yes | Yes | ✅ | |
 | Text (T) | Static, Dynamic, Input | Static | 🟡 | P1 |
 | Line (N), Rectangle (R), Oval (O), PolyStar | Yes | Yes | ✅ | |
-| Rectangle Primitive / Oval Primitive | Yes | — | ❌ | P1 |
+| Rectangle Primitive / Oval Primitive | Yes | Yes | ✅ | |
 | Pencil (Shift+Y): Straighten / Smooth / Ink | Yes | Yes | ✅ | |
 | Paint Brush (Y): art / pattern / vector brushes, width, pressure | Yes | Calligraphic-free round brush | 🟡 | P2 |
-| **Classic Brush** (B): Paint Normal / Fills / Behind / Selection / Inside, brush shape, Lock Fill | Yes | — | ❌ | P1 (needs Merge Drawing) |
+| **Classic Brush** (B): Paint Normal / Fills / Behind / Selection / Inside, brush shape, Lock Fill | Yes | Paint Brush with all five modes | 🟡 | P2 (brush shapes) |
 | Fluid Brush (B): velocity, pressure, smoothing, taper, size | Yes | Velocity + taper + size | 🟡 | P2 |
-| Bone (M) incl. **shape bones** (bones inside one shape) | Yes | Bones between objects | 🟡 | P1 |
-| **Bind** tool (attach shape control points to bones) | Yes | — | ❌ | P2 |
-| Paint Bucket (K): gap size, Lock Fill | Yes | Fill object, no gaps | 🟡 | P1 |
+| Bone (M) incl. **shape bones** (bones inside one shape) | Yes | Both (shape bones pose with IK, tween) | ✅ | |
+| **Bind** tool (attach shape control points to bones) | Yes | Yes | ✅ | |
+| Paint Bucket (K): gap size, Lock Fill | Yes | Yes (fills enclosed areas of merge shapes) | ✅ | |
 | Ink Bottle (S) | Yes | Yes | ✅ | |
 | Eyedropper (I) incl. bitmap sampling | Yes | Yes (no bitmaps) | ✅ | |
-| Eraser (E): Erase Normal / Fills / Lines / Selected Fills / Inside, Faucet, shape and size | Yes | Whole-object eraser | 🟡 | P1 (needs Merge Drawing) |
+| Eraser (E): Erase Normal / Fills / Lines / Selected Fills / Inside, Faucet, shape and size | Yes | All modes + Faucet on merge shapes (round eraser) | ✅ | |
 | Width (U) incl. delete width point, copy/paste width | Yes | Add/drag width points | 🟡 | P2 |
 | Asset Warp (Shift+W) incl. bitmaps/symbols, mesh options, Reset Warped Asset | Yes | Shapes only; reset via Properties | 🟡 | P2 |
 | Camera (C), camera colour effects, layer depth (Ctrl+D) | Yes | Pan/zoom/rotate | 🟡 | Layer Depth P2 |
 | Hand (H), Rotation (Shift+H), Zoom (Z) | Yes | Yes | ✅ | |
 | Stroke/Fill swatches, Swap, Black & White, No colour | Yes | Yes | ✅ | |
-| Snap toggle, Object Drawing toggle | Yes | Snap only | 🟡 | (with Merge Drawing) |
+| Snap toggle, Object Drawing toggle | Yes | Yes | ✅ | |
 
 ## 4. Timeline
 
@@ -313,7 +313,7 @@ The phases put dependencies first. Each phase ends with tests, a UI run under Xv
 6. Button states + Enable Simple Buttons; Swap Symbol; Brightness / Advanced colour effects
 7. Scenes; layer parenting
 
-### Phase 3: The Merge Drawing engine
+### Phase 3: The Merge Drawing engine — ✅ done (Oct 2026)
 1. Planar-map shape model (edges with left/right fill styles) matching XFL `<DOMShape>`
 2. Merge/cut on draw, Selection-tool fill/stroke picking, **edge bending**
 3. Classic Brush modes, Eraser modes + Faucet, Paint Bucket gap size / Lock Fill

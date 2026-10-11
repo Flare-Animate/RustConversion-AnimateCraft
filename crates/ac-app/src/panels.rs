@@ -177,6 +177,10 @@ fn object_properties(app: &mut App, ui: &mut egui::Ui) {
     } else {
         match &el.kind {
             ElementKind::Shape(_) => "Shape (drawing object)".to_string(),
+            ElementKind::Canvas(c) => match &c.float {
+                Some(f) => format!("Shape selection ({} fill(s), {} line(s))", f.fills.len(), f.strokes.len()),
+                None => "Shape (merge drawing)".to_string(),
+            },
             ElementKind::Text(_) => "Static text".to_string(),
             ElementKind::Instance(i) => {
                 let s = app.ed.doc.symbol(i.symbol);
@@ -199,7 +203,7 @@ fn object_properties(app: &mut App, ui: &mut egui::Ui) {
         ui.label(RichText::new("On a locked or hidden layer: unlock it in the timeline to edit.").small().color(Color32::from_rgb(0xFF, 0xB0, 0x40)));
     }
     ui.add_enabled_ui(editable, |ui| {
-        if n == 1 && !matches!(el.kind, ElementKind::Shape(_)) {
+        if n == 1 && !matches!(el.kind, ElementKind::Shape(_) | ElementKind::Canvas(_)) {
             let mut name = el.name.clone();
             ui.horizontal(|ui| {
                 ui.label("Instance name");
@@ -309,6 +313,50 @@ fn object_properties(app: &mut App, ui: &mut egui::Ui) {
         }
 
         match &el.kind {
+            ElementKind::Canvas(c) if n == 1 => {
+                section(ui, "Fill and stroke");
+                let f = c.float.as_deref();
+                let fill = f.and_then(|f| f.fills.first()).and_then(|r| r.fill);
+                let stroke = f.and_then(|f| f.strokes.first()).map(|s| s.stroke);
+                ui.horizontal(|ui| {
+                    if f.map(|f| !f.fills.is_empty()).unwrap_or(false) {
+                        ui.label("Fill");
+                        let mut col = fill.map(c32).unwrap_or(Color32::WHITE);
+                        if ui.color_edit_button_srgba(&mut col).changed() {
+                            app.ed.merge_set_paint(Some(Some(from32(col))), Some(None), None);
+                        }
+                    }
+                    if let Some(st) = stroke {
+                        ui.label("Stroke");
+                        let mut col = c32(st.color);
+                        if ui.color_edit_button_srgba(&mut col).changed() {
+                            app.ed.merge_set_paint(None, None, Some(Some(Stroke { color: from32(col), width: st.width })));
+                        }
+                        let mut w = st.width;
+                        let r = ui.add(egui::DragValue::new(&mut w).range(0.1..=100.0).speed(0.1).suffix(" px"));
+                        if r.drag_stopped() || r.lost_focus() || (r.changed() && !r.dragged()) {
+                            app.ed.merge_set_paint(None, None, Some(Some(Stroke { color: st.color, width: w })));
+                        }
+                    }
+                });
+                if f.is_none() {
+                    hint(ui, "Click a fill or line with the Selection tool to select it; drag an edge to bend it.");
+                }
+                ui.horizontal_wrapped(|ui| {
+                    if ui.add_enabled(f.is_some(), egui::Button::new("Make Drawing Object")).on_hover_text("Modify ▸ Combine Objects ▸ Union").clicked() {
+                        app.ed.merge_to_object();
+                    }
+                    if ui.add_enabled(f.is_some(), egui::Button::new("Smooth")).clicked() {
+                        app.ed.shape_cleanup("smooth");
+                    }
+                    if ui.add_enabled(f.is_some(), egui::Button::new("Straighten")).clicked() {
+                        app.ed.shape_cleanup("straighten");
+                    }
+                    if ui.add_enabled(f.is_some(), egui::Button::new("Optimize")).clicked() {
+                        app.ed.shape_cleanup("optimize");
+                    }
+                });
+            }
             ElementKind::Shape(s) if n == 1 => {
                 section(ui, "Fill and stroke");
                 let mut kind = s.gradient.as_ref().map(|g| g.kind);
@@ -374,6 +422,7 @@ fn object_properties(app: &mut App, ui: &mut egui::Ui) {
                         }
                     });
                 }
+                shape_extras(app, ui, s);
                 if let Some(w) = &s.warp {
                     ui.horizontal(|ui| {
                         hint(ui, &format!("Asset Warp: {} pin(s)", w.pins.len()));
@@ -1140,7 +1189,16 @@ fn tool_properties(app: &mut App, ui: &mut egui::Ui) {
             section(ui, "Paint Brush");
             ui.add(egui::Slider::new(&mut app.topts.brush_size, 1.0..=200.0).text("Size"));
             ui.add(egui::Slider::new(&mut app.topts.brush_smooth, 0.0..=100.0).text("Smoothing"));
-            hint(ui, "Paints with the fill colour (or the gradient below).");
+            ui.horizontal(|ui| {
+                ui.label("Brush mode");
+                let m = app.topts.brush_mode;
+                egui::ComboBox::from_id_salt("brush-mode").selected_text(m.name(false)).show_ui(ui, |ui| {
+                    for x in ac_core::merge::PaintMode::BRUSH {
+                        ui.selectable_value(&mut app.topts.brush_mode, x, x.name(false));
+                    }
+                });
+            });
+            hint(ui, "Brush modes work on merge shapes (Object Drawing off): Fills leaves lines alone, Behind paints only empty areas, Selection only inside the selected fill, Inside only inside the fill where you start.");
         }
         Tool::FluidBrush => {
             section(ui, "Fluid Brush");
@@ -1151,7 +1209,17 @@ fn tool_properties(app: &mut App, ui: &mut egui::Ui) {
         Tool::Eraser => {
             section(ui, "Eraser");
             ui.add(egui::Slider::new(&mut app.topts.eraser_size, 2.0..=100.0).text("Size"));
-            hint(ui, "Mode: erase objects. Cutting into fills needs Merge Drawing (roadmap M2).");
+            ui.horizontal(|ui| {
+                ui.label("Mode");
+                let m = app.topts.eraser_mode;
+                egui::ComboBox::from_id_salt("eraser-mode").selected_text(m.name(true)).show_ui(ui, |ui| {
+                    for x in ac_core::merge::PaintMode::ERASER {
+                        ui.selectable_value(&mut app.topts.eraser_mode, x, x.name(true));
+                    }
+                });
+            });
+            ui.checkbox(&mut app.topts.faucet, "Faucet").on_hover_text("Click a fill or line segment to delete all of it");
+            hint(ui, "On merge shapes the eraser cuts into fills and lines; on drawing objects and symbols it deletes the whole object (Break Apart first to erase into it).");
         }
         Tool::Text => {
             section(ui, "Character");
@@ -1243,6 +1311,28 @@ fn tool_properties(app: &mut App, ui: &mut egui::Ui) {
             hint(ui, "Only the view turns: the document is unchanged. Double-click the stage to reset.");
         }
         _ => {}
+    }
+    if tool == Tool::Bucket {
+        section(ui, "Paint Bucket");
+        ui.horizontal(|ui| {
+            ui.label("Gap size");
+            let names = ["Don't Close Gaps", "Close Small Gaps", "Close Medium Gaps", "Close Large Gaps"];
+            egui::ComboBox::from_id_salt("gap").selected_text(names[app.topts.bucket_gap as usize]).show_ui(ui, |ui| {
+                for (i, n) in names.iter().enumerate() {
+                    ui.selectable_value(&mut app.topts.bucket_gap, i as u8, *n);
+                }
+            });
+        });
+        ui.checkbox(&mut app.topts.lock_fill, "Lock Fill").on_hover_text("Gradients span the whole stage, so shapes filled one by one look like one fill");
+        hint(ui, "On merge shapes, clicking inside lines fills the area they enclose.");
+    }
+    if tool.is_drawing() || matches!(tool, Tool::FluidBrush) {
+        section(ui, "Drawing model");
+        ui.horizontal(|ui| {
+            ui.selectable_value(&mut app.topts.object_draw, false, "Merge Drawing");
+            ui.selectable_value(&mut app.topts.object_draw, true, "Object Drawing");
+            ui.label(RichText::new("(J)").small());
+        });
     }
     if tool.is_drawing() || matches!(tool, Tool::InkBottle | Tool::Bucket | Tool::FluidBrush) {
         section(ui, "Fill and stroke");
@@ -1770,5 +1860,133 @@ fn apply_slider(app: &mut App, resp: &egui::Response, label: &str, f: impl Fn(&m
         app.ed.modify_selected_continuous(f);
     } else {
         app.ed.modify_selected(label, f);
+    }
+}
+
+/// Stroke style, bitmap fill, primitive parameters and shape bones of a drawing object.
+fn shape_extras(app: &mut App, ui: &mut egui::Ui, s: &ac_core::Shape) {
+    use ac_core::{BitmapFill, Cap, Dash, Join, Primitive};
+    if s.stroke.is_some() {
+        let st = s.stroke_style;
+        ui.horizontal(|ui| {
+            let mut v = st;
+            egui::ComboBox::from_id_salt("dash").width(70.0).selected_text(match v.dash { Dash::Solid => "Solid", Dash::Dashed => "Dashed", Dash::Dotted => "Dotted" }).show_ui(ui, |ui| {
+                ui.selectable_value(&mut v.dash, Dash::Solid, "Solid");
+                ui.selectable_value(&mut v.dash, Dash::Dashed, "Dashed");
+                ui.selectable_value(&mut v.dash, Dash::Dotted, "Dotted");
+            }).response.on_hover_text("Stroke style");
+            egui::ComboBox::from_id_salt("cap").width(64.0).selected_text(match v.cap { Cap::None => "No cap", Cap::Round => "Round", Cap::Square => "Square" }).show_ui(ui, |ui| {
+                ui.selectable_value(&mut v.cap, Cap::None, "None");
+                ui.selectable_value(&mut v.cap, Cap::Round, "Round");
+                ui.selectable_value(&mut v.cap, Cap::Square, "Square");
+            }).response.on_hover_text("Cap");
+            egui::ComboBox::from_id_salt("join").width(64.0).selected_text(match v.join { Join::Miter => "Miter", Join::Round => "Round", Join::Bevel => "Bevel" }).show_ui(ui, |ui| {
+                ui.selectable_value(&mut v.join, Join::Miter, "Miter");
+                ui.selectable_value(&mut v.join, Join::Round, "Round");
+                ui.selectable_value(&mut v.join, Join::Bevel, "Bevel");
+            }).response.on_hover_text("Join");
+            if v != st {
+                app.ed.modify_selected("Stroke Style", move |e| if let ElementKind::Shape(sh) = &mut e.kind { sh.stroke_style = v });
+            }
+        });
+        if st.dash == Dash::Dashed {
+            ui.horizontal(|ui| {
+                let (mut d, mut g) = (st.dash_len, st.gap);
+                ui.label("Dash");
+                let r = ui.add(egui::DragValue::new(&mut d).range(0.2..=50.0).speed(0.1).suffix(" × width"));
+                apply(app, &r, "Dash", move |e| if let ElementKind::Shape(sh) = &mut e.kind { sh.stroke_style.dash_len = d });
+                ui.label("Gap");
+                let r = ui.add(egui::DragValue::new(&mut g).range(0.2..=50.0).speed(0.1));
+                apply(app, &r, "Dash Gap", move |e| if let ElementKind::Shape(sh) = &mut e.kind { sh.stroke_style.gap = g });
+            });
+        }
+    }
+    // bitmap fill
+    if !app.ed.doc.bitmaps.is_empty() {
+        ui.horizontal(|ui| {
+            ui.label("Bitmap fill");
+            let cur = s.bitmap_fill.and_then(|b| app.ed.doc.bitmap(b.bitmap)).map(|a| a.name.clone()).unwrap_or_else(|| "None".into());
+            let mut pick: Option<Option<ac_core::bitmap::BitmapId>> = None;
+            egui::ComboBox::from_id_salt("bmpfill").selected_text(cur).show_ui(ui, |ui| {
+                if ui.selectable_label(s.bitmap_fill.is_none(), "None").clicked() {
+                    pick = Some(None);
+                }
+                for b in &app.ed.doc.bitmaps {
+                    if ui.selectable_label(s.bitmap_fill.map(|f| f.bitmap) == Some(b.id), &b.name).clicked() {
+                        pick = Some(Some(b.id));
+                    }
+                }
+            });
+            if let Some(choice) = pick {
+                app.ed.modify_selected("Bitmap Fill", move |e| {
+                    if let ElementKind::Shape(sh) = &mut e.kind {
+                        let origin = sh.path.bounds().map(|(lo, _)| lo).unwrap_or_default();
+                        sh.bitmap_fill = choice.map(|bitmap| BitmapFill { bitmap, matrix: Matrix::translate(origin.x, origin.y) });
+                    }
+                });
+            }
+        });
+    }
+    // primitives
+    match s.primitive {
+        Some(Primitive::Rect { x, y, w, h, radius }) => {
+            section(ui, "Rectangle primitive");
+            let mut r = radius;
+            let mut changed = false;
+            egui::Grid::new("prim-r").num_columns(4).show(ui, |ui| {
+                for (i, l) in ["TL", "TR", "BR", "BL"].iter().enumerate() {
+                    ui.label(*l);
+                    let resp = ui.add(egui::DragValue::new(&mut r[i]).range(-100.0..=100.0).speed(0.5));
+                    changed |= edited(&resp);
+                    if i == 1 {
+                        ui.end_row();
+                    }
+                }
+            });
+            if ui.small_button("Same radius for all corners").clicked() {
+                r = [r[0]; 4];
+                changed = true;
+            }
+            if changed {
+                let p = Primitive::Rect { x, y, w, h, radius: r };
+                app.ed.modify_selected("Corner Radius", move |e| if let ElementKind::Shape(sh) = &mut e.kind { sh.primitive = Some(p); sh.path = p.path(); });
+            }
+            hint(ui, "Negative radii cut the corners inwards.");
+        }
+        Some(Primitive::Oval { cx, cy, rx, ry, start, end, inner, close }) => {
+            section(ui, "Oval primitive");
+            let (mut a, mut b, mut i, mut c) = (start, end, inner, close);
+            let mut changed = false;
+            changed |= ui.add(egui::Slider::new(&mut a, 0.0..=360.0).text("Start angle")).changed();
+            changed |= ui.add(egui::Slider::new(&mut b, 0.0..=360.0).text("End angle")).changed();
+            changed |= ui.add(egui::Slider::new(&mut i, 0.0..=99.0).text("Inner radius %")).changed();
+            changed |= ui.checkbox(&mut c, "Close path").changed();
+            if changed {
+                let p = Primitive::Oval { cx, cy, rx, ry, start: a, end: b, inner: i, close: c };
+                app.ed.modify_selected("Oval Primitive", move |e| if let ElementKind::Shape(sh) = &mut e.kind { sh.primitive = Some(p); sh.path = p.path(); });
+            }
+        }
+        None => {}
+    }
+    // shape bones
+    if let Some(r) = &s.rig {
+        section(ui, "Shape bones");
+        ui.horizontal(|ui| {
+            hint(ui, &format!("{} bone(s), {} bound point(s)", r.bones.len(), r.bind.len()));
+            if ui.small_button("Reset pose").clicked() {
+                app.ed.modify_selected("Reset Pose", |e| {
+                    if let ElementKind::Shape(ac_core::Shape { rig: Some(r), .. }) = &mut e.kind {
+                        for b in &mut r.bones {
+                            b.angle = 0.0;
+                        }
+                    }
+                });
+            }
+            if ui.small_button("Remove bones").on_hover_text("Keeps the posed shape").clicked() {
+                if let Some(&sel) = app.ed.selection.first() {
+                    app.ed.rig_clear(sel);
+                }
+            }
+        });
     }
 }

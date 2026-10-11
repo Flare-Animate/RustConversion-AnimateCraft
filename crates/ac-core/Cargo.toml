@@ -6,6 +6,7 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+i_overlay = "9"
 serde.workspace = true
 serde_json.workspace = true
 ab_glyph = "0.2"

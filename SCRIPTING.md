@@ -158,6 +158,29 @@ ac.selection.color_effect({ style: "brightness", amount: -30 });
 Exports (`export.gif`, `export.video`, …) play every scene in order; `doc.info`
 reports `movie_frames` and `scenes` next to the current timeline's `frames`.
 
+### Merge drawing, primitives, strokes, shape bones
+
+```js
+ac.drawing.mode({ merge: true });                 // draw.* now cut and merge into the layer's shape
+ac.draw.rect({ x: 20, y: 20, w: 120, h: 100, fill: "#3080E0", stroke: "#101010" });
+ac.draw.oval({ x: 90, y: 60, w: 110, h: 110, fill: "#F0B020" });
+ac.merge.select({ x: 160, y: 140 });              // pick a fill (connected: true = double-click)
+ac.selection.move({ dx: 40, dy: 40 });
+ac.merge.deselect();                              // it merges where it was dropped
+ac.merge.erase({ x: 30, y: 30, w: 30, h: 30, mode: "fills" });
+ac.merge.bucket({ x: 60, y: 60, color: "#FF0000", gap: 6 });
+ac.drawing.mode({ merge: false });
+
+ac.draw.rect_primitive({ x: 260, y: 30, w: 120, h: 80, radii: [30, 0, -20, 10] });
+ac.selection.stroke_style({ dash: "dashed", cap: "none", join: "miter" });
+ac.selection.bitmap_fill({ bitmap: "texture.png" });
+ac.selection.combine({ op: "punch" });            // union / intersect / punch / crop
+ac.selection.shape({ op: "smooth" });             // smooth / straighten / optimize
+
+ac.shape_bone.add({ x1: 385, y1: 172, x2: 460, y2: 172 });  // inside a drawing object
+ac.shape_bone.pose({ x: 460, y: 172, to_x: 430, to_y: 240 });
+```
+
 ### Any other language
 
 Python, Node and Ruby use tiny helper libraries, but the protocol is simple

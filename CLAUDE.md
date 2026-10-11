@@ -56,16 +56,20 @@ Status: ✅ in the demo · 🟡 partial · ⬜ planned
   strokes); Bone tool + IK posing; Asset Warp (rigid MLS pins); Camera layer +
   tool; Rotation (view) tool; Oval start/end angle + inner radius; Eyedropper
   picks gradients
-- ⬜ Toolbar gaps after the M0.3 review: Rectangle/Oval **Primitive** (live
-  parametric shapes), **Classic Brush** with brush modes (Normal / Fills /
-  Behind / Selection / Inside — needs Merge Drawing), Art/Pattern brushes,
-  pressure/tilt, **Magic Wand** (needs bitmaps), **Bind** tool (bones inside a
-  single shape), Eraser modes + Faucet, Paint Bucket gap size / Lock Fill,
-  Object-vs-Merge drawing toggle (J), deleting single width points, Asset Warp on
-  symbols/bitmaps, camera colour filters and layer depth
-- ⬜ **Merge Drawing** model: Flash's planar map where shapes cut/merge, fill
-  styles left/right of each edge, Selection-tool edge bending. This is the core
-  engine milestone; nothing else in open source does it well.
+- ✅ **Merge Drawing** (default; J toggles Object Drawing): `merge.rs` keeps the
+  layer's raw shape as disjoint fill regions + split stroke edges (i_overlay
+  booleans). New fills cut what's under them, same colours merge, lines split
+  fills and each other. Selection picks fills/lines (double-click: connected),
+  marquee/lasso cut the shape; a selection floats until deselected, then merges.
+  Edge bending and corner dragging with the Selection tool
+- ✅ Brush modes (Normal/Fills/Behind/Selection/Inside), Eraser modes + Faucet,
+  Paint Bucket gap size + filling enclosed areas, Lock Fill; Combine Objects
+  (Union/Intersect/Punch/Crop); Smooth/Straighten/Optimize; Rectangle/Oval
+  Primitives; dashed/dotted strokes with caps/joins; bitmap fills; shape bones
+  (Bone tool inside a shape) + Bind tool
+- ⬜ Toolbar gaps: Art/Pattern brushes, pressure/tilt, **Magic Wand**, ragged/
+  hatched strokes, Ctrl-drag to add a corner, deleting single width points, Asset
+  Warp on symbols/bitmaps, camera colour filters and layer depth
 - ✅ Groups, bitmaps (PNG/JPG/GIF/BMP, animated GIF, sequences), SVG import, system fonts
 - ⬜ Bitmap fills, dynamic/input text
 
@@ -127,7 +131,7 @@ Status: ✅ in the demo · 🟡 partial · ⬜ planned
 
 ```
 crates/
-  ac-core    model, timeline evaluation, tweens (motion.rs: eases + motion tweens), editor commands, XFL bits   (no UI, wasm-portable)
+  ac-core    model, timeline evaluation, tweens (motion.rs), merge drawing (merge.rs), shape armatures (rig.rs), editor commands, XFL bits   (no UI, wasm-portable)
   ac-render  tiny-skia rasteriser shared by stage + exports (filters, blend modes, masks);
              SVG, GIF, PNG, PNG sequence, video via ffmpeg; system fonts
   ac-script  scripting: sandboxed frame scripts (QuickJS), authoring scripts (JS embedded, others via JSON bridge)
@@ -160,6 +164,7 @@ The full feature-by-feature comparison with Animate and the current build order
 | **M0.2 (done)** | Toolbar overhaul (17 working tools), command registry, multi-language scripting, frame scripts; 40 tests |
 | **M0.3 (done)** | Every toolbar tool works (31): skew/distort/envelope, Transform panel, 3D tools, gradients, Fluid Brush, Width, Bone/IK, Asset Warp, Camera, view rotation; Library fills the panel / docks left; 48 tests |
 | **Phase 1 (done)** | Native file dialogs, recent files, autosave/recovery; groups, Align/Info; folders, masks, motion guides; filters + blend modes; bitmaps + SVG import; system fonts; PNG sequence + video export; rulers/guides/grid; frame-script instance access; 59 tests |
+| **Phase 3 (done)** | Merge Drawing engine (cut/merge, line splitting, floating selections, edge bending), brush/eraser modes, Faucet, bucket gaps, Lock Fill, Combine Objects, shape cleanup, primitives, stroke styles, bitmap fills, shape bones + Bind; 83 tests |
 | **Phase 2 (done)** | Custom eases + presets, motion tweens + Motion Editor + editable motion path, shape hints, Reverse / Frame-by-Frame / span-end drag, onion markers + Edit Multiple Frames, button states + Simple Buttons, Swap Symbol, Brightness/Advanced colour, scenes, layer parenting; 73 tests |
 | **M1** | Route every menu item through the registry; MCP server; rulers/guides, Align panel, native file dialogs |
 | **M2** | Merge Drawing planar-map engine, Brush/Eraser/Pen/Subselection, gradients, Selection-tool edge bending |

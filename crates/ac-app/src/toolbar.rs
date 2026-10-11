@@ -26,12 +26,15 @@ pub enum Tool {
     Text,
     Line,
     Rect,
+    RectPrimitive,
     Oval,
+    OvalPrimitive,
     PolyStar,
     Pencil,
     Brush,
     FluidBrush,
     Bone,
+    Bind,
     Bucket,
     InkBottle,
     Eyedropper,
@@ -82,11 +85,14 @@ impl Tool {
             Tool::Line => t("Line", Some(N), false, "Drag a straight line (Shift: 45° steps)"),
             Tool::Rect => t("Rectangle", Some(R), false, "Drag a rectangle (Shift: square). Corner radius in Tool properties"),
             Tool::Oval => t("Oval", Some(O), false, "Drag an oval (Shift: circle). Start/end angle and inner radius in Tool properties"),
+            Tool::RectPrimitive => t("Rectangle Primitive", None, false, "A rectangle whose corner radii stay editable in Properties (always a drawing object)"),
+            Tool::OvalPrimitive => t("Oval Primitive", None, false, "An oval whose start/end angle and inner radius stay editable in Properties (always a drawing object)"),
             Tool::PolyStar => t("PolyStar", None, false, "Drag a polygon or star. Sides and style in Tool properties"),
             Tool::Pencil => t("Pencil", Some(Y), true, "Freehand line: Straighten, Smooth or Ink mode"),
             Tool::Brush => t("Paint Brush", Some(Y), false, "Freehand filled stroke using the fill colour"),
             Tool::FluidBrush => t("Fluid Brush", Some(B), false, "Brush whose width follows your speed: slow = thick, fast = thin"),
-            Tool::Bone => t("Bone", Some(M), false, "Drag from one object to another to link them with a bone. Then drag objects with the Selection tool to pose them (IK)"),
+            Tool::Bone => t("Bone", Some(M), false, "Drag from one object to another to link them with a bone; drag inside one shape to give it shape bones. Then drag with the Selection tool to pose them (IK)"),
+            Tool::Bind => t("Bind", None, false, "Click a shape bone, then click points of the shape to make them follow it (Alt+click: back to automatic)"),
             Tool::Bucket => t("Paint Bucket", Some(K), false, "Fill a shape (or tint an instance) with the fill colour"),
             Tool::InkBottle => t("Ink Bottle", Some(S), false, "Give a shape's outline the stroke colour and size"),
             Tool::Eyedropper => t("Eyedropper", Some(I), false, "Pick a colour from an object (fill → Paint Bucket, stroke → Ink Bottle)"),
@@ -119,15 +125,15 @@ impl Tool {
         }
     }
     pub fn is_drawing(self) -> bool {
-        matches!(self, Tool::Rect | Tool::Oval | Tool::PolyStar | Tool::Line | Tool::Pencil | Tool::Brush | Tool::Pen | Tool::Text)
+        matches!(self, Tool::Rect | Tool::Oval | Tool::RectPrimitive | Tool::OvalPrimitive | Tool::PolyStar | Tool::Line | Tool::Pencil | Tool::Brush | Tool::Pen | Tool::Text)
     }
 }
 
 /// Toolbar layout: sections → slots (flyout groups) → tools. Animate order.
 pub const SECTIONS: &[&[&[Tool]]] = &[
     &[&[Tool::Select], &[Tool::Subselect], &[Tool::FreeTransform, Tool::GradientTransform], &[Tool::Rotate3D, Tool::Translate3D], &[Tool::Lasso, Tool::PolyLasso]],
-    &[&[Tool::Pen, Tool::AddAnchor, Tool::DeleteAnchor, Tool::ConvertAnchor], &[Tool::Text], &[Tool::Line], &[Tool::Rect, Tool::Oval, Tool::PolyStar]],
-    &[&[Tool::Brush, Tool::FluidBrush, Tool::Pencil], &[Tool::Width], &[Tool::Bone], &[Tool::AssetWarp], &[Tool::Bucket, Tool::InkBottle], &[Tool::Eyedropper], &[Tool::Eraser]],
+    &[&[Tool::Pen, Tool::AddAnchor, Tool::DeleteAnchor, Tool::ConvertAnchor], &[Tool::Text], &[Tool::Line], &[Tool::Rect, Tool::RectPrimitive, Tool::Oval, Tool::OvalPrimitive, Tool::PolyStar]],
+    &[&[Tool::Brush, Tool::FluidBrush, Tool::Pencil], &[Tool::Width], &[Tool::Bone, Tool::Bind], &[Tool::AssetWarp], &[Tool::Bucket, Tool::InkBottle], &[Tool::Eyedropper], &[Tool::Eraser]],
     &[&[Tool::Camera], &[Tool::Hand, Tool::RotateView], &[Tool::Zoom]],
 ];
 
@@ -177,6 +183,17 @@ pub struct ToolOpts {
     pub text_font: FontFace,
     pub text_align: Align,
     pub snap: bool,
+    /// Object Drawing (J): new shapes are separate drawing objects. Off =
+    /// Merge Drawing: shapes cut and merge with the layer's shape (Animate's default).
+    pub object_draw: bool,
+    pub brush_mode: ac_core::merge::PaintMode,
+    pub eraser_mode: ac_core::merge::PaintMode,
+    /// Eraser Faucet: click a fill or line segment to delete it.
+    pub faucet: bool,
+    /// Paint Bucket gap size: 0 don't close, 1 small, 2 medium, 3 large.
+    pub bucket_gap: u8,
+    /// Lock Fill: gradients span the stage instead of each shape.
+    pub lock_fill: bool,
     /// Remembered tool per slot (slot index → tool).
     pub slot_memory: Vec<Tool>,
     pub hidden: BTreeSet<Tool>,
@@ -208,6 +225,12 @@ impl Default for ToolOpts {
             text_font: FontFace::Sans,
             text_align: Align::Left,
             snap: true,
+            object_draw: false,
+            brush_mode: Default::default(),
+            eraser_mode: Default::default(),
+            faucet: false,
+            bucket_gap: 1,
+            lock_fill: false,
             slot_memory: SECTIONS.iter().flat_map(|s| s.iter()).map(|slot| slot[0]).collect(),
             hidden: BTreeSet::new(),
             flyout: None,
@@ -239,7 +262,8 @@ pub fn tool_shortcuts(app: &mut App, ctx: &egui::Context) {
         app.fill_on = true;
     }
     if ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::J)) {
-        app.status = "Object Drawing is always on in this version; Merge Drawing is on the roadmap (M2).".into();
+        app.topts.object_draw = !app.topts.object_draw;
+        app.status = if app.topts.object_draw { "Object Drawing on: each shape is a separate object" } else { "Merge Drawing: shapes cut and merge with the layer's shape" }.into();
     }
 }
 
@@ -461,6 +485,17 @@ pub fn draw_icon(p: &egui::Painter, r: Rect, t: Tool, col: Color32) {
         Tool::Line => { p.line_segment([c + vec2(-8.0, 8.0), c + vec2(8.0, -8.0)], s); }
         Tool::Rect => { p.rect_stroke(Rect::from_center_size(c, vec2(18.0, 14.0)), 0.0, s); }
         Tool::Oval => { p.circle_stroke(c, 8.0, s); }
+        Tool::RectPrimitive => {
+            p.rect_stroke(Rect::from_center_size(c, vec2(18.0, 14.0)), 4.0, s);
+            for d in [vec2(-9.0, -7.0), vec2(9.0, -7.0), vec2(9.0, 7.0), vec2(-9.0, 7.0)] {
+                p.circle_filled(c + d, 2.0, col);
+            }
+        }
+        Tool::OvalPrimitive => {
+            p.circle_stroke(c, 8.0, s);
+            p.circle_filled(c + vec2(8.0, 0.0), 2.2, col);
+            p.circle_filled(c, 1.8, col);
+        }
         Tool::PolyStar => {
             let pts: Vec<_> = (0..10).map(|i| { let a = -std::f32::consts::FRAC_PI_2 + i as f32 * std::f32::consts::PI / 5.0; let rr = if i % 2 == 0 { 9.0 } else { 4.0 }; c + vec2(a.cos() * rr, a.sin() * rr) }).collect();
             p.add(egui::Shape::closed_line(pts, s));
@@ -474,10 +509,15 @@ pub fn draw_icon(p: &egui::Painter, r: Rect, t: Tool, col: Color32) {
             p.circle_filled(c + vec2(-4.0, 4.0), 4.5, col);
             if t == Tool::FluidBrush { p.circle_stroke(c + vec2(-4.0, 4.0), 7.0, thin); }
         }
-        Tool::Bone => {
+        Tool::Bone | Tool::Bind => {
             p.line_segment([c + vec2(-7.0, 7.0), c + vec2(7.0, -7.0)], Stroke::new(3.0_f32, col));
             p.circle_filled(c + vec2(-7.0, 7.0), 3.0, col);
             p.circle_filled(c + vec2(7.0, -7.0), 3.0, col);
+            if t == Tool::Bind {
+                for d in [vec2(4.0, 6.0), vec2(8.0, 2.0)] {
+                    p.rect_filled(Rect::from_center_size(c + d, vec2(3.5, 3.5)), 0.0, Color32::from_rgb(0xFF, 0xD0, 0x40));
+                }
+            }
         }
         Tool::Bucket => {
             p.add(poly(vec![c + vec2(-7.0, -1.0), c + vec2(0.0, -8.0), c + vec2(7.0, -1.0), c + vec2(0.0, 6.0)], Color32::TRANSPARENT, s));

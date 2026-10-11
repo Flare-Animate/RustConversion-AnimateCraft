@@ -104,6 +104,13 @@ fn draw_item(pix: &mut sk::PixmapMut, it: &DrawItem, opts: &RenderOpts, masks: &
             let paint = sk::Paint { shader: sk::Pattern::new(src, sk::SpreadMode::Pad, q, alpha.clamp(0.0, 1.0), sk::Transform::identity()), anti_alias: true, ..Default::default() };
             pix.fill_path(&path, &paint, sk::FillRule::Winding, ts, mask);
         }
+    } else if let Some((img, pm)) = it.pattern.as_ref().filter(|_| opts.tint.is_none()) {
+        // bitmap fill: the library bitmap tiled across the shape
+        if let Some(src) = sk::PixmapRef::from_bytes(&img.rgba, img.width, img.height) {
+            let q = if img.smoothing { sk::FilterQuality::Bilinear } else { sk::FilterQuality::Nearest };
+            let paint = sk::Paint { shader: sk::Pattern::new(src, sk::SpreadMode::Repeat, q, alpha.clamp(0.0, 1.0), to_sk_transform(pm)), anti_alias: true, ..Default::default() };
+            pix.fill_path(&path, &paint, sk::FillRule::EvenOdd, ts, mask);
+        }
     } else if let Some(g) = &it.gradient {
         let mut paint = sk::Paint { anti_alias: true, ..Default::default() };
         let stops: Vec<sk::GradientStop> = g.stops.iter().map(|(t, c)| sk::GradientStop::new(t.clamp(0.0, 1.0), shade(*c, alpha, tint))).collect();
@@ -134,9 +141,30 @@ fn draw_item(pix: &mut sk::PixmapMut, it: &DrawItem, opts: &RenderOpts, masks: &
         let mut paint = sk::Paint::default();
         paint.set_color(shade(st.color, alpha, tint));
         paint.anti_alias = true;
-        let stroke = sk::Stroke { width: st.width.max(0.1), line_cap: sk::LineCap::Round, line_join: sk::LineJoin::Round, ..Default::default() };
-        pix.stroke_path(&path, &paint, &stroke, ts, mask);
+        pix.stroke_path(&path, &paint, &sk_stroke(st.width, &it.stroke_style), ts, mask);
     }
+}
+
+/// tiny-skia stroke for a width + Animate stroke style (dashes, caps, joins).
+fn sk_stroke(width: f32, st: &ac_core::StrokeStyle) -> sk::Stroke {
+    use ac_core::{Cap, Dash, Join};
+    let w = width.max(0.1);
+    let line_cap = match (st.dash, st.cap) {
+        (Dash::Dotted, _) | (_, Cap::Round) => sk::LineCap::Round,
+        (_, Cap::None) => sk::LineCap::Butt,
+        (_, Cap::Square) => sk::LineCap::Square,
+    };
+    let line_join = match st.join {
+        Join::Miter => sk::LineJoin::Miter,
+        Join::Round => sk::LineJoin::Round,
+        Join::Bevel => sk::LineJoin::Bevel,
+    };
+    let dash = match st.dash {
+        Dash::Solid => None,
+        Dash::Dashed => sk::StrokeDash::new(vec![(st.dash_len * w).max(0.5), (st.gap * w).max(0.5)], 0.0),
+        Dash::Dotted => sk::StrokeDash::new(vec![0.01, (st.gap * w).max(w * 1.2)], 0.0),
+    };
+    sk::Stroke { width: w, line_cap, line_join, dash, ..Default::default() }
 }
 
 /// Render a scene frame at `scale` into an RGBA pixmap (stage-sized, clipped).
@@ -468,7 +496,26 @@ impl SvgWriter<'_> {
             let stroke = match it.stroke {
                 Some(s) => {
                     let (h, a) = col(s.color);
-                    format!(" stroke=\"{h}\" stroke-opacity=\"{a:.3}\" stroke-width=\"{}\" stroke-linecap=\"round\" stroke-linejoin=\"round\"", s.width)
+                    {
+                        use ac_core::{Cap, Dash, Join};
+                        let st = &it.stroke_style;
+                        let cap = match (st.dash, st.cap) {
+                            (Dash::Dotted, _) | (_, Cap::Round) => "round",
+                            (_, Cap::None) => "butt",
+                            (_, Cap::Square) => "square",
+                        };
+                        let join = match st.join {
+                            Join::Miter => "miter",
+                            Join::Round => "round",
+                            Join::Bevel => "bevel",
+                        };
+                        let dash = match st.dash {
+                            Dash::Solid => String::new(),
+                            Dash::Dashed => format!(" stroke-dasharray=\"{} {}\"", st.dash_len * s.width, st.gap * s.width),
+                            Dash::Dotted => format!(" stroke-dasharray=\"0.01 {}\"", (st.gap * s.width).max(s.width * 1.2)),
+                        };
+                        format!(" stroke=\"{h}\" stroke-opacity=\"{a:.3}\" stroke-width=\"{}\" stroke-linecap=\"{cap}\" stroke-linejoin=\"{join}\"{dash}", s.width)
+                    }
                 }
                 None => String::new(),
             };

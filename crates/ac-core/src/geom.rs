@@ -1051,3 +1051,98 @@ fn split_seg(p0: Pt, s: &Seg, t: f32) -> (Seg, Seg) {
         other => (other, other),
     }
 }
+
+impl Path {
+    /// Rectangle with a radius per corner (TL, TR, BR, BL); negative radii cut
+    /// the corner inwards (Rectangle Primitive).
+    pub fn rounded_rect4(x: f32, y: f32, w: f32, h: f32, radius: [f32; 4]) -> Path {
+        let (x, w) = if w < 0.0 { (x + w, -w) } else { (x, w) };
+        let (y, h) = if h < 0.0 { (y + h, -h) } else { (y, h) };
+        let max = w.min(h) / 2.0;
+        let r = radius.map(|v| v.clamp(-max, max));
+        if r.iter().all(|v| v.abs() < 1e-3) {
+            return Path::rect(x, y, w, h);
+        }
+        let k = 0.5523;
+        // corner centres and the directions along the edges
+        let corners = [(pt(x, y), pt(1.0, 0.0), pt(0.0, 1.0)), (pt(x + w, y), pt(0.0, 1.0), pt(-1.0, 0.0)), (pt(x + w, y + h), pt(-1.0, 0.0), pt(0.0, -1.0)), (pt(x, y + h), pt(0.0, -1.0), pt(1.0, 0.0))];
+        let mut segs = vec![];
+        for (i, (c, next_dir, prev_back)) in corners.iter().enumerate() {
+            let rr = r[i];
+            let a = rr.abs();
+            // entry point (coming from the previous corner) and exit point
+            let entry = pt(c.x + prev_back.x * a, c.y + prev_back.y * a);
+            let exit = pt(c.x + next_dir.x * a, c.y + next_dir.y * a);
+            if i == 0 {
+                segs.push(Seg::M(entry));
+            } else {
+                segs.push(Seg::L(entry));
+            }
+            if a < 1e-3 {
+                continue;
+            }
+            if rr > 0.0 {
+                let c1 = pt(entry.x - prev_back.x * a * k, entry.y - prev_back.y * a * k);
+                let c2 = pt(exit.x - next_dir.x * a * k, exit.y - next_dir.y * a * k);
+                segs.push(Seg::C(c1, c2, exit));
+            } else {
+                // inverted corner: curve bulging into the rectangle
+                let inner = pt(c.x + (next_dir.x + prev_back.x) * a, c.y + (next_dir.y + prev_back.y) * a);
+                let c1 = entry.lerp(inner, k);
+                let c2 = exit.lerp(inner, k);
+                segs.push(Seg::C(c1, c2, exit));
+            }
+        }
+        segs.push(Seg::Z);
+        Path { segs }
+    }
+
+    /// Oval with start/end angle (degrees, clockwise from 3 o'clock) and inner
+    /// radius in % (Oval tool options, Oval Primitive). `close` joins an open
+    /// arc's ends to the centre (or inner arc).
+    #[allow(clippy::too_many_arguments)]
+    pub fn oval_arc(cx: f32, cy: f32, rx: f32, ry: f32, start: f32, end: f32, inner: f32, close: bool) -> Path {
+        let mut sweep = (end - start).rem_euclid(360.0);
+        let full = sweep < 0.01;
+        if full {
+            sweep = 360.0;
+        }
+        let inner = (inner / 100.0).clamp(0.0, 0.99);
+        if full && inner <= 0.0 {
+            return Path::ellipse(cx, cy, rx, ry);
+        }
+        let arc = |k: f32, a0: f32, sweep: f32| -> Vec<Pt> {
+            let n = ((sweep / 4.0).ceil() as usize).max(2);
+            (0..=n)
+                .map(|i| {
+                    let a = (a0 + sweep * i as f32 / n as f32).to_radians();
+                    pt(cx + rx * k * a.cos(), cy + ry * k * a.sin())
+                })
+                .collect()
+        };
+        if full {
+            let mut outer = arc(1.0, start, 360.0);
+            outer.pop();
+            let mut inn = arc(inner, start, 360.0);
+            inn.pop();
+            inn.reverse();
+            let mut p = Path::polygon(&outer);
+            p.segs.extend(Path::polygon(&inn).segs);
+            return p;
+        }
+        let mut pts = arc(1.0, start, sweep);
+        if !close {
+            let mut segs = vec![Seg::M(pts[0])];
+            segs.extend(pts[1..].iter().map(|x| Seg::L(*x)));
+            return Path { segs };
+        }
+        if inner > 0.0 {
+            let mut i = arc(inner, start, sweep);
+            i.reverse();
+            pts.extend(i);
+        } else {
+            pts.push(pt(cx, cy));
+        }
+        Path::polygon(&pts)
+    }
+}

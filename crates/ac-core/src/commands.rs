@@ -95,6 +95,21 @@ cmds! {
     "camera.set", "x?, y?, zoom?, rotation?, frame?", "Camera centre, zoom (1 = 100%) and rotation at a frame (makes a keyframe)";
     "camera.remove", "", "Remove the camera layer";
     "selection.arrange", "front (bool)", "Bring to front / send to back";
+    "drawing.mode", "merge (bool)", "Merge Drawing on: draw.* commands cut and merge into the layer's shape instead of adding drawing objects";
+    "merge.select", "x, y, connected? (double-click), add?", "Select the fill or line of the merge shape at a point (it floats until deselected)";
+    "merge.select_rect", "x, y, w, h, add?", "Marquee over merge shapes: cuts out and selects what is inside";
+    "merge.deselect", "", "Merge floating selections back into their shapes";
+    "merge.erase", "x, y, w, h, mode? ('normal'|'fills'|'lines'|'selection'|'inside')", "Eraser over a rectangle on the current layer's merge shape";
+    "merge.bucket", "x, y, color?, gap? (px)", "Paint Bucket on the merge shape: recolour a fill or fill the area lines enclose";
+    "merge.to_object", "", "Turn the floating merge selection into a drawing object";
+    "selection.combine", "op ('union'|'intersect'|'punch'|'crop')", "Modify ▸ Combine Objects on the selected drawing objects";
+    "selection.shape", "op ('smooth'|'straighten'|'optimize')", "Modify ▸ Shape cleanup on drawing objects or a merge selection";
+    "selection.stroke_style", "dash? ('solid'|'dashed'|'dotted'), cap? ('none'|'round'|'square'), join? ('miter'|'round'|'bevel'), dash_len?, gap?", "Stroke style of selected drawing objects";
+    "selection.bitmap_fill", "bitmap (name or id, null = none)", "Fill selected drawing objects with a library bitmap";
+    "draw.rect_primitive", "x, y, w, h, radius? or radii [tl,tr,br,bl], fill?, stroke?", "Rectangle Primitive (corner radii stay editable)";
+    "draw.oval_primitive", "x, y, w, h, start?, end?, inner? (%), fill?, stroke?", "Oval Primitive (angles and inner radius stay editable)";
+    "shape_bone.add", "x1, y1, x2, y2", "Bone inside the drawing object at (x1,y1), from (x1,y1) to (x2,y2); chains onto a bone ending at (x1,y1)";
+    "shape_bone.pose", "x, y, to_x, to_y", "Drag the shape bone whose tail is at (x,y) to (to_x,to_y) (IK)";
     "selection.swap_symbol", "symbol (name or id)", "Swap Symbol: selected instances show another symbol, keeping transform and effects";
     "selection.color_effect", "style ('none'|'brightness'|'tint'|'advanced'|'alpha'), amount? (-100..100 or 0..100), color?, mul? [r,g,b,a %], add? [r,g,b,a]", "Color effect of the selected objects";
     "selection.group", "", "Ctrl+G: group the selection (per layer)";
@@ -218,6 +233,12 @@ fn add_shape(ed: &mut Editor, name: &str, path: Path, fill: Option<Color>, strok
     if fill.is_none() && stroke.is_none() {
         return Err("shape needs a fill or a stroke".into());
     }
+    if ed.script_merge && name != "Text" {
+        if !ed.merge_draw(&path, fill, None, stroke) {
+            return Err("current layer is locked or hidden".into());
+        }
+        return Ok(json!({ "layer": ed.layer + 1, "merged": true }));
+    }
     let s = ed.add_element(Element::shape(name, Shape { path, fill, stroke, ..Default::default() })).ok_or("current layer is locked or hidden")?;
     Ok(json!({ "layer": s.layer + 1, "index": s.element }))
 }
@@ -230,6 +251,7 @@ fn element_json(ed: &Editor, s: Selection) -> Value {
         ElementKind::Text(t) => ("text", json!({ "text": t.text, "size": t.size, "color": hex(t.color), "font": t.family })),
         ElementKind::Group(c) => ("group", json!({ "children": c.len() })),
         ElementKind::Bitmap(b) => ("bitmap", json!({ "bitmap": ed.doc.bitmap(b.bitmap).map(|a| a.name.clone()) })),
+        ElementKind::Canvas(c) => ("merge_shape", json!({ "fills": c.fills.len(), "strokes": c.strokes.len() })),
     };
     let b = ed.bounds_of(&[s]);
     json!({
@@ -821,6 +843,16 @@ pub fn execute(ed: &mut Editor, id: &str, a: &Value) -> Result<Value, String> {
                             st.width = w;
                         }
                     }
+                    ElementKind::Canvas(cv) => {
+                        if let Some(f) = fill {
+                            let all: Vec<crate::merge::Part> = (0..cv.fills.len()).map(crate::merge::Part::Fill).collect();
+                            cv.set_fill(&all, f, None);
+                        }
+                        if let Some(Some(c)) = stroke {
+                            let all: Vec<crate::merge::Part> = (0..cv.strokes.len()).map(crate::merge::Part::Stroke).collect();
+                            cv.set_stroke(&all, Stroke { color: c, width: sw.unwrap_or(1.0) });
+                        }
+                    }
                     ElementKind::Text(t) => {
                         if let Some(Some(c)) = fill {
                             t.color = c;
@@ -1020,6 +1052,142 @@ pub fn execute(ed: &mut Editor, id: &str, a: &Value) -> Result<Value, String> {
                     }
                 }
             });
+            Ok(Value::Null)
+        }
+        "drawing.mode" => {
+            ed.script_merge = boolean(a, "merge").unwrap_or(true);
+            Ok(Value::Null)
+        }
+        "merge.select" => {
+            let p0 = pt(req(a, "x")?, req(a, "y")?);
+            let Some((li, Some(part), _)) = ed.merge_part_at(p0, 1.0) else { return Err("no merge-shape fill or line there".into()) };
+            ed.merge_select(li, part, boolean(a, "connected").unwrap_or(false), boolean(a, "add").unwrap_or(false));
+            Ok(json!(ed.merge_float().map(|(_, f)| json!({ "fills": f.fills.len(), "lines": f.strokes.len() }))))
+        }
+        "merge.select_rect" => {
+            let (x, y, w, h) = (req(a, "x")?, req(a, "y")?, req(a, "w")?, req(a, "h")?);
+            Ok(json!(ed.merge_select_area(&[vec![pt(x, y), pt(x + w, y), pt(x + w, y + h), pt(x, y + h)]], boolean(a, "add").unwrap_or(false))))
+        }
+        "merge.deselect" => {
+            ed.deselect();
+            Ok(Value::Null)
+        }
+        "merge.erase" => {
+            use crate::merge::PaintMode;
+            let (x, y, w, h) = (req(a, "x")?, req(a, "y")?, req(a, "w")?, req(a, "h")?);
+            let mode = match string(a, "mode").unwrap_or("normal") {
+                "normal" => PaintMode::Normal,
+                "fills" => PaintMode::Fills,
+                "lines" => PaintMode::Lines,
+                "selection" => PaintMode::Selection,
+                "inside" => PaintMode::Inside,
+                m => return Err(format!("unknown eraser mode '{m}'")),
+            };
+            Ok(json!(ed.merge_erase(&[vec![pt(x, y), pt(x + w, y), pt(x + w, y + h), pt(x, y + h)]], mode, pt(x + w / 2.0, y + h / 2.0), Some("Erase"))))
+        }
+        "merge.bucket" => {
+            let c = color_arg(a, "color")?.flatten().unwrap_or(Color::rgb(0x2D, 0x8C, 0xEB));
+            Ok(json!(ed.merge_bucket(pt(req(a, "x")?, req(a, "y")?), c, num(a, "gap").unwrap_or(3.0))))
+        }
+        "merge.to_object" => Ok(json!(ed.merge_to_object())),
+        "selection.combine" => {
+            use crate::merge::BoolOp;
+            let op = match string(a, "op").unwrap_or("union") {
+                "union" => BoolOp::Union,
+                "intersect" => BoolOp::Intersect,
+                "punch" => BoolOp::Punch,
+                "crop" => BoolOp::Crop,
+                o => return Err(format!("unknown op '{o}'")),
+            };
+            ed.combine_objects(op)?;
+            Ok(Value::Null)
+        }
+        "selection.shape" => {
+            ed.shape_cleanup(string(a, "op").unwrap_or("optimize"));
+            Ok(Value::Null)
+        }
+        "selection.stroke_style" => {
+            let (dash, cap, join) = (string(a, "dash").map(str::to_string), string(a, "cap").map(str::to_string), string(a, "join").map(str::to_string));
+            let (dl, gap) = (num(a, "dash_len"), num(a, "gap"));
+            ed.modify_selected("Stroke Style", move |e| {
+                if let ElementKind::Shape(sh) = &mut e.kind {
+                    let st = &mut sh.stroke_style;
+                    match dash.as_deref() {
+                        Some("dashed") => st.dash = Dash::Dashed,
+                        Some("dotted") => st.dash = Dash::Dotted,
+                        Some("solid") => st.dash = Dash::Solid,
+                        _ => {}
+                    }
+                    match cap.as_deref() {
+                        Some("none") => st.cap = Cap::None,
+                        Some("round") => st.cap = Cap::Round,
+                        Some("square") => st.cap = Cap::Square,
+                        _ => {}
+                    }
+                    match join.as_deref() {
+                        Some("miter") => st.join = Join::Miter,
+                        Some("round") => st.join = Join::Round,
+                        Some("bevel") => st.join = Join::Bevel,
+                        _ => {}
+                    }
+                    if let Some(v) = dl {
+                        st.dash_len = v;
+                    }
+                    if let Some(v) = gap {
+                        st.gap = v;
+                    }
+                }
+            });
+            Ok(Value::Null)
+        }
+        "selection.bitmap_fill" => {
+            let id = match a.get("bitmap") {
+                None | Some(Value::Null) => None,
+                Some(Value::Number(n)) => Some(n.as_u64().unwrap_or(0) as crate::bitmap::BitmapId),
+                Some(Value::String(s)) => Some(ed.doc.bitmaps.iter().find(|b| b.name == *s).map(|b| b.id).ok_or_else(|| format!("no bitmap named '{s}'"))?),
+                _ => return Err("bitmap must be a name, id or null".into()),
+            };
+            ed.modify_selected("Bitmap Fill", move |e| {
+                if let ElementKind::Shape(sh) = &mut e.kind {
+                    let o = sh.path.bounds().map(|(lo, _)| lo).unwrap_or_default();
+                    sh.bitmap_fill = id.map(|bitmap| BitmapFill { bitmap, matrix: Matrix::translate(o.x, o.y) });
+                }
+            });
+            Ok(Value::Null)
+        }
+        "draw.rect_primitive" | "draw.oval_primitive" => {
+            let (fill, stroke) = shape_style(a, Some(Color::rgb(0x2D, 0x8C, 0xEB)))?;
+            let (x, y, w, h) = (req(a, "x")?, req(a, "y")?, req(a, "w")?, req(a, "h")?);
+            let prim = if id == "draw.rect_primitive" {
+                let r = num(a, "radius").unwrap_or(0.0);
+                let mut radius = [r; 4];
+                if let Some(v) = a.get("radii").and_then(|v| v.as_array()) {
+                    for (i, x) in v.iter().take(4).enumerate() {
+                        radius[i] = x.as_f64().unwrap_or(0.0) as f32;
+                    }
+                }
+                Primitive::Rect { x, y, w, h, radius }
+            } else {
+                Primitive::Oval { cx: x + w / 2.0, cy: y + h / 2.0, rx: w / 2.0, ry: h / 2.0, start: num(a, "start").unwrap_or(0.0), end: num(a, "end").unwrap_or(0.0), inner: num(a, "inner").unwrap_or(0.0), close: true }
+            };
+            let s = ed.add_element(Element::shape(if id == "draw.rect_primitive" { "Rectangle Primitive" } else { "Oval Primitive" }, Shape { path: prim.path(), fill, stroke, primitive: Some(prim), ..Default::default() })).ok_or("current layer is locked or hidden")?;
+            Ok(json!({ "layer": s.layer + 1, "index": s.element }))
+        }
+        "shape_bone.add" => {
+            let (h, t) = (pt(req(a, "x1")?, req(a, "y1")?), pt(req(a, "x2")?, req(a, "y2")?));
+            // chain from a bone ending at h, else the shape under h
+            let s = match ed.rig_bones().into_iter().find(|(_, _, _, tail)| tail.dist(h) < 1.0) {
+                Some((s, ..)) => s,
+                None => ed.hit_test(h).ok_or("no drawing object at x1, y1")?,
+            };
+            let b = ed.rig_add_bone(s, h, t).ok_or("shape bones go inside a drawing object")?;
+            Ok(json!(b + 1))
+        }
+        "shape_bone.pose" => {
+            let from = pt(req(a, "x")?, req(a, "y")?);
+            let (s, b, _, _) = ed.rig_bones().into_iter().min_by(|x, y| x.3.dist(from).partial_cmp(&y.3.dist(from)).unwrap()).ok_or("no shape bones")?;
+            ed.begin_edit("Pose Shape Bones");
+            ed.rig_ik(s, b, pt(req(a, "to_x")?, req(a, "to_y")?));
             Ok(Value::Null)
         }
         "selection.arrange" => {

@@ -9,6 +9,8 @@ pub mod editor;
 pub mod frames;
 pub mod geom;
 pub mod model;
+pub mod merge;
+pub mod rig;
 pub mod motion;
 pub mod text;
 pub mod commands;
@@ -870,5 +872,96 @@ mod tests {
         let at0 = child_x(&ed, 0);
         ed.set_anim_parent(0, None);
         assert!(close(child_x(&ed, 0), at0), "unparenting keeps the place on keyframes");
+    }
+
+    #[test]
+    fn merge_drawing_workflow() {
+        use crate::merge::Part;
+        let mut ed = Editor::new(Document::default());
+        let red = Color::rgb(255, 0, 0);
+        let blue = Color::rgb(0, 0, 255);
+        assert!(ed.merge_draw(&Path::rect(0.0, 0.0, 100.0, 100.0), Some(red), None, None));
+        assert!(ed.merge_draw(&Path::rect(50.0, 50.0, 100.0, 100.0), Some(blue), None, None));
+        let c = ed.canvas(0).unwrap();
+        assert_eq!((c.fills.len(), ed.timeline().layers[0].keyframes[&0].elements.len()), (2, 1), "one merge shape, two regions");
+        // click the blue square and drag it away: the red square keeps its notch
+        let (li, part, _) = ed.merge_part_at(pt(120.0, 120.0), 1.0).unwrap();
+        assert!(matches!(part, Some(Part::Fill(_))));
+        ed.merge_select(li, part.unwrap(), false, false);
+        assert_eq!(ed.selection.len(), 1);
+        let b = ed.selection_bounds().unwrap();
+        assert!(close(b.0.x, 50.0) && close(b.1.x, 150.0), "bounds are the selected piece: {b:?}");
+        ed.modify_selected("Move", |e| e.matrix.tx += 200.0);
+        ed.deselect();
+        let c = ed.canvas(0).unwrap();
+        assert_eq!(c.fills.len(), 2);
+        let red_bounds = c.fills.iter().find(|f| f.fill == Some(red)).unwrap().bounds().unwrap();
+        assert!(close(red_bounds.1.x, 100.0));
+        // drop red onto blue: blue gets cut
+        let (li, part, _) = ed.merge_part_at(pt(10.0, 10.0), 1.0).unwrap();
+        ed.merge_select(li, part.unwrap(), false, false);
+        ed.modify_selected("Move", |e| e.matrix.tx += 220.0);
+        ed.deselect();
+        let c = ed.canvas(0).unwrap();
+        assert!(c.fills.iter().any(|f| f.fill == Some(blue)));
+        // undo brings the drag back
+        ed.undo();
+        assert!(ed.canvas(0).unwrap().float.is_some() || ed.canvas(0).unwrap().fills.iter().any(|f| f.fill == Some(red)));
+        // marquee half of the shape and delete it
+        let mut ed2 = Editor::new(Document::default());
+        ed2.merge_draw(&Path::rect(0.0, 0.0, 100.0, 100.0), Some(red), None, None);
+        assert!(ed2.merge_select_area(&[vec![pt(50.0, -10.0), pt(120.0, -10.0), pt(120.0, 120.0), pt(50.0, 120.0)]], false));
+        assert_eq!(ed2.delete_selected(), 1);
+        let b = ed2.canvas(0).unwrap().bounds().unwrap();
+        assert!(close(b.1.x, 50.0), "{b:?}");
+        // the document round-trips
+        let json = serde_json::to_string(&ed2.doc).unwrap();
+        assert_eq!(serde_json::from_str::<Document>(&json).unwrap(), ed2.doc);
+    }
+
+    #[test]
+    fn combine_objects() {
+        use crate::merge::BoolOp;
+        let mk = |x: f32, c: Color| Element::shape("s", Shape::new(Path::rect(x, 0.0, 100.0, 100.0), Some(c), None));
+        let area = |ed: &Editor, i: usize| -> f32 {
+            let el = ed.element_at(Selection { layer: 0, element: i }).unwrap();
+            let ElementKind::Shape(sh) = el.kind else { panic!() };
+            let (lo, hi) = sh.path.bounds().unwrap();
+            (hi.x - lo.x) * (hi.y - lo.y)
+        };
+        for (op, n, w) in [(BoolOp::Intersect, 1, 50.0 * 100.0), (BoolOp::Punch, 1, 50.0 * 100.0), (BoolOp::Crop, 1, 50.0 * 100.0), (BoolOp::Union, 1, 150.0 * 100.0)] {
+            let mut ed = Editor::new(Document::default());
+            ed.add_element(mk(0.0, Color::rgb(255, 0, 0)));
+            ed.add_element(mk(50.0, Color::rgb(255, 0, 0)));
+            ed.selection = vec![Selection { layer: 0, element: 0 }, Selection { layer: 0, element: 1 }];
+            ed.combine_objects(op).unwrap();
+            assert_eq!(ed.selection.len(), n, "{op:?}");
+            assert!(close(area(&ed, 0), w), "{op:?}: {}", area(&ed, 0));
+        }
+        // Break Apart: a drawing object becomes merge shape
+        let mut ed = Editor::new(Document::default());
+        ed.add_element(mk(0.0, Color::rgb(255, 0, 0)));
+        ed.selection = vec![Selection { layer: 0, element: 0 }];
+        ed.break_apart();
+        assert_eq!(ed.canvas(0).unwrap().fills.len(), 1);
+    }
+
+    #[test]
+    fn primitives_and_stroke_styles() {
+        let r = Primitive::Rect { x: 0.0, y: 0.0, w: 100.0, h: 50.0, radius: [10.0, 0.0, -10.0, 0.0] };
+        let (lo, hi) = r.path().bounds().unwrap();
+        assert!(close(lo.x, 0.0) && close(hi.x, 100.0) && close(hi.y, 50.0));
+        // the inverted corner cuts in: the bottom-right corner point is not on the path
+        assert!(!r.path().hit(pt(99.5, 49.5), true, 0.0));
+        let o = Primitive::Oval { cx: 0.0, cy: 0.0, rx: 50.0, ry: 50.0, start: 0.0, end: 180.0, inner: 50.0, close: true };
+        assert!(o.path().hit(pt(0.0, 37.0), true, 0.0), "inside the half ring");
+        assert!(!o.path().hit(pt(0.0, -37.0), true, 0.0), "other half is open");
+        assert!(!o.path().hit(pt(0.0, 10.0), true, 0.0), "the hole");
+        // a default stroke style has usable dash lengths (regression: derived Default gave 0)
+        let st = StrokeStyle::default();
+        assert!(st.is_default() && st.dash_len > 0.0 && st.gap > 0.0);
+        let json = serde_json::to_string(&Shape { primitive: Some(r), ..Shape::new(r.path(), None, None) }).unwrap();
+        let back: Shape = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.primitive, Some(r));
     }
 }
