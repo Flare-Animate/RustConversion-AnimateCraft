@@ -10,6 +10,10 @@ use ac_core::motion::Ease;
 use std::fmt::Write as _;
 
 const GRAD: f32 = 819.2;
+/// Interoperability identifiers. The XFL namespace and the package mimetype
+/// are how the authoring tool recognises an XFL document; they are functional
+/// names, written only into .fla/XFL exports (never into AnimationCraft's own
+/// .acx files) and used for nothing else. See CONTRIBUTING.md.
 const NS: &str = r#"xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns="http://ns.adobe.com/xfl/2008/""#;
 
 fn esc(s: &str) -> String {
@@ -671,7 +675,6 @@ pub(crate) fn write(doc: &Document) -> (Package, Vec<String>) {
     let _ = write!(x, "  <timelines>\n{timelines}  </timelines>\n</DOMDocument>\n");
     pkg.insert("DOMDocument.xml".into(), x.into_bytes());
     pkg.insert("PublishSettings.xml".into(), b"<flash_profiles>\n  <flash_profile version=\"1.0\" name=\"Default\" current=\"true\"/>\n</flash_profiles>\n".to_vec());
-    pkg.insert("META-INF/metadata.xml".into(), b"<?xpacket begin=\"\" id=\"\"?>\n<x:xmpmeta xmlns:x=\"adobe:ns:meta/\"><rdf:RDF xmlns:rdf=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\"><rdf:Description rdf:about=\"\" xmlns:xmp=\"http://ns.adobe.com/xap/1.0/\"><xmp:CreatorTool>AnimationCraft</xmp:CreatorTool></rdf:Description></rdf:RDF></x:xmpmeta>\n<?xpacket end=\"w\"?>\n".to_vec());
     let warn = crate::read::dedup(w.warn);
     (pkg, warn)
 }

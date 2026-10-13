@@ -266,3 +266,22 @@ See [SCRIPTING.md](SCRIPTING.md) for the API, examples and the safety model.
 keyboard input (needs `pip install python-xlib`). See `log/devlog.md`.
 
 See `CLAUDE.md` for the full feature map, architecture and roadmap.
+
+## Legal and provenance
+
+AnimationCraft is an independent project. It is **not affiliated with,
+endorsed by or sponsored by Adobe**; "Adobe", "Animate" and "Flash" are
+trademarks of Adobe and are used here only to describe compatibility.
+
+It is written **clean-room**: from public documentation and the observed
+behaviour of the user interface, never from Adobe's code, decompiled or
+disassembled programs, or files taken from an Adobe install (icons, presets,
+samples, templates). `.fla`/XFL support is for interoperability and was built
+from the published structure of the format and files this project wrote
+itself. The rules every contribution follows are in
+[CONTRIBUTING.md](CONTRIBUTING.md); please report anything that looks out of
+place.
+
+Licensed `MIT OR Apache-2.0`. Third-party crates keep their own licences
+(MIT/Apache/BSD-style, plus MPL-2.0 for the Symphonia audio decoders and usvg,
+used unmodified).

@@ -195,7 +195,11 @@ The full feature-by-feature comparison with Animate and the current build order
 
 - Clean-room: build from public documentation and observed behaviour only.
   Never copy Adobe code, icons, UI artwork or sample files. Don't use "Adobe"
-  or "Animate" in the product name.
+  or "Animate" in the product name. **CONTRIBUTING.md is the full policy**:
+  no decompiling/disassembling/debugging Adobe software (its licence restricts
+  reverse engineering), no resources from an install, only self-authored or
+  permitted test files; XFL identifiers stay inside `ac-xfl`. "Reverse
+  engineering" in this project means re-creating behaviour from the outside.
 - Shortcuts follow Animate's defaults (V, Q, R, O, N, Y, K, H, F5–F8, Enter, `,` `.`).
 - Before finishing a task: `cargo test --workspace`, `cargo clippy --workspace`,
   and for UI work run `AC_SCREENSHOT=out.png cargo run -p ac-app` (works under

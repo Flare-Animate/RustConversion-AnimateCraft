@@ -7,7 +7,8 @@
 //! An uncompressed XFL folder has the same files plus a `<name>.xfl` marker.
 //!
 //! Everything here is built from public descriptions of the format and from
-//! files this program writes itself (clean-room; no third-party samples).
+//! files this program writes itself (clean-room; no third-party samples, no
+//! disassembly or debugging of other programs). See CONTRIBUTING.md.
 
 pub mod dat;
 pub mod edges;
