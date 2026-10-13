@@ -59,6 +59,10 @@ pub struct App {
     pub(crate) pan: Vec2,
     pub(crate) fit_pending: bool,
     pub(crate) playing: bool,
+    /// Sound while playing (None = silent / not started yet).
+    #[cfg(feature = "audio")]
+    pub(crate) audio: Option<ac_audio::playback::Player>,
+    pub(crate) audio_started: bool,
     pub(crate) loop_play: bool,
     play_accum: f64,
     pub(crate) onion: bool,
@@ -136,6 +140,7 @@ impl App {
         cc.egui_ctx.style_mut(|s| s.spacing.item_spacing = vec2(6.0, 5.0));
 
         ac_render::fonts::install_system_fonts();
+        ac_audio::register();
         let mut app = App {
             ctx: cc.egui_ctx.clone(),
             ed: Editor::new(demo_document()),
@@ -149,6 +154,9 @@ impl App {
             pan: Vec2::ZERO,
             fit_pending: true,
             playing: false,
+            #[cfg(feature = "audio")]
+            audio: None,
+            audio_started: false,
             loop_play: true,
             play_accum: 0.0,
             onion: false,
@@ -246,6 +254,39 @@ impl App {
             }
         }
         self.props_tab = PropsTab::Tool;
+    }
+
+    /// Start the movie's sound with playback, stop it when playback stops.
+    fn audio_tick(&mut self) {
+        if !self.playing {
+            self.audio_started = false;
+            #[cfg(feature = "audio")]
+            {
+                self.audio = None;
+            }
+            return;
+        }
+        if self.audio_started {
+            return;
+        }
+        self.audio_started = true;
+        #[cfg(feature = "audio")]
+        if ac_audio::has_sound(&self.ed.doc) && self.ed.editing.is_none() {
+            let rate = ac_audio::playback::output_rate().unwrap_or(44100);
+            let from = self.ed.doc.scene_start(self.ed.scene) + self.ed.frame;
+            let samples = std::sync::Arc::new(ac_audio::mix(&self.ed.doc, from, rate));
+            match ac_audio::playback::Player::start(samples, rate) {
+                Ok(p) => self.audio = Some(p),
+                Err(e) => self.status = format!("Sound off: {e}"),
+            }
+        }
+    }
+    pub(crate) fn restart_audio(&mut self) {
+        self.audio_started = false;
+        #[cfg(feature = "audio")]
+        {
+            self.audio = None;
+        }
     }
 
     pub(crate) fn toggle_play(&mut self) {
@@ -607,6 +648,7 @@ impl App {
                         if ui.add(egui::Button::new("Import to Stage…").shortcut_text("Ctrl+R")).on_hover_text("PNG, JPG, GIF, BMP").clicked() { self.file(FileAction::ImportImage); ui.close_menu(); }
                         if ui.button("Import Image Sequence…").on_hover_text("walk0001.png, walk0002.png, … onto consecutive keyframes").clicked() { self.file(FileAction::ImportSequence); ui.close_menu(); }
                         if ui.button("Import SVG…").clicked() { self.file(FileAction::ImportSvg); ui.close_menu(); }
+                        if ui.button("Import Sound…").on_hover_text("WAV, MP3, OGG Vorbis, FLAC").clicked() { self.file(FileAction::ImportSound); ui.close_menu(); }
                     });
                     ui.menu_button("Export", |ui| {
                         if ui.button("Export Image (PNG)…").clicked() { self.file(FileAction::ExportPng); ui.close_menu(); }
@@ -614,6 +656,13 @@ impl App {
                         if ui.button("Export Animated GIF…").clicked() { self.file(FileAction::ExportGif); ui.close_menu(); }
                         if ui.button("Export PNG Sequence…").clicked() { self.file(FileAction::ExportPngSequence); ui.close_menu(); }
                         if ui.button("Export Video…").on_hover_text("MP4 / WebM / MOV (needs ffmpeg)").clicked() { self.file(FileAction::ExportVideo); ui.close_menu(); }
+                        ui.separator();
+                        if ui.button("Publish HTML5 Canvas…").on_hover_text("A web page that plays the movie: scripts, buttons and sounds included").clicked() { self.file(FileAction::ExportHtml5); ui.close_menu(); }
+                        if ui.button("Generate Sprite Sheet…").on_hover_text("All frames in one PNG + JSON / Starling XML data").clicked() { self.file(FileAction::ExportSpriteSheet); ui.close_menu(); }
+                        if ui.button("Export Animated SVG…").clicked() { self.file(FileAction::ExportAnimatedSvg); ui.close_menu(); }
+                        if ui.button("Export Lottie…").clicked() { self.file(FileAction::ExportLottie); ui.close_menu(); }
+                        ui.separator();
+                        if ui.button("Export .fla / XFL…").on_hover_text("CS5+ .fla (zipped) or an uncompressed XFL folder").clicked() { self.file(FileAction::ExportXfl); ui.close_menu(); }
                     });
                     if ui.add(egui::Button::new("Publish Settings…").shortcut_text("Ctrl+Shift+F12")).clicked() { self.publish.open = true; ui.close_menu(); }
                     ui.separator();
@@ -1035,7 +1084,7 @@ impl eframe::App for App {
             while self.play_accum >= spf {
                 self.play_accum -= spf;
                 if self.ed.frame + 1 >= n {
-                    if self.loop_play { self.ed.frame = 0; } else { self.playing = false; break; }
+                    if self.loop_play { self.ed.frame = 0; self.restart_audio(); } else { self.playing = false; break; }
                 } else {
                     self.ed.frame += 1;
                 }
@@ -1046,6 +1095,7 @@ impl eframe::App for App {
             }
             ctx.request_repaint();
         }
+        self.audio_tick();
         self.menu_bar(ctx);
         self.status_bar(ctx);
         timeline::panel(self, ctx);

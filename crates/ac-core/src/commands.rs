@@ -73,6 +73,9 @@ cmds! {
     "select.layer", "layer?", "Select every object on one layer (default: current) at the current frame";
     "select.at", "x, y, add?", "Select the topmost object at a point";
     "select.rect", "x, y, w, h, add?", "Select objects fully inside a box";
+    "select.element", "layer, index (0-based, bottom first), add?", "Select one object by layer and stacking index";
+    "frame.info", "layer?, frame?", "The keyframe span at the target: start, duration, label, tween, script, sound and its objects";
+    "symbol.new", "name, kind? ('graphic'|'movieclip'|'button')", "Ctrl+F8: new empty symbol, opened for editing; returns its id";
     "selection.info", "", "Selected objects with kind, name and bounds";
     "selection.move", "dx, dy", "Move the selection";
     "selection.set_position", "x, y", "Move the selection's top-left to x, y";
@@ -119,6 +122,11 @@ cmds! {
     "selection.clear_filters", "", "Remove all filters";
     "selection.set_blend", "mode ('normal'|'multiply'|'screen'|…)", "Blend mode";
     "import.image", "path (PNG), x?, y?, place? (true)", "Import a PNG into the library (and place it)";
+    "import.sound", "path (WAV/MP3/OGG/FLAC), name?", "Import a sound into the library; returns its id";
+    "timeline.set_sound", "sound (name or id; null = none), sync? ('event'|'start'|'stop'|'stream'), repeat? (1), loop? (false), layer?, frame?", "Properties ▸ Sound on the keyframe at the target";
+    "sound.list", "", "Library sounds with length (seconds, when this build can decode them)";
+    "sound.delete", "sound (name or id)", "Delete a library sound (and its keyframe uses)";
+    "lipsync.apply", "audio_layer, map? {\"Neutral\": frame, \"MBP\": frame, \"Ai\", \"E\", \"O\", \"U\", \"FV\", \"L\", \"WQ\", \"etc\"} (1-based frames of the mouth symbol)", "Auto Lip-Sync the selected mouth instance to the sound on audio_layer; returns keyframes made";
     "library.list", "", "Library items";
     "library.place", "symbol (name or id), x, y", "Place an instance on the current layer";
     "library.rename", "symbol, name", "Rename a library item";
@@ -219,6 +227,17 @@ fn symbol_arg(ed: &Editor, a: &Value) -> Result<SymbolId, String> {
         }
         Some(Value::String(s)) => ed.doc.library.iter().find(|x| x.name == *s).map(|x| x.id).ok_or_else(|| format!("no library item named '{s}'")),
         _ => Err("missing 'symbol' (name or id)".into()),
+    }
+}
+
+fn sound_arg(ed: &Editor, v: &Value) -> Result<crate::sound::SoundId, String> {
+    match v {
+        Value::Number(n) => {
+            let id = n.as_u64().unwrap_or(0) as crate::sound::SoundId;
+            ed.doc.sound(id).map(|_| id).ok_or_else(|| format!("no sound with id {id}"))
+        }
+        Value::String(s) => ed.doc.sounds.iter().find(|x| x.name == *s || x.name.rsplit_once('.').map(|(b, _)| b) == Some(s.as_str())).map(|x| x.id).ok_or_else(|| format!("no sound named '{s}'")),
+        _ => Err("sound must be a name or id".into()),
     }
 }
 
@@ -545,7 +564,7 @@ pub fn execute(ed: &mut Editor, id: &str, a: &Value) -> Result<Value, String> {
                 .layers
                 .iter()
                 .enumerate()
-                .map(|(i, l)| json!({ "layer": i + 1, "name": l.name, "visible": l.visible, "locked": l.locked, "outline": l.outline, "frames": l.end, "keyframes": l.keyframes.keys().map(|k| k + 1).collect::<Vec<_>>() }))
+                .map(|(i, l)| json!({ "layer": i + 1, "name": l.name, "visible": l.visible, "locked": l.locked, "outline": l.outline, "frames": l.end, "keyframes": l.keyframes.keys().map(|k| k + 1).collect::<Vec<_>>(), "kind": format!("{:?}", l.kind).to_lowercase(), "parent": l.parent.map(|p| p + 1), "color": hex(l.color) }))
                 .collect(),
         )),
         "layer.add" => {
@@ -772,6 +791,56 @@ pub fn execute(ed: &mut Editor, id: &str, a: &Value) -> Result<Value, String> {
             let (x, y) = (req(a, "x")?, req(a, "y")?);
             ed.select_in_rect(pt(x, y), pt(x + req(a, "w")?, y + req(a, "h")?), boolean(a, "add").unwrap_or(false));
             Ok(json!(ed.selection.len()))
+        }
+        "select.element" => {
+            let li = layer_arg(ed, a, "layer")?.ok_or("missing 'layer'")?;
+            let idx = num(a, "index").ok_or("missing 'index'")? as usize;
+            let count = ed.timeline().layers[li].span_at(ed.frame).map(|(_, k, _)| k.elements.len()).unwrap_or(0);
+            if idx >= count {
+                return Err(format!("layer {} has {count} object(s) here", li + 1));
+            }
+            let s = Selection { layer: li, element: idx };
+            if boolean(a, "add").unwrap_or(false) {
+                if !ed.selection.contains(&s) {
+                    ed.select(Some(s), true);
+                }
+            } else {
+                ed.select(Some(s), false);
+            }
+            Ok(json!(ed.selection.len()))
+        }
+        "frame.info" => {
+            let li = layer_arg(ed, a, "layer")?.unwrap_or(ed.layer);
+            let f = frame_arg(a, "frame")?.unwrap_or(ed.frame);
+            let l = &ed.timeline().layers[li];
+            let Some((start, kf, _)) = l.span_at(f) else { return Ok(Value::Null) };
+            let tween = match kf.tween {
+                Tween::None => "none",
+                Tween::Classic { .. } => "classic",
+                Tween::Shape { .. } => "shape",
+                Tween::Motion { .. } => "motion",
+            };
+            let n = kf.elements.len();
+            let saved = ed.frame;
+            ed.frame = f;
+            let els: Vec<Value> = (0..n).map(|i| element_json(ed, Selection { layer: li, element: i })).collect();
+            ed.frame = saved;
+            let l = &ed.timeline().layers[li];
+            let kf = &l.keyframes[&start];
+            Ok(json!({
+                "start": start + 1, "duration": l.span_end(start) - start, "label": kf.label, "tween": tween, "ease": kf.tween.ease(),
+                "script": kf.script, "sound": kf.sound.as_ref().and_then(|s| ed.doc.sound(s.sound)).map(|s| s.name.clone()),
+                "elements": els,
+            }))
+        }
+        "symbol.new" => {
+            let kind = match string(a, "kind").unwrap_or("movieclip") {
+                "graphic" => SymbolKind::Graphic,
+                "movieclip" | "movie_clip" | "movie clip" => SymbolKind::MovieClip,
+                "button" => SymbolKind::Button,
+                k => return Err(format!("unknown symbol kind '{k}'")),
+            };
+            Ok(json!(ed.new_symbol(string(a, "name").ok_or("missing 'name'")?, kind)))
         }
         "selection.info" => Ok(Value::Array(ed.selection.clone().into_iter().map(|s| element_json(ed, s)).collect())),
         "selection.move" => {
@@ -1194,6 +1263,58 @@ pub fn execute(ed: &mut Editor, id: &str, a: &Value) -> Result<Value, String> {
             need_selection(ed)?;
             ed.arrange(boolean(a, "front").unwrap_or(true));
             Ok(Value::Null)
+        }
+        "import.sound" => {
+            let path = string(a, "path").ok_or("missing 'path'")?;
+            let bytes = std::fs::read(path).map_err(|e| format!("{path}: {e}"))?;
+            let name = string(a, "name").map(|s| s.to_string()).unwrap_or_else(|| std::path::Path::new(path).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or("Sound".into()));
+            let probe = crate::sound::SoundAsset { id: 0, name: name.clone(), data: bytes };
+            if crate::sound::has_decoder() && crate::sound::seconds(&probe).is_none() {
+                return Err(format!("{path}: not a sound this build can read (WAV, MP3, OGG Vorbis, FLAC)"));
+            }
+            Ok(json!(ed.add_sound(&name, probe.data)))
+        }
+        "timeline.set_sound" => {
+            target(ed, a)?;
+            let id = match a.get("sound") {
+                None | Some(Value::Null) => None,
+                Some(v) => Some(sound_arg(ed, v)?),
+            };
+            let sound = match id {
+                None => None,
+                Some(id) => {
+                    let mut fs = crate::sound::FrameSound::new(id);
+                    if let Some(s) = string(a, "sync") {
+                        fs.sync = crate::sound::SoundSync::from_name(s).ok_or_else(|| format!("unknown sync '{s}'"))?;
+                    }
+                    fs.repeat = num(a, "repeat").map(|v| v.max(1.0) as u32).unwrap_or(1);
+                    fs.forever = boolean(a, "loop").unwrap_or(false);
+                    Some(fs)
+                }
+            };
+            if ed.current_keyframe().is_none() {
+                return Err("no frame at the target".into());
+            }
+            ed.set_frame_sound(sound);
+            Ok(Value::Null)
+        }
+        "sound.list" => Ok(Value::Array(ed.doc.sounds.iter().map(|s| json!({ "id": s.id, "name": s.name, "bytes": s.data.len(), "seconds": crate::sound::seconds(s) })).collect())),
+        "sound.delete" => {
+            let id = sound_arg(ed, a.get("sound").ok_or("missing 'sound'")?)?;
+            ed.delete_sound(id);
+            Ok(Value::Null)
+        }
+        "lipsync.apply" => {
+            let al = layer_arg(ed, a, "audio_layer")?.ok_or("missing 'audio_layer'")?;
+            let mut map = vec![];
+            if let Some(Value::Object(m)) = a.get("map") {
+                for (k, v) in m {
+                    let vis = crate::sound::Viseme::from_name(k).ok_or_else(|| format!("unknown mouth shape '{k}'"))?;
+                    let f = v.as_u64().ok_or("map values are frame numbers")? as u32;
+                    map.push((vis, f.saturating_sub(1)));
+                }
+            }
+            Ok(json!(ed.lip_sync(al, &map)?))
         }
         "library.list" => Ok(Value::Array(
             ed.doc

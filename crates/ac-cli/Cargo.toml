@@ -13,3 +13,5 @@ path = "src/main.rs"
 ac-core.workspace = true
 ac-render.workspace = true
 ac-script.workspace = true
+ac-xfl.workspace = true
+ac-audio.workspace = true

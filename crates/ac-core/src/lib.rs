@@ -11,10 +11,10 @@ pub mod geom;
 pub mod model;
 pub mod merge;
 pub mod rig;
+pub mod sound;
 pub mod motion;
 pub mod text;
 pub mod commands;
-pub mod xfl;
 
 pub use editor::{Editor, FrameSel, LayerFlag, Selection};
 pub use geom::{pt, Matrix, Path, PointRef, Pt, Seg};
@@ -565,17 +565,6 @@ mod tests {
         let doc = demo::demo_document();
         let back = Document::from_json(&doc.to_json()).unwrap();
         assert_eq!(doc, back);
-    }
-
-    #[test]
-    fn xfl_edges() {
-        let p = xfl::parse_edges("!0 0|200 0[400 0 400 200|0 200S2|0 0").unwrap();
-        assert_eq!(p.segs[0], Seg::M(pt(0.0, 0.0)));
-        assert_eq!(p.segs[1], Seg::L(pt(10.0, 0.0)));
-        assert_eq!(p.segs[2], Seg::Q(pt(20.0, 0.0), pt(20.0, 10.0)));
-        let h = xfl::parse_edges("!#14.00 #28.80").unwrap();
-        assert_eq!(h.segs[0], Seg::M(pt(1.0, 40.5 / 20.0)));
-        assert!(xfl::parse_edges("!0 0 ?").is_err());
     }
 
     #[test]

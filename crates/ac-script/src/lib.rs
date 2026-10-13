@@ -97,16 +97,19 @@ impl Default for ScriptOptions {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Language {
     Js,
+    /// JSFL scripts from the authoring tool, through the compatibility shim.
+    Jsfl,
     Python,
     Node,
     Ruby,
 }
 
 impl Language {
-    pub const ALL: [Language; 4] = [Language::Js, Language::Python, Language::Node, Language::Ruby];
+    pub const ALL: [Language; 5] = [Language::Js, Language::Jsfl, Language::Python, Language::Node, Language::Ruby];
     pub fn name(self) -> &'static str {
         match self {
             Language::Js => "JavaScript (built-in)",
+            Language::Jsfl => "JSFL (compatibility)",
             Language::Python => "Python",
             Language::Node => "JavaScript (Node.js)",
             Language::Ruby => "Ruby",
@@ -115,6 +118,7 @@ impl Language {
     pub fn ext(self) -> &'static str {
         match self {
             Language::Js => "js",
+            Language::Jsfl => "jsfl",
             Language::Python => "py",
             Language::Node => "mjs",
             Language::Ruby => "rb",
@@ -123,6 +127,7 @@ impl Language {
     pub fn example(self) -> &'static str {
         match self {
             Language::Js => "// Draw a row of stars on a new layer, then tween them.\nac.layer.add({ name: \"Stars\" });\nfor (let i = 0; i < 5; i++) {\n  ac.draw.polystar({ cx: 60 + i * 100, cy: 200, r: 30, star: true, fill: \"#FFC41F\" });\n}\nac.timeline.insert_keyframe({ layer: \"Stars\", frame: 24 });\nconst n = ac.select.layer({ layer: \"Stars\" });\nac.selection.rotate({ degrees: 72 });\nac.timeline.set_tween({ kind: \"classic\", layer: \"Stars\", frame: 1 });\nprint(\"Stars:\", n);\n",
+            Language::Jsfl => "// JSFL: scripts written for the authoring tool's JavaScript API.\nvar doc = fl.getDocumentDOM();\nvar tl = doc.getTimeline();\ntl.addNewLayer(\"Boxes\");\ndoc.setFillColor(\"#33AAFF\");\nfor (var i = 0; i < 4; i++) {\n  doc.addNewRectangle({ left: 40 + i * 90, top: 60, right: 110 + i * 90, bottom: 130 }, 8);\n}\ndoc.selectAll();\ndoc.convertToSymbol(\"movie clip\", \"Box Row\", \"center\");\ntl.insertKeyframe(23);\nfl.trace(\"layers: \" + tl.layerCount);\n",
             Language::Python => "import animationcraft as ac\n\n# Draw a row of stars on a new layer, then tween them.\nac.layer.add(name=\"Stars\")\nfor i in range(5):\n    ac.draw.polystar(cx=60 + i * 100, cy=200, r=30, star=True, fill=\"#FFC41F\")\nac.timeline.insert_keyframe(layer=\"Stars\", frame=24)\nn = ac.select.layer(layer=\"Stars\")\nac.selection.rotate(degrees=72)\nac.timeline.set_tween(kind=\"classic\", layer=\"Stars\", frame=1)\nprint(\"Stars:\", n)\n",
             Language::Node => "import ac from \"./animationcraft.mjs\";\n\nac.layer.add({ name: \"Stars\" });\nfor (let i = 0; i < 5; i++) {\n  ac.draw.polystar({ cx: 60 + i * 100, cy: 200, r: 30, star: true, fill: \"#FFC41F\" });\n}\nconsole.log(\"Layers:\", ac.layer.list().length);\n",
             Language::Ruby => "require \"animationcraft\"\n\nac = AnimationCraft\nac.call(\"layer.add\", name: \"Stars\")\n5.times do |i|\n  ac.call(\"draw.polystar\", cx: 60 + i * 100, cy: 200, r: 30, star: true, fill: \"#FFC41F\")\nend\nputs \"Layers: #{ac.call('layer.list').length}\"\n",
@@ -241,6 +246,17 @@ var ac = (() => {
   return api;
 })();
 "##;
+
+/// The JSFL compatibility layer (`fl`, Document, Timeline, Library…).
+pub const JSFL_PRELUDE: &str = include_str!("jsfl.js");
+
+/// Run a JSFL script: the shim, then the script (one undo step).
+pub fn run_jsfl(ed: &mut Editor, code: &str, opts: &ScriptOptions) -> ScriptReport {
+    // keep the script's own line numbers in errors: the shim is one
+    // (global) eval in front of the script's first line
+    let shim = serde_json::to_string(JSFL_PRELUDE).unwrap();
+    run_js(ed, &format!("(0, eval)({shim}); {code}"), opts)
+}
 
 /// Run JavaScript against the editor (one undo step for the whole run).
 pub fn run_js(ed: &mut Editor, code: &str, opts: &ScriptOptions) -> ScriptReport {
@@ -435,8 +451,9 @@ pub fn run_file(ed: &mut Editor, path: &Path, opts: &ScriptOptions) -> ScriptRep
     if let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty()) {
         opts.base_dir = dir.to_path_buf();
     }
-    if ext == "js" {
+    if ext == "js" || ext == "jsfl" {
         return match std::fs::read_to_string(path) {
+            Ok(code) if ext == "jsfl" => run_jsfl(ed, &code, &opts),
             Ok(code) => run_js(ed, &code, &opts),
             Err(e) => ScriptReport { error: Some(format!("{}: {e}", path.display())), ..Default::default() },
         };
@@ -452,6 +469,9 @@ pub fn run_file(ed: &mut Editor, path: &Path, opts: &ScriptOptions) -> ScriptRep
 pub fn run_code(ed: &mut Editor, lang: Language, code: &str, opts: &ScriptOptions) -> ScriptReport {
     if lang == Language::Js {
         return run_js(ed, code, opts);
+    }
+    if lang == Language::Jsfl {
+        return run_jsfl(ed, code, opts);
     }
     let dir = match helper_dir() {
         Ok(d) => d,
@@ -658,7 +678,9 @@ __tl.getChildByName = function(n) { return this[n] || null; };
 var __ac_before = [];
 function __ac_bind(json) {
   __ac_before = JSON.parse(json);
-  for (const o of __ac_before) { __tl[o.name] = Object.assign({}, o); }
+  // mouse events only fire in published HTML5 pages; accept them quietly here
+  const quiet = { addEventListener() {}, removeEventListener() {}, on() {}, off() {}, removeAllEventListeners() {} };
+  for (const o of __ac_before) { __tl[o.name] = Object.assign(Object.create(quiet), o); }
 }
 function __ac_dump() {
   return JSON.stringify(__ac_before.map(o => {

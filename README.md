@@ -16,10 +16,14 @@ cargo run --release -p ac-app          # the editor (opens the demo scene)
 cargo run -p ac-cli -- info demo       # inspect the demo document
 cargo run -p ac-cli -- gif demo out.gif
 cargo run -p ac-cli -- video demo out.mp4   # needs ffmpeg
+cargo run -p ac-cli -- html5 demo out.html  # one web page that plays the movie
+cargo run -p ac-cli -- xfl demo out.fla     # .fla / XFL (any document argument may be a .fla too)
 cargo test --workspace
 ```
 
-Linux needs the usual X11/Wayland + OpenGL libraries (any desktop has them).
+Linux needs the usual X11/Wayland + OpenGL libraries (any desktop has them) and,
+for sound playback, the ALSA headers (`libasound2-dev` / `alsa-lib-devel`). Build
+without sound output with `cargo run -p ac-app --no-default-features`.
 
 ## Try this
 
@@ -101,6 +105,32 @@ tools. Options for the active tool are in Properties ▸ **Tool**.
   `winget install ffmpeg`). **File › Publish Settings** (Ctrl+Shift+F12) sets
   scale, frame range, transparency and GIF options. Long exports run in the
   background with a progress window.
+- **.fla and XFL**: File › Open reads CS5-or-later `.fla` files and XFL
+  folders (shapes become merge shapes, drawing objects, symbols, tweens,
+  custom eases, text, bitmaps, sounds, filters, frame scripts); saving keeps
+  the format. **File › Export › Export .fla / XFL** writes either (a name
+  ending in `.xfl` makes an uncompressed folder). Anything the other format
+  can't hold is listed in the Output panel instead of disappearing.
+- **Publish HTML5 Canvas**: a folder (index.html + movie.js + runtime +
+  images) or a single self-contained `.html`. It plays exactly what the stage
+  shows, runs frame scripts (with `addEventListener("click", …)` on named
+  instances), makes buttons live and plays sounds.
+- **Generate Sprite Sheet** (PNG + JSON hash / JSON array / Starling XML,
+  trimmed, duplicates shared), **Animated SVG** (SMIL, plays in browsers) and
+  **Lottie** JSON.
+
+### Sound
+
+- **File › Import › Import Sound** (WAV, MP3, OGG Vorbis, FLAC) or drop a
+  file on the window. Drag a sound from the Library onto the stage to start it
+  on the current keyframe, or pick it in **Properties › Sound** with **Sync**
+  Event / Start / Stop / Stream and Repeat ×N or Loop.
+- The waveform is drawn in the timeline frames; sound plays with the
+  timeline and is mixed into video and HTML5 exports.
+- **Lip Syncing**: select a graphic instance of a mouth symbol whose frames
+  1–10 are Neutral, MBP, Ai, E, O, U, FV, L, WQ, etc., pick the voice layer in
+  Properties and press **Lip Sync**: it keyframes the mouth to the sound
+  (a loudness/frequency heuristic, ready for hand tweaks).
 
 ### Layers, masks and guides
 
@@ -184,7 +214,7 @@ click a folder's triangle to collapse it.
 
 ### Library
 
-Symbols and bitmaps are listed together. The Library fills the rest of the right column under Properties (Properties
+Symbols, bitmaps and sounds are listed together (a sound shows its waveform in the preview). The Library fills the rest of the right column under Properties (Properties
 grows first and pushes it down). Search, sortable Name/Type/Uses/Frames
 columns, an animated preview with play, and drag-to-stage. **View ▸ Library
 position ▸ Own panel on the left** docks it beside the Tools; Ctrl+L hides it.
@@ -196,6 +226,8 @@ position ▸ Own panel on the left** docks it beside the Tools; Ctrl+L hides it.
 - **Commands ▸ Script Console:** automate the editor in **JavaScript
   (built in), Python, Node.js or Ruby**, or any language via a one-line JSON
   protocol. One undo step per run.
+- **JSFL**: existing `.jsfl` scripts run through a compatibility layer
+  (`fl.getDocumentDOM()`, timeline, layers, frames, library, selection).
 - Headless: `cargo run -p ac-cli -- run examples/scripts/stars.py --gif stars.gif`
 
 See [SCRIPTING.md](SCRIPTING.md) for the API, examples and the safety model.

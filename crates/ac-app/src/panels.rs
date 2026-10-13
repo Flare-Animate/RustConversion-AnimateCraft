@@ -23,11 +23,14 @@ pub struct LibraryState {
     /// Selected / dragged library bitmap (symbols use `App::lib_selected` / `lib_drag`).
     pub bitmap: Option<u32>,
     pub drag_bitmap: Option<u32>,
+    /// Selected / dragged library sound.
+    pub sound: Option<u32>,
+    pub drag_sound: Option<u32>,
 }
 
 impl Default for LibraryState {
     fn default() -> Self {
-        LibraryState { open: true, left: false, search: String::new(), play: false, frame: 0, accum: 0.0, sort: (0, true), bitmap: None, drag_bitmap: None }
+        LibraryState { open: true, left: false, search: String::new(), play: false, frame: 0, accum: 0.0, sort: (0, true), bitmap: None, drag_bitmap: None, sound: None, drag_sound: None }
     }
 }
 
@@ -495,6 +498,9 @@ fn object_properties(app: &mut App, ui: &mut egui::Ui) {
                     });
                 }
                 color_effect(app, ui, &el);
+                if kind == Some(SymbolKind::Graphic) && n == 1 {
+                    lip_sync_section(app, ui);
+                }
                 if kind == Some(SymbolKind::Button) {
                     ui.label(RichText::new("Button: Up / Over / Down / Hit frames. Control ▸ Enable Simple Buttons to try it on the stage.").small().color(Color32::from_gray(150)));
                 }
@@ -742,6 +748,7 @@ fn frame_properties(app: &mut App, ui: &mut egui::Ui) {
         }
     }
     frame_buttons(app, ui);
+    sound_section(app, ui, &kf);
     if target.is_single() {
         section(ui, "Frame script (JavaScript)");
         let code = kf.script.clone().unwrap_or_default();
@@ -750,6 +757,108 @@ fn frame_properties(app: &mut App, ui: &mut egui::Ui) {
         if ui.button("Edit in Actions panel (F9)").clicked() {
             app.scripting.actions_open = true;
         }
+    }
+}
+
+/// Properties ▸ Sound for the keyframe at the playhead.
+fn sound_section(app: &mut App, ui: &mut egui::Ui, kf: &ac_core::Keyframe) {
+    use ac_core::sound::{FrameSound, SoundSync};
+    section(ui, "Sound");
+    let cur = kf.sound.clone();
+    let name_of = |id: u32| app.ed.doc.sound(id).map(|s| s.name.clone()).unwrap_or_else(|| "(missing)".into());
+    let mut pick: Option<Option<u32>> = None;
+    ui.horizontal(|ui| {
+        ui.label("Name");
+        egui::ComboBox::from_id_salt("frame-sound").selected_text(cur.as_ref().map(|s| name_of(s.sound)).unwrap_or_else(|| "None".into())).show_ui(ui, |ui| {
+            if ui.selectable_label(cur.is_none(), "None").clicked() {
+                pick = Some(None);
+            }
+            for s in &app.ed.doc.sounds {
+                if ui.selectable_label(cur.as_ref().is_some_and(|c| c.sound == s.id), &s.name).clicked() {
+                    pick = Some(Some(s.id));
+                }
+            }
+        });
+    });
+    if let Some(p) = pick {
+        match (p, &cur) {
+            (None, _) => app.ed.set_frame_sound(None),
+            (Some(id), Some(c)) => app.ed.set_frame_sound(Some(FrameSound { sound: id, ..c.clone() })),
+            (Some(id), None) => app.ed.set_frame_sound(Some(FrameSound::new(id))),
+        }
+        return;
+    }
+    let Some(fs) = cur else {
+        if app.ed.doc.sounds.is_empty() {
+            hint(ui, "File ▸ Import ▸ Import Sound… (WAV, MP3, OGG, FLAC), then pick it here or drag it from the Library onto the stage.");
+        }
+        return;
+    };
+    let mut sync = fs.sync;
+    ui.horizontal(|ui| {
+        ui.label("Sync");
+        egui::ComboBox::from_id_salt("sound-sync").selected_text(sync.name()).show_ui(ui, |ui| {
+            for s in SoundSync::ALL {
+                ui.selectable_value(&mut sync, s, s.name()).on_hover_text(match s {
+                    SoundSync::Event => "Plays to its end on its own",
+                    SoundSync::Start => "Like Event, but not if it's already playing",
+                    SoundSync::Stop => "Silences this sound",
+                    SoundSync::Stream => "Follows the timeline; stops where the frames end",
+                });
+            }
+        });
+    });
+    if sync != fs.sync {
+        app.ed.edit_frame_sound(|s| s.sync = sync);
+    }
+    if fs.sync != SoundSync::Stop {
+        let mut forever = fs.forever;
+        let mut rep = fs.repeat;
+        ui.horizontal(|ui| {
+            egui::ComboBox::from_id_salt("sound-loop").width(80.0).selected_text(if forever { "Loop" } else { "Repeat" }).show_ui(ui, |ui| {
+                ui.selectable_value(&mut forever, false, "Repeat");
+                ui.selectable_value(&mut forever, true, "Loop");
+            });
+            if !forever {
+                ui.add(egui::DragValue::new(&mut rep).range(1..=999).suffix(" ×"));
+            }
+        });
+        if forever != fs.forever || rep != fs.repeat {
+            app.ed.edit_frame_sound(|s| {
+                s.forever = forever;
+                s.repeat = rep;
+            });
+        }
+        if let Some(p) = app.ed.doc.sound(fs.sound).and_then(ac_audio::pcm) {
+            ui.label(RichText::new(format!("{:.2} s · {:.0} frames at {} fps", p.seconds(), p.seconds() * app.ed.doc.fps, app.ed.doc.fps)).small().color(Color32::from_gray(150)));
+        }
+    }
+}
+
+/// Properties ▸ Lip Syncing for a selected graphic instance.
+fn lip_sync_section(app: &mut App, ui: &mut egui::Ui) {
+    let layers: Vec<(usize, String)> = app.ed.timeline().layers.iter().enumerate().filter(|(_, l)| l.keyframes.values().any(|k| k.sound.is_some())).map(|(i, l)| (i, l.name.clone())).collect();
+    section(ui, "Lip Syncing");
+    if layers.is_empty() {
+        hint(ui, "Put a voice sound on a layer, then match this mouth symbol to it. The symbol's frames 1–10 are the mouth shapes: Neutral, MBP, Ai, E, O, U, FV, L, WQ, etc.");
+        return;
+    }
+    let id = egui::Id::new("lipsync-layer");
+    let mut pick: usize = ui.ctx().data(|d| d.get_temp(id)).filter(|v| layers.iter().any(|(i, _)| i == v)).unwrap_or(layers[0].0);
+    ui.horizontal(|ui| {
+        ui.label("Audio layer");
+        egui::ComboBox::from_id_salt("lipsync-layer-combo").selected_text(layers.iter().find(|(i, _)| *i == pick).map(|l| l.1.clone()).unwrap_or_default()).show_ui(ui, |ui| {
+            for (i, n) in &layers {
+                ui.selectable_value(&mut pick, *i, n);
+            }
+        });
+    });
+    ui.ctx().data_mut(|d| d.insert_temp(id, pick));
+    if ui.button("Lip Sync").on_hover_text("Keyframe this instance to the voice: each frame shows the mouth shape heard (symbol frames 1–10 = Neutral, MBP, Ai, E, O, U, FV, L, WQ, etc)").clicked() {
+        app.status = match app.ed.lip_sync(pick, &[]) {
+            Ok(n) => format!("Lip sync: {n} mouth keyframes"),
+            Err(e) => format!("Lip sync: {e}"),
+        };
     }
 }
 
@@ -828,6 +937,27 @@ fn document_properties(app: &mut App, ui: &mut egui::Ui) {
 /// Render the selected library item at `frame` into the preview texture.
 fn library_preview(app: &mut App, ui: &mut egui::Ui, prev_rect: Rect) {
     ui.painter().rect_filled(prev_rect, 3.0, Color32::from_gray(0x26));
+    if let Some(asset) = app.lib.sound.and_then(|id| app.ed.doc.sound(id)) {
+        let r = prev_rect.shrink(8.0);
+        match ac_audio::pcm(asset) {
+            Some(p) => {
+                let n = r.width() as usize;
+                let pk = ac_audio::peaks(&p, 0.0, p.seconds(), n.max(1));
+                let mid = r.center().y;
+                let h = r.height() / 2.0;
+                for (i, (lo, hi)) in pk.iter().enumerate() {
+                    let x = r.left() + i as f32 + 0.5;
+                    ui.painter().line_segment([pos2(x, mid - hi * h), pos2(x, mid - lo * h)], EStroke::new(1.0_f32, Color32::from_rgb(0x6C, 0xC6, 0xFF)));
+                }
+                ui.painter().line_segment([pos2(r.left(), mid), pos2(r.right(), mid)], EStroke::new(1.0_f32, Color32::from_gray(80)));
+                ui.painter().text(r.left_top(), Align2::LEFT_TOP, format!("{} · {:.2} s · {} Hz", asset.name, p.seconds(), p.rate), FontId::proportional(11.0), Color32::from_gray(190));
+            }
+            None => {
+                ui.painter().text(prev_rect.center(), Align2::CENTER_CENTER, "This build can't decode the sound", FontId::proportional(12.0), Color32::from_gray(160));
+            }
+        }
+        return;
+    }
     if let Some(asset) = app.lib.bitmap.and_then(|id| app.ed.doc.bitmap(id)) {
         // bitmap preview: fit inside the box, checkerboard behind transparency
         let (w, h) = (asset.width as f32, asset.height as f32);
@@ -914,7 +1044,7 @@ fn library(app: &mut App, ui: &mut egui::Ui) {
     let total_h = ui.available_height();
     ui.horizontal(|ui| {
         ui.add(egui::TextEdit::singleline(&mut app.lib.search).hint_text("🔍 Search library").desired_width(ui.available_width() - 70.0));
-        ui.label(RichText::new(format!("{} items", app.ed.doc.library.len() + app.ed.doc.bitmaps.len())).small().color(Color32::from_gray(150)));
+        ui.label(RichText::new(format!("{} items", app.ed.doc.library.len() + app.ed.doc.bitmaps.len() + app.ed.doc.sounds.len())).small().color(Color32::from_gray(150)));
     });
     // Preview with play controls
     let prev_h = (total_h * 0.32).clamp(90.0, 260.0);
@@ -989,8 +1119,43 @@ fn library(app: &mut App, ui: &mut egui::Ui) {
     }
     let list_h = (ui.available_height() - 34.0).max(60.0);
     egui::ScrollArea::vertical().id_salt("lib-list").max_height(list_h).auto_shrink([false, false]).show(ui, |ui| {
-        if syms.is_empty() && app.ed.doc.bitmaps.is_empty() {
+        if syms.is_empty() && app.ed.doc.bitmaps.is_empty() && app.ed.doc.sounds.is_empty() {
             hint(ui, if app.ed.doc.library.is_empty() { "Empty. Select objects and press F8 to make a symbol." } else { "No items match the search." });
+        }
+        let sounds: Vec<(u32, String, usize)> = app.ed.doc.sounds.iter().filter(|s| q.is_empty() || s.name.to_lowercase().contains(&q)).map(|s| (s.id, s.name.clone(), app.ed.sound_usage(s.id))).collect();
+        for (id, name, uses) in sounds {
+            let (r, resp) = ui.allocate_exact_size(vec2(w, 22.0), Sense::click_and_drag());
+            if app.lib.sound == Some(id) {
+                ui.painter().rect_filled(r, 2.0, ACCENT.gamma_multiply(0.55));
+            } else if resp.hovered() {
+                ui.painter().rect_filled(r, 2.0, Color32::from_gray(0x3A));
+            }
+            let clip = ui.painter().with_clip_rect(Rect::from_min_max(r.min, pos2(r.left() + cols[1].1 - 6.0, r.bottom())));
+            clip.text(pos2(r.left() + 6.0, r.center().y), Align2::LEFT_CENTER, format!("🔊 {name}"), FontId::proportional(12.5), Color32::from_gray(230));
+            ui.painter().text(pos2(r.left() + cols[1].1, r.center().y), Align2::LEFT_CENTER, "Sound", FontId::proportional(11.5), Color32::from_gray(180));
+            ui.painter().text(pos2(r.left() + cols[2].1 + 24.0, r.center().y), Align2::RIGHT_CENTER, uses.to_string(), FontId::proportional(11.5), Color32::from_gray(180));
+            ui.painter().text(pos2(r.left() + cols[3].1 + 36.0, r.center().y), Align2::RIGHT_CENTER, "–", FontId::proportional(11.5), Color32::from_gray(180));
+            if resp.clicked() || resp.drag_started() {
+                app.lib.sound = Some(id);
+                app.lib.bitmap = None;
+                app.lib_selected = None;
+            }
+            if resp.drag_started() {
+                app.lib.drag_sound = Some(id);
+            }
+            if resp.double_clicked() {
+                app.ed.set_frame_sound(Some(ac_core::sound::FrameSound::new(id)));
+            }
+            let resp = resp.on_hover_text(format!("{name}\nSound · used on {uses} keyframe(s)\nDrag onto the stage to start it on the current keyframe"));
+            resp.context_menu(|ui| {
+                if ui.button("Use on Current Keyframe").clicked() { app.ed.set_frame_sound(Some(ac_core::sound::FrameSound::new(id))); ui.close_menu(); }
+                ui.separator();
+                if ui.button("Delete").clicked() {
+                    app.ed.delete_sound(id);
+                    app.lib.sound = None;
+                    ui.close_menu();
+                }
+            });
         }
         let bitmaps: Vec<(u32, String, u32, u32, usize)> = app.ed.doc.bitmaps.iter().filter(|b| q.is_empty() || b.name.to_lowercase().contains(&q)).map(|b| (b.id, b.name.clone(), b.width, b.height, app.ed.bitmap_usage(b.id))).collect();
         for (id, name, bw, bh, uses) in bitmaps {
@@ -1007,6 +1172,7 @@ fn library(app: &mut App, ui: &mut egui::Ui) {
             ui.painter().text(pos2(r.left() + cols[3].1 + 36.0, r.center().y), Align2::RIGHT_CENTER, "–", FontId::proportional(11.5), Color32::from_gray(180));
             if resp.clicked() || resp.drag_started() {
                 app.lib.bitmap = Some(id);
+                app.lib.sound = None;
                 app.lib_selected = None;
             }
             if resp.drag_started() {
@@ -1095,6 +1261,30 @@ fn library(app: &mut App, ui: &mut egui::Ui) {
 }
 /// Ghost label under the cursor while a library item is dragged, and the drop.
 pub fn library_drag_ghost(app: &mut App, ctx: &egui::Context) {
+    if let Some(id) = app.lib.drag_sound {
+        let (pos, released) = ctx.input(|i| (i.pointer.latest_pos(), i.pointer.any_released()));
+        if let Some(p) = pos {
+            let name = app.ed.doc.sound(id).map(|b| b.name.clone()).unwrap_or_default();
+            let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Tooltip, egui::Id::new("libdrag")));
+            let r = painter.text(p + vec2(14.0, 8.0), Align2::LEFT_TOP, format!("🔊 {name}"), FontId::proportional(13.0), Color32::WHITE);
+            painter.rect_stroke(r.expand(4.0), 3.0, EStroke::new(1.0_f32, ACCENT));
+            if released {
+                if app.stage_rect.contains(p) {
+                    if app.ed.current_keyframe().is_some() {
+                        app.ed.set_frame_sound(Some(ac_core::sound::FrameSound::new(id)));
+                        app.status = format!("{name} starts on frame {}", app.ed.current_keyframe().map(|k| k.0 + 1).unwrap_or(1));
+                    } else {
+                        app.status = "No keyframe here for the sound: add one with F7.".into();
+                    }
+                }
+                app.lib.drag_sound = None;
+            }
+        } else if released {
+            app.lib.drag_sound = None;
+        }
+        ctx.request_repaint();
+        return;
+    }
     if let Some(id) = app.lib.drag_bitmap {
         let (pos, released) = ctx.input(|i| (i.pointer.latest_pos(), i.pointer.any_released()));
         if let Some(p) = pos {

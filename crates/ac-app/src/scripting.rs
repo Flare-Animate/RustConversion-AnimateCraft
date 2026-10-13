@@ -83,8 +83,8 @@ impl ScriptingState {
 
 pub fn request_run(app: &mut App, p: Pending) {
     let external = match &p {
-        Pending::Code(l, _) => *l != Language::Js,
-        Pending::File(f) => f.extension().map(|e| e != "js").unwrap_or(true),
+        Pending::Code(l, _) => !matches!(l, Language::Js | Language::Jsfl),
+        Pending::File(f) => f.extension().map(|e| e != "js" && e != "jsfl").unwrap_or(true),
     };
     if external && !app.scripting.trust_external {
         app.scripting.confirm = Some(p);
@@ -338,8 +338,10 @@ fn console(app: &mut App, ctx: &egui::Context) {
             }
         });
         let lang = st.lang;
-        if lang != Language::Js {
-            ui.label(RichText::new(format!("Runs with the {} installed on your computer (must be on PATH).", match lang { Language::Python => "Python", Language::Node => "Node.js", Language::Ruby => "Ruby", Language::Js => "" })).small().color(Color32::from_gray(150)));
+        if lang == Language::Jsfl {
+            ui.label(RichText::new("Built in. Runs scripts written for the authoring tool's JSFL API (fl, document, timeline, library); unsupported calls say so.").small().color(Color32::from_gray(150)));
+        } else if lang != Language::Js {
+            ui.label(RichText::new(format!("Runs with the {} installed on your computer (must be on PATH).", match lang { Language::Python => "Python", Language::Node => "Node.js", Language::Ruby => "Ruby", Language::Js | Language::Jsfl => "" })).small().color(Color32::from_gray(150)));
         }
         let r = ui.add(egui::TextEdit::multiline(st.code_mut(lang)).code_editor().desired_rows(12).desired_width(f32::INFINITY));
         let ctrl_enter = r.has_focus() && ui.input(|i| i.modifiers.command && i.key_pressed(Key::Enter));
@@ -354,7 +356,7 @@ fn console(app: &mut App, ctx: &egui::Context) {
         ui.separator();
         ui.horizontal(|ui| {
             ui.label("Script file");
-            ui.add(egui::TextEdit::singleline(&mut st.run_path).hint_text("path/to/script.py | .js | .mjs | .rb").desired_width(260.0));
+            ui.add(egui::TextEdit::singleline(&mut st.run_path).hint_text("path/to/script.js | .jsfl | .py | .mjs | .rb").desired_width(260.0));
             if ui.add_enabled(!st.run_path.trim().is_empty(), egui::Button::new("Run file")).clicked() {
                 run = Some(Pending::File(PathBuf::from(st.run_path.trim())));
             }

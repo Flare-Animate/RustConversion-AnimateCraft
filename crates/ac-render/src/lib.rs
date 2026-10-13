@@ -6,6 +6,8 @@ use tiny_skia as sk;
 
 mod fx;
 pub mod fonts;
+pub mod formats;
+pub mod html5;
 
 pub struct RenderOpts {
     /// Extra transform applied on top of document coordinates (zoom/pan).
@@ -294,11 +296,34 @@ pub fn export_video(doc: &Document, o: &ExportOpts, path: &std::path::Path, ffmp
     };
     let size = format!("{w}x{h}");
     let fps = format!("{}", doc.fps);
+    let frames = o.frames(doc);
+    // the movie's sound (keyframe sounds mixed as Animate plays them)
+    let wav = if ac_audio::has_sound(doc) && ext != "gif" {
+        let samples = ac_audio::mix(doc, *frames.start(), 48000);
+        let n = ((frames.end() - frames.start() + 1) as f64 / doc.fps.max(1.0) as f64 * 48000.0) as usize * 2;
+        let p = std::env::temp_dir().join(format!("animationcraft-audio-{}.wav", std::process::id()));
+        std::fs::write(&p, ac_audio::wav(&samples[..n.min(samples.len())], 48000)).map_err(|e| e.to_string())?;
+        Some(p)
+    } else {
+        None
+    };
     let mut cmd = std::process::Command::new(ffmpeg);
-    cmd.args(["-y", "-hide_banner", "-loglevel", "error", "-f", "rawvideo", "-pix_fmt", "rgba", "-s", &size, "-r", &fps, "-i", "-"]).args(&codec).arg(path);
+    cmd.args(["-y", "-hide_banner", "-loglevel", "error", "-f", "rawvideo", "-pix_fmt", "rgba", "-s", &size, "-r", &fps, "-i", "-"]);
+    if let Some(w) = &wav {
+        cmd.arg("-i").arg(w);
+    }
+    cmd.args(&codec);
+    if wav.is_some() {
+        let acodec: &[&str] = match ext.as_str() {
+            "webm" => &["-c:a", "libopus", "-b:a", "160k"],
+            "mov" => &["-c:a", "pcm_s16le"],
+            _ => &["-c:a", "aac", "-b:a", "192k"],
+        };
+        cmd.args(acodec).args(["-map", "0:v", "-map", "1:a"]);
+    }
+    cmd.arg(path);
     cmd.stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::piped());
     let mut child = cmd.spawn().map_err(|e| format!("couldn't start ffmpeg ({e}). Install ffmpeg or set its path in Publish Settings"))?;
-    let frames = o.frames(doc);
     let total = frames.end() - frames.start() + 1;
     {
         let stdin = child.stdin.as_mut().ok_or("no ffmpeg stdin")?;
@@ -315,6 +340,9 @@ pub fn export_video(doc: &Document, o: &ExportOpts, path: &std::path::Path, ffmp
     }
     drop(child.stdin.take());
     let out = child.wait_with_output().map_err(|e| e.to_string())?;
+    if let Some(w) = wav {
+        let _ = std::fs::remove_file(w);
+    }
     if out.status.success() {
         Ok(())
     } else {
@@ -352,6 +380,66 @@ pub fn export_svg(doc: &Document, frame: u32) -> String {
         out += &format!("<defs>\n{}</defs>\n", w.defs);
     }
     out + &body + "</svg>\n"
+}
+
+/// Animated SVG: every frame as a group shown for its time with SMIL
+/// (plays in browsers without script). Identical frames share one group.
+pub fn export_animated_svg(doc: &Document, o: &ExportOpts) -> String {
+    let frames = o.frames(doc);
+    let n = frames.end() - frames.start() + 1;
+    let dur = n as f32 / doc.fps.max(1.0);
+    // keep every frame's items alive: the writer keys clips/images by pointer
+    let all: Vec<Vec<DrawItem>> = frames.clone().map(|f| evaluate_scene(doc, f)).collect();
+    let mut w = SvgWriter { doc, defs: String::new(), next: 0, clip_ids: Default::default(), image_ids: Default::default() };
+    let mut bodies: Vec<String> = vec![];
+    let mut shown: Vec<Vec<u32>> = vec![];
+    for (i, items) in all.iter().enumerate() {
+        let body = w.level(items, 0);
+        match bodies.iter().position(|b| *b == body) {
+            Some(k) => shown[k].push(i as u32),
+            None => {
+                bodies.push(body);
+                shown.push(vec![i as u32]);
+            }
+        }
+    }
+    let mut out = format!(
+        "<svg xmlns=\"http://www.w3.org/2000/svg\" xmlns:xlink=\"http://www.w3.org/1999/xlink\" width=\"{w}\" height=\"{h}\" viewBox=\"0 0 {w} {h}\">\n",
+        w = doc.width,
+        h = doc.height
+    );
+    if !o.transparent {
+        out += &format!("<rect width=\"100%\" height=\"100%\" fill=\"{}\"/>\n", doc.background.to_hex());
+    }
+    if !w.defs.is_empty() {
+        out += &format!("<defs>\n{}</defs>\n", w.defs);
+    }
+    let repeat = if o.loops == 0 { "indefinite".to_string() } else { o.loops.to_string() };
+    for (body, fr) in bodies.iter().zip(&shown) {
+        if fr.len() as u32 == n {
+            out += &format!("<g>\n{body}</g>\n");
+            continue;
+        }
+        // discrete visibility: on for each frame listed, off otherwise
+        let mut times = vec![];
+        let mut vals = vec![];
+        let mut on = false;
+        for i in 0..n {
+            let want = fr.contains(&i);
+            if i == 0 || want != on {
+                times.push(format!("{:.5}", i as f32 / n as f32));
+                vals.push(if want { "inline" } else { "none" });
+                on = want;
+            }
+        }
+        let first = if fr.contains(&0) { "inline" } else { "none" };
+        out += &format!(
+            "<g display=\"{first}\"><animate attributeName=\"display\" calcMode=\"discrete\" dur=\"{dur:.4}s\" repeatCount=\"{repeat}\" keyTimes=\"{}\" values=\"{}\" fill=\"freeze\"/>\n{body}</g>\n",
+            times.join(";"),
+            vals.join(";")
+        );
+    }
+    out + "</svg>\n"
 }
 
 struct SvgWriter<'a> {

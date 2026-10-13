@@ -152,3 +152,62 @@ fn frame_scripts_see_named_instances() {
     let (_, none) = fp.run_with("var y = this.ball.y;", 1, 10, &[], &[ball]).unwrap();
     assert!(none.is_empty());
 }
+
+#[test]
+fn jsfl_scripts_run_through_the_shim() {
+    let mut ed = Editor::new(ac_core::Document::default());
+    let code = r##"
+var doc = fl.getDocumentDOM();
+var tl = doc.getTimeline();
+doc.width = 640;
+doc.frameRate = 12;
+var li = tl.addNewLayer("Boxes");
+doc.setFillColor("#33AAFF");
+for (var i = 0; i < 3; i++) {
+  doc.addNewRectangle({ left: 10 + i * 50, top: 10, right: 50 + i * 50, bottom: 50 }, 4);
+}
+doc.selectAll();
+fl.trace("selected " + doc.selection.length);
+doc.convertToSymbol("movie clip", "Row", "center");
+doc.selection[0].name = "row";
+tl.insertFrames(9);
+tl.insertKeyframe(9);
+tl.currentFrame = 9;
+doc.selectAll();
+doc.moveSelectionBy({ x: 100, y: 0 });
+tl.setFrameProperty("tweenType", "motion", 0, 1);
+tl.layers[li].frames[0].name = "go";
+tl.layers[li].frames[0].actionScript = "this.stop();";
+doc.library.addNewItem("graphic", "Empty");
+fl.trace(tl.layerCount + " layers, " + tl.frameCount + " frames, items: " + doc.library.items.map(function (i) { return i.name + ":" + i.itemType; }).join(","));
+fl.trace("frame0 " + tl.layers[li].frames[0].tweenType + " " + tl.layers[li].frames[0].duration + " " + tl.getFrameProperty("name", 3));
+try { tl.copyFrames(0, 1); } catch (e) { fl.trace("unsupported ok"); }
+"##;
+    let rep = run_code(&mut ed, Language::Jsfl, code, &ScriptOptions::default());
+    assert!(rep.error.is_none(), "{:?} {:?}", rep.error, rep.log);
+    assert_eq!(rep.log[0], "selected 3");
+    assert_eq!(rep.log[1], "2 layers, 10 frames, items: Row:movie clip,Empty:graphic");
+    assert_eq!(rep.log[2], "frame0 motion 9 go");
+    assert_eq!(rep.log[3], "unsupported ok");
+    assert_eq!((ed.doc.width, ed.doc.fps), (640.0, 12.0));
+    let l = &ed.doc.scene.layers[ed.doc.scene.layers.iter().position(|l| l.name == "Boxes").unwrap()];
+    let k0 = &l.keyframes[&0];
+    assert!(matches!(k0.tween, ac_core::Tween::Classic { .. }));
+    assert_eq!(k0.script.as_deref(), Some("this.stop();"));
+    assert_eq!(k0.elements[0].name, "row");
+    assert!((l.keyframes[&9].elements[0].matrix.tx - k0.elements[0].matrix.tx - 100.0).abs() < 0.01);
+    // one undo step for the whole script
+    assert!(ed.undo().is_some());
+    assert_eq!(ed.doc.width, 550.0);
+    // errors keep the script's own line numbers
+    let rep = run_code(&mut ed, Language::Jsfl, "var a = 1;\nnosuchfn();", &ScriptOptions::default());
+    assert!(rep.error.as_deref().unwrap_or("").contains(":2"), "{:?}", rep.error);
+}
+
+#[test]
+fn frame_scripts_accept_html5_event_listeners() {
+    let mut p = FramePlayer::new().unwrap();
+    let inst = Instance { name: "go".into(), x: 1.0, y: 2.0, rotation: 0.0, scale_x: 1.0, scale_y: 1.0, alpha: 1.0, visible: true };
+    let (_, changed) = p.run_with("this.go.addEventListener('click', () => {}); this.go.on('mouseover', () => {}); this.go.x = 5;", 0, 1, &[], &[inst]).unwrap();
+    assert_eq!(changed[0].x, 5.0);
+}

@@ -20,16 +20,16 @@ files.
 | Area | Coverage | Biggest gaps |
 |---|---|---|
 | Workspace and panels | ~60% | docking/workspaces, Color & Swatches, History, preferences |
-| Drawing model | ~75% | XFL edge export of merge shapes, Convert Lines to Fills / Expand / Soften, ragged/hatched strokes |
+| Drawing model | ~78% | shared edges in XFL export (fills and lines are written as separate edges), Convert Lines to Fills / Expand / Soften, ragged/hatched strokes |
 | Tools | ~90% | Magic Wand, pressure/tilt, Art/Pattern brushes |
-| Timeline | ~80% | frame view sizes, sound, Synchronize Symbols |
-| Symbols | ~75% | 9-slice, Visible / Cache as bitmap, button sounds |
-| Animation | ~70% | 3D/filter/colour properties in motion tweens, tween presets, copy/paste motion, lip-sync, rig mapping |
+| Timeline | ~85% | frame view sizes, sound effects/envelopes, Synchronize Symbols |
+| Symbols | ~75% | 9-slice, Visible / Cache as bitmap, sounds inside symbols |
+| Animation | ~73% | 3D/filter/colour properties in motion tweens, tween presets, copy/paste motion, rig mapping |
 | Text | ~35% | dynamic/input text, rich text, paragraph options, font styles |
-| Media | ~45% | audio, video, AI/PSD import, Trace Bitmap |
-| Scripting | 🟡 different by design | ActionScript 3 (won't do), HTML5 Canvas / CreateJS runtime, Code Snippets, debugger |
-| Publish / export | ~45% | HTML5 Canvas, sprite sheets, SVG animation, publish profiles, WebGL, AIR, SWF |
-| File formats | ~5% | **.fla / XFL read & write** |
+| Media | ~60% | AIFF, sound effects/envelope editing, video, AI/PSD import, Trace Bitmap |
+| Scripting | 🟡 different by design | ActionScript 3 (won't do), full CreateJS API, Code Snippets, debugger, rest of JSFL |
+| Publish / export | ~75% | publish profiles, a hierarchical HTML5 runtime (movie clips playing while the main timeline is stopped), WebGL, AIR, SWF |
+| File formats | ~60% | a corpus of real .fla files, motion-object tweens (motionObjectXML), legacy binary .fla, XFL as the native format |
 | Preferences and polish | ~35% | preferences dialog, keyboard shortcut editor, workspaces, themes |
 
 The two engine milestones that unlock most of the rest:
@@ -160,7 +160,7 @@ The two engine milestones that unlock most of the rest:
 | Frame-rate change with "scale spans", time display (s / frames) | Yes | FPS only | 🟡 | P2 |
 | Loop playback range, play in a range | Yes | Whole timeline loop | 🟡 | P2 |
 | Scenes (add, duplicate, reorder, Scene panel) | Yes | Yes; exports play every scene | ✅ | |
-| Sound on frames (sync: event/start/stop/stream; loop; effects) and waveform | Yes | — | ❌ | P1 |
+| Sound on frames (sync: event/start/stop/stream; loop; effects) and waveform | Yes | Sync Event/Start/Stop/Stream, repeat/loop, waveform in the frames, playback, audio in video export; no effects/envelopes | 🟡 | P2 (effects) |
 
 ## 5. Symbols and instances
 
@@ -197,7 +197,7 @@ The two engine milestones that unlock most of the rest:
 | Bones: IK poses on keyframes, joint rotation/translation constraints, **springiness / damping**, bone ease, runtime vs authoring | Yes | Poses + IK | 🟡 | P2 |
 | Asset Warp: pins, mesh density, tween warped poses, **Create Warped Asset / Reset** | Yes | Pins, rigid MLS | 🟡 | P2 |
 | Camera: tween, colour effects, attach layers, layer depth | Yes | Tweenable pan/zoom/rotate | 🟡 | P2 |
-| **Auto lip-sync** (map visemes from audio) | Yes | — | ❌ | P2 |
+| **Auto lip-sync** (map visemes from audio) | Yes | Properties ▸ Lip Syncing on a graphic instance; FFT-band heuristic (no speech recognition), `lipsync.apply` with a viseme → frame map | 🟡 | P2 (viseme picker UI, better analysis) |
 | **Rig mapping** (map a rig onto symbols) | Yes | — | ❌ | P3 |
 | Frame-by-frame workflow helpers (onion skin keyframes-only, Ctrl+Alt+L loop) | Yes | Basic | 🟡 | P1 |
 
@@ -222,7 +222,7 @@ The two engine milestones that unlock most of the rest:
 | Bitmap properties (smoothing, compression, quality), Trace Bitmap | Yes | — | ❌ | P1 (Trace P2) |
 | Import image sequences | Yes | Yes | ✅ | |
 | Import SVG, Illustrator (.ai), Photoshop (.psd) with layer options | Yes | SVG (shapes, gradients, text as outlines) | 🟡 | P2 (.ai/.psd) |
-| Import audio (WAV, MP3, AIFF), sound properties, edit envelope | Yes | — | ❌ | P1 |
+| Import audio (WAV, MP3, AIFF), sound properties, edit envelope | Yes | WAV, MP3, OGG Vorbis, FLAC (Symphonia); library preview with waveform; no AIFF, no envelope | 🟡 | P2 |
 | Import video (embedded or FLVPlayback), video layers | Yes | — | ❌ | P3 |
 | Import animated GIF as frames | Yes | Yes | ✅ | |
 
@@ -231,9 +231,9 @@ The two engine milestones that unlock most of the rest:
 | Feature | Animate | AnimationCraft | Status | Pri |
 |---|---|---|---|---|
 | ActionScript 3 (frame scripts, classes, Flash Player/AIR) | Yes | Not planned: dead runtime | — | P3 |
-| HTML5 Canvas frame scripts (JavaScript/CreateJS) | Yes | Sandboxed QuickJS, CreateJS-style subset | 🟡 | P1 (full `this.*` API, events, instance names) |
+| HTML5 Canvas frame scripts (JavaScript/CreateJS) | Yes | Sandboxed QuickJS in the editor; the same API in published pages, plus `addEventListener` click/mouseover/mouseout | 🟡 | P2 (rest of the CreateJS display API) |
 | Code Snippets panel | Yes | Actions snippets | 🟡 | P2 |
-| **JSFL** (authoring automation, Commands menu, `fl.getDocumentDOM()`) | Yes | Own command registry + JS/Python/Node/Ruby | 🟡 | P1 (a JSFL compatibility shim) |
+| **JSFL** (authoring automation, Commands menu, `fl.getDocumentDOM()`) | Yes | JSFL shim (`fl`, Document, Timeline, Layer, Frame, Library, Element; ~120 calls) on the command registry; `.jsfl` in the Script Console and CLI | 🟡 | P2 (FLfile, copy/paste frames, the rest of the API) |
 | Run Command, saved Commands, Manage Saved Commands | Yes | Run Script / Run Example | 🟡 | P2 |
 | History → Save as Command | Yes | — | ❌ | P2 |
 | Debugger, Compiler Errors | Yes | Output panel | 🟡 | P3 |
@@ -244,27 +244,27 @@ The two engine milestones that unlock most of the rest:
 | Feature | Animate | AnimationCraft | Status | Pri |
 |---|---|---|---|---|
 | Publish Settings dialog (targets, per-target options, profiles) | Yes | Scale, frame range, transparency, GIF loop/quality, PNG prefix, ffmpeg | 🟡 | P2 (profiles) |
-| **HTML5 Canvas** publish (JS + HTML, CreateJS runtime, sprite sheets for bitmaps) | Yes | — | ❌ | **P0** |
+| **HTML5 Canvas** publish (JS + HTML, CreateJS runtime, sprite sheets for bitmaps) | Yes | Own runtime: per-frame display lists over shared tables (exact match with the stage), masks, gradients, bitmaps, filters/blend via canvas filters, frame scripts, buttons with Over/Down/Hit, sounds (Web Audio); folder or one self-contained .html | ✅ | (movie clips follow the main clock, as on our stage) |
 | Export Video / Media (MP4/H.264 via Adobe Media Encoder, MOV) | Yes | MP4 (H.264), WebM (VP9, alpha), MOV (ProRes 4444) via ffmpeg, background job with progress | ✅ | |
 | Export Animated GIF (with settings: size, colours, loop, dither) | Yes (Save for Web) | Size, range, loop, quality, transparency | ✅ | |
 | Export Image (PNG/JPG/GIF/SVG with options, transparency) | Yes | PNG ×2, SVG | 🟡 | P1 |
 | PNG sequence | Yes | Yes | ✅ | |
-| Generate Sprite Sheet / Texture Atlas | Yes | — | ❌ | P1 |
-| Animated SVG (SMIL) export | Yes | — | ❌ | P2 |
+| Generate Sprite Sheet / Texture Atlas | Yes | PNG + JSON hash / JSON array / Starling XML; trim, padding, duplicate detection, shelf packing | ✅ | (MaxRects, rotation) |
+| Animated SVG (SMIL) export | Yes | Frame groups with discrete SMIL timing; identical frames shared | ✅ | |
 | WebGL glTF (standard/extended), VR 360/Panorama (deprecated) | Yes | — | ❌ | P3 |
 | SWF / Flash Player, AIR desktop/mobile | Yes | — | ❌ | P3 (SWF via Ruffle crates maybe) |
 | Publish to YouTube / social presets (post-2020) | Yes | — | ❌ | P3 |
-| Lottie | No (third-party plug-in) | — | ❌ | P2 (our edge) |
+| Lottie | No (third-party plug-in) | Shape layers per distinct frame (beziers, fills, strokes/dashes, gradients), embedded bitmaps; verified in lottie-web; no masks/filters | ✅ | (keyframed transforms instead of per-frame layers) |
 | Test Movie (Ctrl+Enter) in a player window, Test Scene | Yes | Play on stage | 🟡 | P1 |
 
 ## 11. Files and interchange
 
 | Feature | Animate | AnimationCraft | Status | Pri |
 |---|---|---|---|---|
-| **.fla read** (ZIP of XFL: `DOMDocument.xml`, `LIBRARY/*.xml`, `bin/*.dat` bitmaps, media) | Yes | Edge path parser only | ❌ | **P0** |
-| **.fla / XFL write** | Yes | — | ❌ | P1 |
+| **.fla read** (ZIP of XFL: `DOMDocument.xml`, `LIBRARY/*.xml`, `bin/*.dat` bitmaps, media) | Yes | `ac-xfl`: scenes, layers (folders/masks/guides), frames (classic/shape tweens, custom eases, labels, scripts, sounds), raw shapes → merge shapes, drawing objects, primitives, instances (loop, colour effects, filters, blend), groups, static text, bitmaps (.dat lossless/JPEG/PNG), sounds; warnings for the rest | 🟡 | P1 (real-file corpus, motion-object tweens) |
+| **.fla / XFL write** | Yes | Zipped .fla and XFL folders; round-trip tested; motion tweens baked frame by frame | 🟡 | P2 (shared edges, motion objects) |
 | Legacy binary .fla (CS4 and earlier) | Yes | — | ❌ | P3 |
-| Save As .xfl (uncompressed folder) | Yes | — | ❌ | P1 |
+| Save As .xfl (uncompressed folder) | Yes | Yes (`name.xfl` → folder with the marker file) | ✅ | |
 | Import SWF | Old versions | — | ❌ | P3 |
 | Copy/paste with Illustrator/Photoshop (clipboard formats) | Yes | Internal clipboard | ❌ | P3 |
 | Native format | .fla | JSON `.acx.json` | 🟡 | (switch to XFL as native) |
@@ -320,7 +320,7 @@ The phases put dependencies first. Each phase ends with tests, a UI run under Xv
 4. Combine Objects (Union / Intersect / Punch / Crop), Optimize / Smooth / Straighten
 5. Primitives, stroke styles, bitmap fills, shape bones + Bind tool
 
-### Phase 4: Interchange and publishing
+### Phase 4: Interchange and publishing — ✅ done (Oct 2026)
 1. **.fla / XFL import** with a test corpus (shapes, symbols, tweens, motion XML, bitmaps, sounds)
 2. XFL export (round-trip tests)
 3. **HTML5 Canvas publish** (own runtime or a CreateJS-compatible output)

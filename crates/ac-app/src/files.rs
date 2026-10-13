@@ -19,6 +19,12 @@ pub(crate) enum FileAction {
     ImportImage,
     ImportSvg,
     ImportSequence,
+    ExportXfl,
+    ImportSound,
+    ExportHtml5,
+    ExportSpriteSheet,
+    ExportAnimatedSvg,
+    ExportLottie,
 }
 
 impl FileAction {
@@ -34,22 +40,40 @@ impl FileAction {
             FileAction::ImportImage => "Import image (PNG / JPG / GIF / BMP)",
             FileAction::ImportSvg => "Import SVG",
             FileAction::ImportSequence => "Import image sequence (pick the first numbered image)",
+            FileAction::ExportXfl => "Export as .fla / XFL",
+            FileAction::ImportSound => "Import sound to library (WAV / MP3 / OGG / FLAC)",
+            FileAction::ExportHtml5 => "Publish HTML5 Canvas (a folder, or name.html for one file)",
+            FileAction::ExportSpriteSheet => "Generate sprite sheet (PNG + data file)",
+            FileAction::ExportAnimatedSvg => "Export animated SVG",
+            FileAction::ExportLottie => "Export Lottie JSON",
         }
     }
     fn default_name(self, doc_name: &str) -> String {
         match self {
-            FileAction::Open | FileAction::ImportImage | FileAction::ImportSvg | FileAction::ImportSequence => String::new(),
+            FileAction::Open | FileAction::ImportImage | FileAction::ImportSvg | FileAction::ImportSequence | FileAction::ImportSound => String::new(),
             FileAction::Save => format!("{doc_name}.acx.json"),
             FileAction::ExportGif => format!("{doc_name}.gif"),
             FileAction::ExportPng => format!("{doc_name}.png"),
             FileAction::ExportSvg => format!("{doc_name}.svg"),
             FileAction::ExportPngSequence => format!("{doc_name}-frames"),
             FileAction::ExportVideo => format!("{doc_name}.mp4"),
+            FileAction::ExportXfl => format!("{doc_name}.fla"),
+            FileAction::ExportHtml5 => format!("{doc_name}-html5"),
+            FileAction::ExportSpriteSheet => format!("{doc_name}-sheet.png"),
+            FileAction::ExportAnimatedSvg => format!("{doc_name}-animated.svg"),
+            FileAction::ExportLottie => format!("{doc_name}.json"),
         }
     }
     fn filters(self) -> (&'static str, &'static [&'static str]) {
         match self {
-            FileAction::Open | FileAction::Save => ("AnimationCraft document", &["json"]),
+            FileAction::Open => ("Documents (.acx.json, .fla, .xfl)", &["json", "fla", "xfl"]),
+            FileAction::Save => ("AnimationCraft document", &["json"]),
+            FileAction::ExportXfl => ("Animation document (.fla, .xfl)", &["fla", "xfl"]),
+            FileAction::ImportSound => ("Sounds", &["wav", "mp3", "ogg", "oga", "flac"]),
+            FileAction::ExportHtml5 => ("Folder or .html", &[]),
+            FileAction::ExportSpriteSheet => ("PNG", &["png"]),
+            FileAction::ExportAnimatedSvg => ("SVG", &["svg"]),
+            FileAction::ExportLottie => ("Lottie JSON", &["json"]),
             FileAction::ExportGif => ("Animated GIF", &["gif"]),
             FileAction::ExportPng => ("PNG image", &["png"]),
             FileAction::ExportSvg | FileAction::ImportSvg => ("SVG", &["svg"]),
@@ -59,8 +83,13 @@ impl FileAction {
         }
     }
     fn picks_existing(self) -> bool {
-        matches!(self, FileAction::Open | FileAction::ImportImage | FileAction::ImportSvg | FileAction::ImportSequence)
+        matches!(self, FileAction::Open | FileAction::ImportImage | FileAction::ImportSvg | FileAction::ImportSequence | FileAction::ImportSound)
     }
+}
+
+/// .fla (zipped XFL), .xfl marker files and XFL folders.
+pub(crate) fn is_xfl(p: &Path) -> bool {
+    p.is_dir() || p.extension().map(|e| e.eq_ignore_ascii_case("fla") || e.eq_ignore_ascii_case("xfl")).unwrap_or(false)
 }
 
 /// Native dialogs can be turned off (headless UI tests): AC_NO_NATIVE_DIALOGS=1.
@@ -138,7 +167,7 @@ impl App {
         self.file_path
             .as_deref()
             .and_then(|p| Path::new(p).file_name())
-            .map(|n| n.to_string_lossy().trim_end_matches(".json").trim_end_matches(".acx").to_string())
+            .map(|n| n.to_string_lossy().trim_end_matches(".json").trim_end_matches(".acx").trim_end_matches(".fla").trim_end_matches(".xfl").to_string())
             .unwrap_or_else(|| "Untitled".into())
     }
     pub(crate) fn dirty(&self) -> bool {
@@ -214,6 +243,29 @@ impl App {
     pub(crate) fn do_file(&mut self, action: FileAction, path: &str) {
         let p = Path::new(path);
         let res: Result<String, String> = match action {
+            FileAction::Open if is_xfl(p) => ac_xfl::open(p).map(|im| {
+                let n = im.warnings.len();
+                self.report_warnings("Open", path, &im.warnings);
+                self.load_doc(im.doc, Some(path.into()));
+                self.settings.add_recent(path);
+                if n == 0 { format!("Opened {path}") } else { format!("Opened {path} ({n} notes, see Output)") }
+            }),
+            FileAction::Save | FileAction::ExportXfl if is_xfl(p) => {
+                let doc = self.ed.doc.with_floats_committed();
+                ac_xfl::save(&doc, p).map(|w| {
+                    self.report_warnings("Export", path, &w);
+                    if action == FileAction::Save {
+                        self.file_path = Some(path.into());
+                        self.saved_rev = self.ed.revision;
+                        self.settings.add_recent(path);
+                        clear_recovery();
+                    }
+                    let n = w.len();
+                    if n == 0 { format!("Saved {path}") } else { format!("Saved {path} ({n} notes about what the format can't hold, see Output)") }
+                })
+            }
+            FileAction::ExportXfl => Err("choose a .fla or .xfl file name".into()),
+            FileAction::ImportSound => self.import_sound(path),
             FileAction::Open => std::fs::read_to_string(p).map_err(|e| e.to_string()).and_then(|s| {
                 Document::from_json(&s).map_err(|e| format!("not an AnimationCraft document ({e})")).map(|d| {
                     self.load_doc(d, Some(path.into()));
@@ -240,6 +292,33 @@ impl App {
             }
         } else if action == FileAction::Save {
             self.after_save = None;
+        }
+    }
+
+    /// File ▸ Import ▸ Import Sound: into the library; on an empty keyframe
+    /// with no sound yet (an audio layer) it also starts there.
+    pub(crate) fn import_sound(&mut self, path: &str) -> Result<String, String> {
+        let bytes = std::fs::read(path).map_err(|e| format!("{path}: {e}"))?;
+        let pcm = ac_audio::decode(&bytes).map_err(|e| format!("{path}: {e}"))?;
+        let name = Path::new(path).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| "Sound".into());
+        let id = self.ed.add_sound(&name, bytes);
+        self.lib.sound = Some(id);
+        self.lib.bitmap = None;
+        self.lib_selected = None;
+        let attach = self.ed.current_keyframe().is_some_and(|(_, k)| k.elements.is_empty() && k.sound.is_none());
+        if attach {
+            self.ed.set_frame_sound(Some(ac_core::sound::FrameSound::new(id)));
+        }
+        Ok(format!("Imported {name} ({:.1} s){}", pcm.seconds(), if attach { " onto this keyframe" } else { " to the library; drag it onto the stage to start it on the current keyframe" }))
+    }
+
+    fn report_warnings(&mut self, what: &str, path: &str, w: &[String]) {
+        if w.is_empty() {
+            return;
+        }
+        self.scripting.push(crate::scripting::OutKind::Info, format!("{what} {path}:"));
+        for line in w {
+            self.scripting.push(crate::scripting::OutKind::Info, format!("  • {line}"));
         }
     }
 

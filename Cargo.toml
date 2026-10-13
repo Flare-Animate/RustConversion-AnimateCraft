@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/ac-core", "crates/ac-render", "crates/ac-script", "crates/ac-cli", "crates/ac-app"]
+members = ["crates/ac-core", "crates/ac-render", "crates/ac-script", "crates/ac-xfl", "crates/ac-audio", "crates/ac-cli", "crates/ac-app"]
 
 [workspace.package]
 version = "0.1.0"
@@ -12,6 +12,8 @@ repository = "https://github.com/KMSDax/AnimationCraft"
 ac-core = { path = "crates/ac-core" }
 ac-render = { path = "crates/ac-render" }
 ac-script = { path = "crates/ac-script" }
+ac-xfl = { path = "crates/ac-xfl" }
+ac-audio = { path = "crates/ac-audio" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tiny-skia = "0.11"

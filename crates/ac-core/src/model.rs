@@ -425,6 +425,9 @@ pub struct Keyframe {
     /// Property keyframes of a motion tween span.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub motion: Option<Box<crate::motion::Motion>>,
+    /// Properties ▸ Sound: the sound this keyframe starts (or stops).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sound: Option<crate::sound::FrameSound>,
 }
 
 impl Keyframe {
@@ -432,7 +435,7 @@ impl Keyframe {
         Keyframe::with(vec![])
     }
     pub fn with(elements: Vec<Element>) -> Self {
-        Keyframe { elements, tween: Tween::None, label: None, script: None, orient_to_path: false, ease_curve: None, shape_hints: vec![], motion: None }
+        Keyframe { elements, tween: Tween::None, label: None, script: None, orient_to_path: false, ease_curve: None, shape_hints: vec![], motion: None, sound: None }
     }
 }
 
@@ -583,6 +586,9 @@ pub struct Document {
     /// Scenes after the first (`scene`); the movie plays them in order.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub more_scenes: Vec<Timeline>,
+    /// Imported sounds (library items).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sounds: Vec<crate::sound::SoundAsset>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -618,6 +624,7 @@ impl Default for Document {
             bitmaps: vec![],
             guides: Guides::default(),
             more_scenes: vec![],
+            sounds: vec![],
         }
     }
 }
@@ -698,6 +705,9 @@ impl Document {
     }
     pub fn bitmap(&self, id: crate::bitmap::BitmapId) -> Option<&crate::bitmap::BitmapAsset> {
         self.bitmaps.iter().find(|b| b.id == id)
+    }
+    pub fn sound(&self, id: crate::sound::SoundId) -> Option<&crate::sound::SoundAsset> {
+        self.sounds.iter().find(|s| s.id == id)
     }
     pub fn next_bitmap_id(&self) -> crate::bitmap::BitmapId {
         self.bitmaps.iter().map(|b| b.id).max().unwrap_or(0) + 1

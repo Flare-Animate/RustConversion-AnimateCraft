@@ -6,6 +6,12 @@
 //!   animationcraft-cli svg    <doc | demo> <frame> <out.svg>
 //!   animationcraft-cli png-seq <doc | demo> <out-dir> [scale]
 //!   animationcraft-cli video  <doc | demo> <out.mp4|.webm|.mov> [scale]   (needs ffmpeg)
+//!   animationcraft-cli xfl    <doc | demo> <out.fla | out.xfl>   (export; any <doc> may also be a .fla / .xfl / XFL folder)
+//!   animationcraft-cli html5  <doc | demo> <out-dir | out.html> [--no-loop]   (HTML5 Canvas; .html = one self-contained file)
+//!   animationcraft-cli sprites <doc | demo> <out(.png)> [scale] [--format hash|array|starling]   (sprite sheet + atlas)
+//!   animationcraft-cli svg-anim <doc | demo> <out.svg>   (animated SVG, SMIL)
+//!   animationcraft-cli lottie <doc | demo> <out.json>
+//!   animationcraft-cli convert <in> <out.acx.json | .fla | .xfl>
 //!   animationcraft-cli save-demo <out.acx.json>
 //!   animationcraft-cli run <script.js|.py|.mjs|.rb> [--doc <doc|demo>] [--save out.acx.json] [--gif out.gif]
 //!   animationcraft-cli commands            (list scriptable commands)
@@ -17,8 +23,29 @@ fn load(src: &str) -> Result<Document, String> {
     if src == "demo" {
         return Ok(demo_document());
     }
+    let p = Path::new(src);
+    if p.is_dir() || [".fla", ".xfl"].iter().any(|e| src.to_ascii_lowercase().ends_with(e)) {
+        let im = ac_xfl::open(p)?;
+        for w in &im.warnings {
+            eprintln!("note: {w}");
+        }
+        return Ok(im.doc);
+    }
     let s = std::fs::read_to_string(src).map_err(|e| format!("{src}: {e}"))?;
     Document::from_json(&s).map_err(|e| format!("{src}: {e}"))
+}
+
+/// Save as .acx.json, or .fla / .xfl by extension.
+fn save_any(d: &Document, out: &str) -> Result<(), String> {
+    let low = out.to_ascii_lowercase();
+    if low.ends_with(".fla") || low.ends_with(".xfl") {
+        for w in ac_xfl::save(&d.with_floats_committed(), Path::new(out))? {
+            eprintln!("note: {w}");
+        }
+        Ok(())
+    } else {
+        std::fs::write(out, d.with_floats_committed().to_json()).map_err(|e| e.to_string())
+    }
 }
 
 fn run(args: &[String]) -> Result<(), String> {
@@ -73,6 +100,53 @@ fn run(args: &[String]) -> Result<(), String> {
             std::fs::write(arg(3)?, ac_render::export_svg(&d, f.saturating_sub(1))).map_err(|e| e.to_string())?;
             println!("wrote {}", arg(3)?);
         }
+        "xfl" => {
+            let d = load(arg(1)?)?;
+            for w in ac_xfl::save(&d, Path::new(arg(2)?))? {
+                eprintln!("note: {w}");
+            }
+            println!("wrote {}", arg(2)?);
+        }
+        "html5" => {
+            let d = load(arg(1)?)?;
+            let o = ac_render::html5::Html5Opts { loop_play: !args.iter().any(|a| a == "--no-loop"), ..Default::default() };
+            let page = ac_render::html5::publish_to(&d, &o, Path::new(arg(2)?))?;
+            println!("wrote {}", page.display());
+        }
+        "sprites" => {
+            let d = load(arg(1)?)?;
+            let o = ac_render::ExportOpts { scale: args.get(3).and_then(|s| s.parse().ok()).unwrap_or(1.0), transparent: true, ..Default::default() };
+            let fmt = args.iter().position(|a| a == "--format").and_then(|i| args.get(i + 1)).map(String::as_str).unwrap_or("hash");
+            let so = ac_render::formats::SheetOpts {
+                format: match fmt {
+                    "array" => ac_render::formats::AtlasFormat::JsonArray,
+                    "starling" | "xml" => ac_render::formats::AtlasFormat::StarlingXml,
+                    _ => ac_render::formats::AtlasFormat::JsonHash,
+                },
+                ..Default::default()
+            };
+            let (a, b) = ac_render::formats::export_sprite_sheet(&d, &o, &so, Path::new(arg(2)?))?;
+            println!("wrote {} and {}", a.display(), b.display());
+        }
+        "svg-anim" => {
+            let d = load(arg(1)?)?;
+            std::fs::write(arg(2)?, ac_render::export_animated_svg(&d, &ac_render::ExportOpts::default())).map_err(|e| e.to_string())?;
+            println!("wrote {}", arg(2)?);
+        }
+        "lottie" => {
+            let d = load(arg(1)?)?;
+            let (json, warn) = ac_render::formats::lottie(&d, &ac_render::ExportOpts::default());
+            for w in warn {
+                eprintln!("note: {w}");
+            }
+            std::fs::write(arg(2)?, json).map_err(|e| e.to_string())?;
+            println!("wrote {}", arg(2)?);
+        }
+        "convert" => {
+            let d = load(arg(1)?)?;
+            save_any(&d, arg(2)?)?;
+            println!("wrote {}", arg(2)?);
+        }
         "save-demo" => {
             std::fs::write(arg(1)?, demo_document().to_json()).map_err(|e| e.to_string())?;
             println!("wrote {}", arg(1)?);
@@ -98,7 +172,7 @@ fn run(args: &[String]) -> Result<(), String> {
                 return Err(e);
             }
             if let Some(p) = flag("--save") {
-                std::fs::write(p, ed.doc.to_json()).map_err(|e| e.to_string())?;
+                save_any(&ed.doc, p)?;
                 eprintln!("saved {p}");
             }
             if let Some(p) = flag("--gif") {
@@ -113,8 +187,9 @@ fn run(args: &[String]) -> Result<(), String> {
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    ac_audio::register();
     if args.is_empty() {
-        eprintln!("usage: animationcraft-cli <info|gif|png|png-seq|video|svg|save-demo|run|commands> ...  (use 'demo' as the document for the built-in scene)");
+        eprintln!("usage: animationcraft-cli <info|gif|png|png-seq|video|svg|svg-anim|html5|sprites|lottie|xfl|convert|save-demo|run|commands> ...  (use 'demo' as the document for the built-in scene)");
         std::process::exit(2);
     }
     if let Err(e) = run(&args) {

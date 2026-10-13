@@ -25,10 +25,10 @@ fn yes() -> bool {
     true
 }
 
-fn b64_ser<S: Serializer>(v: &[u8], s: S) -> Result<S::Ok, S::Error> {
+pub(crate) fn b64_ser<S: Serializer>(v: &[u8], s: S) -> Result<S::Ok, S::Error> {
     s.serialize_str(&base64::engine::general_purpose::STANDARD.encode(v))
 }
-fn b64_de<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<u8>, D::Error> {
+pub(crate) fn b64_de<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<u8>, D::Error> {
     let s = String::deserialize(d)?;
     base64::engine::general_purpose::STANDARD.decode(s.as_bytes()).map_err(serde::de::Error::custom)
 }

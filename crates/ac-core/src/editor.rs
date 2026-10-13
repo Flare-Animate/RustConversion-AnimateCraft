@@ -1413,6 +1413,124 @@ impl Editor {
         self.doc.bitmaps.push(asset);
         id
     }
+    // ---- sounds (File › Import, Properties › Sound, Lip Syncing)
+    /// Add an imported sound to the library; returns its id.
+    pub fn add_sound(&mut self, name: &str, data: Vec<u8>) -> crate::sound::SoundId {
+        self.checkpoint("Import");
+        let id = self.doc.sounds.iter().map(|s| s.id).max().unwrap_or(0) + 1;
+        self.doc.sounds.push(crate::sound::SoundAsset { id, name: name.into(), data });
+        id
+    }
+    pub fn delete_sound(&mut self, id: crate::sound::SoundId) {
+        self.checkpoint("Delete Library Item");
+        self.doc.sounds.retain(|s| s.id != id);
+        for tl in self.doc.scenes_mut() {
+            for l in &mut tl.layers {
+                for k in l.keyframes.values_mut() {
+                    if k.sound.as_ref().is_some_and(|s| s.sound == id) {
+                        k.sound = None;
+                    }
+                }
+            }
+        }
+        for sym in &mut self.doc.library {
+            for l in &mut sym.timeline.layers {
+                for k in l.keyframes.values_mut() {
+                    if k.sound.as_ref().is_some_and(|s| s.sound == id) {
+                        k.sound = None;
+                    }
+                }
+            }
+        }
+    }
+    /// Properties › Sound on the keyframe governing the playhead.
+    pub fn set_frame_sound(&mut self, sound: Option<crate::sound::FrameSound>) {
+        let Some((start, _)) = self.current_keyframe() else { return };
+        self.checkpoint("Frame Sound");
+        let li = self.layer;
+        self.timeline_mut().layers[li].keyframes.get_mut(&start).unwrap().sound = sound;
+    }
+    /// Change the current keyframe's sound settings in place (no-op without one).
+    pub fn edit_frame_sound(&mut self, f: impl FnOnce(&mut crate::sound::FrameSound)) {
+        let Some((start, k)) = self.current_keyframe() else { return };
+        let Some(mut s) = k.sound.clone() else { return };
+        f(&mut s);
+        self.checkpoint("Frame Sound");
+        let li = self.layer;
+        self.timeline_mut().layers[li].keyframes.get_mut(&start).unwrap().sound = Some(s);
+    }
+
+    /// Auto Lip-Sync: the selected graphic instance (a mouth symbol with one
+    /// pose per frame) gets a keyframe at every change of mouth shape heard
+    /// in the sound on `audio_layer`, showing the matching frame. `map` gives
+    /// the symbol frame (0-based) for each shape; missing shapes use the
+    /// default order (Neutral, MBP, Ai, E, O, U, FV, L, WQ, etc = frames 1…10).
+    /// Returns the number of keyframes made.
+    pub fn lip_sync(&mut self, audio_layer: usize, map: &[(crate::sound::Viseme, u32)]) -> Result<usize, String> {
+        use crate::sound::Viseme;
+        let sel = *self.selection.first().ok_or("select the mouth instance first")?;
+        let tl = self.timeline();
+        let layer = tl.layers.get(sel.layer).ok_or("no layer")?;
+        let (_, kf, _) = layer.span_at(self.frame).ok_or("nothing at the playhead")?;
+        let el = kf.elements.get(sel.element).cloned().ok_or("nothing selected")?;
+        let ElementKind::Instance(inst) = &el.kind else { return Err("lip-sync works on a graphic symbol instance".into()) };
+        let sym = self.doc.symbol(inst.symbol).ok_or("missing symbol")?;
+        let poses = sym.timeline.frame_count();
+        let al = tl.layers.get(audio_layer).ok_or("no such audio layer")?;
+        // the sound keyframe at (or else after) the playhead
+        let (s0, fs) = al
+            .keyframes
+            .range(..=self.frame)
+            .rev()
+            .chain(al.keyframes.range(self.frame + 1..))
+            .find_map(|(s, k)| k.sound.as_ref().filter(|x| x.sync != crate::sound::SoundSync::Stop).map(|x| (*s, x.clone())))
+            .ok_or("no sound on that layer")?;
+        let asset = self.doc.sound(fs.sound).ok_or("missing sound")?.clone();
+        let fps = self.doc.fps.max(1.0);
+        let secs = crate::sound::seconds(&asset).ok_or("this build can't decode the sound")?;
+        let mut n = (secs * fps).ceil() as u32;
+        if fs.sync == crate::sound::SoundSync::Stream {
+            n = n.min(al.span_end(s0) - s0);
+        }
+        let shapes = crate::sound::analyze(&asset, 0.0, fps, n as usize).ok_or("couldn't analyse the sound")?;
+        let frame_of = |v: Viseme| -> u32 {
+            map.iter().find(|(m, _)| *m == v).map(|(_, f)| *f).unwrap_or_else(|| Viseme::ALL.iter().position(|x| *x == v).unwrap_or(0) as u32).min(poses.saturating_sub(1))
+        };
+        self.checkpoint("Lip Sync");
+        let li = sel.layer;
+        let idx = sel.element;
+        let l = &mut self.timeline_mut().layers[li];
+        let end = s0 + n;
+        // keep what is on the layer, but replace its keyframes inside the range
+        let base: Vec<Element> = crate::frames::content_at(l, s0).0;
+        let after = crate::frames::content_at(l, end).0;
+        let had_after = end < l.end;
+        let doomed: Vec<u32> = l.keyframes.range(s0..end).map(|(k, _)| *k).collect();
+        for k in doomed {
+            l.keyframes.remove(&k);
+        }
+        let mut made = 0;
+        let mut prev: Option<Viseme> = None;
+        for (i, v) in shapes.iter().enumerate() {
+            if prev == Some(*v) {
+                continue;
+            }
+            prev = Some(*v);
+            let mut els = base.clone();
+            if let Some(ElementKind::Instance(ins)) = els.get_mut(idx).map(|e| &mut e.kind) {
+                ins.loop_mode = LoopMode::SingleFrame;
+                ins.first_frame = frame_of(*v);
+            }
+            l.keyframes.insert(s0 + i as u32, Keyframe::with(els));
+            made += 1;
+        }
+        if had_after {
+            l.keyframes.entry(end).or_insert_with(|| Keyframe::with(after));
+        }
+        l.end = l.end.max(end);
+        Ok(made)
+    }
+
     /// Place a bitmap with its top-left at `at`.
     pub fn place_bitmap(&mut self, id: crate::bitmap::BitmapId, at: Pt) -> Option<Selection> {
         self.doc.bitmap(id)?;
@@ -1441,6 +1559,10 @@ impl Editor {
             }).sum()
         }
         self.doc.scenes().chain(self.doc.library.iter().map(|s| &s.timeline)).flat_map(|t| t.layers.iter()).flat_map(|l| l.keyframes.values()).map(|k| count(&k.elements, id)).sum()
+    }
+    /// Keyframes that start a library sound.
+    pub fn sound_usage(&self, id: crate::sound::SoundId) -> usize {
+        self.doc.scenes().chain(self.doc.library.iter().map(|s| &s.timeline)).flat_map(|t| t.layers.iter()).flat_map(|l| l.keyframes.values()).filter(|k| k.sound.as_ref().is_some_and(|s| s.sound == id)).count()
     }
     /// Delete a library bitmap and every placed copy of it.
     pub fn delete_bitmap(&mut self, id: crate::bitmap::BitmapId) {

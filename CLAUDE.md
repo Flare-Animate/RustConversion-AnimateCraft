@@ -109,14 +109,21 @@ Status: ✅ in the demo · 🟡 partial · ⬜ planned
 **Output**
 - ✅ Animated GIF, PNG frame, SVG frame (same rasteriser as the stage)
 - ✅ PNG sequence, MP4/WebM/MOV via ffmpeg, GIF options, Publish Settings, background export jobs
-- ⬜ Sprite sheet + texture atlas, HTML5
-  Canvas runtime, Lottie JSON, SWF (Ruffle's MIT/Apache SWF crates), animated SVG
+- ✅ HTML5 Canvas publish (own runtime: display lists, scripts, buttons, sounds; folder or one
+  .html), sprite sheet + atlas (JSON hash/array, Starling XML), animated SVG (SMIL), Lottie JSON,
+  sound mixed into video exports
+- ⬜ SWF (Ruffle's MIT/Apache SWF crates), WebGL, publish profiles
 
 **Interchange**
-- 🟡 XFL `edges` path parser (experimental, needs a corpus)
-- ⬜ `.fla` import (CS5+ .fla is a ZIP of the XFL folder: `DOMDocument.xml`,
-  `LIBRARY/*.xml`, `bin/`, media), uncompressed XFL read/write, legacy binary
-  FLA (pre-CS5 compound file) read-only, SVG/AI/PSD import
+- ✅ `.fla` (CS5+, zipped XFL) and XFL folders: read + write (`ac-xfl`), round-trip tested on a
+  hand-written fixture; unsupported parts are reported, never silently dropped
+- 🟡 needs a corpus of real .fla files; motion-object tweens import static
+- ⬜ legacy binary FLA (pre-CS5 compound file) read-only, AI/PSD import
+
+**Sound**
+- ✅ Import WAV/MP3/OGG/FLAC, keyframe sounds (Event/Start/Stop/Stream, repeat/loop), waveform
+  in the timeline, playback, auto lip-sync (heuristic) on graphic instances
+- ⬜ sound effects/envelopes, sounds inside symbols, AIFF
 
 **Scripting** (see SCRIPTING.md)
 - ✅ Command registry (`ac_core::commands`, ~50 dotted commands, 1-based frames)
@@ -125,17 +132,21 @@ Status: ✅ in the demo · 🟡 partial · ⬜ planned
 - ✅ Authoring scripts: built-in JS, Python, Node.js, Ruby, any language via a
   JSON-lines protocol; Script Console, Output, Command Reference; confirm
   before external scripts; one undo step per run; CLI `run`
+- ✅ JSFL compatibility shim (`fl`, document, timeline, layers, frames, library) for `.jsfl` files
 - ⬜ MCP server over the same registry; recorded macros; script plug-in menu
 
 ## 3. Architecture
 
 ```
 crates/
-  ac-core    model, timeline evaluation, tweens (motion.rs), merge drawing (merge.rs), shape armatures (rig.rs), editor commands, XFL bits   (no UI, wasm-portable)
+  ac-core    model, timeline evaluation, tweens (motion.rs), merge drawing (merge.rs), shape armatures (rig.rs), sounds (sound.rs), editor commands   (no UI, wasm-portable)
   ac-render  tiny-skia rasteriser shared by stage + exports (filters, blend modes, masks);
-             SVG, GIF, PNG, PNG sequence, video via ffmpeg; system fonts
-  ac-script  scripting: sandboxed frame scripts (QuickJS), authoring scripts (JS embedded, others via JSON bridge)
-  ac-cli     headless: info / gif / png / svg / save-demo / run / commands
+             SVG, GIF, PNG, PNG sequence, video via ffmpeg (with sound); HTML5 Canvas (html5.rs +
+             html5_runtime.js), sprite sheets / Lottie (formats.rs), animated SVG; system fonts
+  ac-audio   Symphonia decoding, Animate-rule sound mixing, waveforms, lip-sync analysis, cpal playback (feature)
+  ac-xfl     .fla / XFL read + write (edges, .dat bitmaps, zip)
+  ac-script  scripting: sandboxed frame scripts (QuickJS), authoring scripts (JS embedded, JSFL shim, others via JSON bridge)
+  ac-cli     headless: info / gif / png / svg / svg-anim / html5 / sprites / lottie / xfl / convert / run / commands
   ac-app     egui desktop editor (Animate "Essentials" layout)
 ```
 
@@ -165,6 +176,7 @@ The full feature-by-feature comparison with Animate and the current build order
 | **M0.3 (done)** | Every toolbar tool works (31): skew/distort/envelope, Transform panel, 3D tools, gradients, Fluid Brush, Width, Bone/IK, Asset Warp, Camera, view rotation; Library fills the panel / docks left; 48 tests |
 | **Phase 1 (done)** | Native file dialogs, recent files, autosave/recovery; groups, Align/Info; folders, masks, motion guides; filters + blend modes; bitmaps + SVG import; system fonts; PNG sequence + video export; rulers/guides/grid; frame-script instance access; 59 tests |
 | **Phase 3 (done)** | Merge Drawing engine (cut/merge, line splitting, floating selections, edge bending), brush/eraser modes, Faucet, bucket gaps, Lock Fill, Combine Objects, shape cleanup, primitives, stroke styles, bitmap fills, shape bones + Bind; 83 tests |
+| **Phase 4 (done)** | .fla/XFL read + write, sounds (sync modes, waveform, playback, video audio, lip-sync), HTML5 Canvas publish, sprite sheets, animated SVG, Lottie, JSFL shim; 101 tests |
 | **Phase 2 (done)** | Custom eases + presets, motion tweens + Motion Editor + editable motion path, shape hints, Reverse / Frame-by-Frame / span-end drag, onion markers + Edit Multiple Frames, button states + Simple Buttons, Swap Symbol, Brightness/Advanced colour, scenes, layer parenting; 73 tests |
 | **M1** | Route every menu item through the registry; MCP server; rulers/guides, Align panel, native file dialogs |
 | **M2** | Merge Drawing planar-map engine, Brush/Eraser/Pen/Subselection, gradients, Selection-tool edge bending |

@@ -18,6 +18,8 @@ pub struct PublishSettings {
     pub gif_quality: i32,
     pub seq_prefix: String,
     pub ffmpeg: String,
+    pub html_loop: bool,
+    pub sheet: ac_render::formats::SheetOpts,
     pub job: Option<Job>,
     ffmpeg_checked: Option<Option<String>>,
 }
@@ -35,6 +37,8 @@ impl Default for PublishSettings {
             gif_quality: 70,
             seq_prefix: "frame".into(),
             ffmpeg: "ffmpeg".into(),
+            html_loop: true,
+            sheet: Default::default(),
             job: None,
             ffmpeg_checked: None,
         }
@@ -112,6 +116,25 @@ pub(crate) fn run_file_action(app: &mut App, action: FileAction, path: &str) -> 
             spawn(app, "Exporting video".into(), move |prog| ac_render::export_video(&doc, &o, &p, &ff, prog).map(|_| format!("Exported video to {}", p.display())));
             Ok("Exporting video…".into())
         }
+        FileAction::ExportHtml5 => {
+            let ho = ac_render::html5::Html5Opts { loop_play: app.publish.html_loop, range: o.range, single_file: false };
+            spawn(app, "Publishing HTML5 Canvas".into(), move |_| ac_render::html5::publish_to(&doc, &ho, &p).map(|page| format!("Published HTML5 Canvas: {}", page.display())));
+            Ok("Publishing HTML5 Canvas…".into())
+        }
+        FileAction::ExportSpriteSheet => {
+            let so = app.publish.sheet.clone();
+            spawn(app, "Generating sprite sheet".into(), move |_| ac_render::formats::export_sprite_sheet(&doc, &o, &so, &p).map(|(a, b)| format!("Sprite sheet: {} + {}", a.display(), b.display())));
+            Ok("Generating sprite sheet…".into())
+        }
+        FileAction::ExportAnimatedSvg => std::fs::write(&p, ac_render::export_animated_svg(&doc, &o)).map_err(|e| e.to_string()).map(|_| format!("Exported animated SVG to {}", p.display())),
+        FileAction::ExportLottie => {
+            let (json, warn) = ac_render::formats::lottie(&doc, &o);
+            std::fs::write(&p, json).map_err(|e| e.to_string())?;
+            for w in &warn {
+                app.scripting.push(crate::scripting::OutKind::Info, format!("Lottie: {w}"));
+            }
+            Ok(format!("Exported Lottie to {}{}", p.display(), if warn.is_empty() { String::new() } else { format!(" ({} notes, see Output)", warn.len()) }))
+        }
         FileAction::ImportImage => crate::import::import_image(app, path),
         FileAction::ImportSvg => crate::import::import_svg(app, path),
         FileAction::ImportSequence => crate::import::import_sequence(app, path),
@@ -184,6 +207,25 @@ pub fn window(app: &mut App, ctx: &egui::Context) {
                 ui.label(RichText::new(format!("e.g. {}0001.png", ps.seq_prefix)).color(Color32::from_gray(150)));
             });
             ui.end_row();
+            ui.label("HTML5 Canvas");
+            ui.horizontal(|ui| {
+                ui.checkbox(&mut ps.html_loop, "Loop timeline");
+                ui.label(RichText::new("folder = index.html + movie.js + images · name.html = one file").small().color(Color32::from_gray(150)));
+            });
+            ui.end_row();
+            ui.label("Sprite sheet");
+            ui.horizontal(|ui| {
+                egui::ComboBox::from_id_salt("sheet-fmt").selected_text(ps.sheet.format.name()).show_ui(ui, |ui| {
+                    for f in ac_render::formats::AtlasFormat::ALL {
+                        ui.selectable_value(&mut ps.sheet.format, f, f.name());
+                    }
+                });
+                ui.checkbox(&mut ps.sheet.trim, "Trim");
+                ui.checkbox(&mut ps.sheet.dedupe, "Detect duplicates");
+                ui.label("Padding");
+                ui.add(egui::DragValue::new(&mut ps.sheet.padding).range(0..=32));
+            });
+            ui.end_row();
             ui.label("Video");
             ui.vertical(|ui| {
                 ui.horizontal(|ui| {
@@ -204,7 +246,7 @@ pub fn window(app: &mut App, ctx: &egui::Context) {
         ui.separator();
         ui.horizontal_wrapped(|ui| {
             ui.label("Export:");
-            for (a, l) in [(FileAction::ExportGif, "GIF…"), (FileAction::ExportPngSequence, "PNG sequence…"), (FileAction::ExportVideo, "Video…"), (FileAction::ExportPng, "PNG frame…"), (FileAction::ExportSvg, "SVG frame…")] {
+            for (a, l) in [(FileAction::ExportGif, "GIF…"), (FileAction::ExportPngSequence, "PNG sequence…"), (FileAction::ExportVideo, "Video…"), (FileAction::ExportPng, "PNG frame…"), (FileAction::ExportSvg, "SVG frame…"), (FileAction::ExportHtml5, "HTML5 Canvas…"), (FileAction::ExportSpriteSheet, "Sprite sheet…"), (FileAction::ExportAnimatedSvg, "Animated SVG…"), (FileAction::ExportLottie, "Lottie…"), (FileAction::ExportXfl, ".fla / XFL…")] {
                 if ui.button(l).clicked() {
                     app.file(a);
                 }

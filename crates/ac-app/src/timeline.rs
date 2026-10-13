@@ -603,6 +603,9 @@ fn grid(app: &mut App, ui: &mut egui::Ui) {
                     }
                 }
             }
+            if let Some(fs) = &kf.sound {
+                draw_waveform(&rp, &app.ed.doc, fs, start, end, x0, x1, y);
+            }
             let c = pos2(x0 + CW / 2.0, y + RH - 7.0);
             if kf.elements.is_empty() {
                 rp.circle_stroke(c, 3.0, Stroke::new(1.2_f32, Color32::from_gray(20)));
@@ -651,4 +654,56 @@ fn grid(app: &mut App, ui: &mut egui::Ui) {
         gp.text(tag.center(), Align2::CENTER_CENTER, format!("{}", app.ed.frame + 1), FontId::monospace(10.5), Color32::WHITE);
     }
     p.line_segment([pos2(grid_x0, rect.top()), pos2(grid_x0, rect.bottom())], Stroke::new(1.0_f32, Color32::from_gray(0x1E)));
+}
+
+/// The sound a keyframe starts, drawn across its span (Animate shows the
+/// waveform in the frames). Event sounds play past the span, so only the
+/// part inside it is drawn.
+#[allow(clippy::too_many_arguments)]
+fn draw_waveform(rp: &egui::Painter, doc: &ac_core::Document, fs: &ac_core::sound::FrameSound, start: u32, end: u32, x0: f32, x1: f32, y: f32) {
+    if fs.sync == ac_core::sound::SoundSync::Stop {
+        return;
+    }
+    let Some(p) = doc.sound(fs.sound).and_then(ac_audio::pcm) else { return };
+    let len = p.seconds().max(1e-3);
+    let total = if fs.forever { f32::INFINITY } else { len * fs.repeat.max(1) as f32 };
+    let fps = doc.fps.max(1.0);
+    let n = (x1 - x0).max(1.0) as usize;
+    let secs = (end - start) as f32 / fps;
+    let mid = y + RH / 2.0 - 2.0;
+    let h = RH / 2.0 - 4.0;
+    let col = Color32::from_rgb(0x3A, 0x8F, 0xD8);
+    // per-pixel peaks; cached per (sound, width, span) since this runs every repaint
+    type Key = (u32, usize, u32, u32, u32, bool);
+    thread_local! {
+        static CACHE: std::cell::RefCell<std::collections::HashMap<Key, Vec<(f32, f32)>>> = Default::default();
+    }
+    let key = (fs.sound, n, end - start, fps.to_bits(), fs.repeat, fs.forever);
+    let pk = CACHE.with(|c| {
+        let mut c = c.borrow_mut();
+        if c.len() > 256 {
+            c.clear();
+        }
+        c.entry(key)
+            .or_insert_with(|| {
+                (0..n)
+                    .map(|i| {
+                        let t = secs * i as f32 / n as f32;
+                        if t >= total {
+                            return (0.0, 0.0);
+                        }
+                        let lt = t % len;
+                        ac_audio::peaks(&p, lt, (lt + secs / n as f32).min(len), 1)[0]
+                    })
+                    .collect()
+            })
+            .clone()
+    });
+    for (i, (lo, hi)) in pk.iter().enumerate() {
+        if hi - lo < 1e-4 {
+            continue;
+        }
+        let x = x0 + i as f32 + 0.5;
+        rp.line_segment([pos2(x, mid - hi * h), pos2(x, mid - lo * h)], Stroke::new(1.0_f32, col));
+    }
 }

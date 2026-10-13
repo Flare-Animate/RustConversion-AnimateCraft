@@ -9,10 +9,17 @@ license.workspace = true
 name = "animationcraft"
 path = "src/main.rs"
 
+[features]
+default = ["audio"]
+# Sound playback through the system output (needs ALSA headers on Linux: libasound2-dev).
+audio = ["ac-audio/playback"]
+
 [dependencies]
+ac-audio.workspace = true
 ac-core.workspace = true
 ac-render.workspace = true
 ac-script.workspace = true
+ac-xfl.workspace = true
 tiny-skia.workspace = true
 eframe = { version = "0.29", default-features = false, features = ["default_fonts", "glow", "x11", "wayland"] }
 rfd = { version = "0.15", default-features = false, features = ["xdg-portal", "tokio"] }

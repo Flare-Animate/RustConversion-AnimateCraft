@@ -48,6 +48,14 @@ Supported properties: `x`, `y`, `rotation` (degrees), `scaleX`, `scaleY`,
 `alpha`, `visible`. Changes last until playback stops; the document itself is
 never modified.
 
+In a published **HTML5 Canvas** page the same scripts run in the browser,
+and named instances (buttons included) also take mouse events:
+
+```js
+this.go.addEventListener("click", () => this.gotoAndPlay("start"));
+this.go.on("mouseover", (e) => { e.target.alpha = 0.7; });
+```
+
 ## Authoring scripts (Commands ▸ Script Console)
 
 Pick a language, write or load a script, press **Run**. A whole run is **one
@@ -180,6 +188,61 @@ ac.selection.shape({ op: "smooth" });             // smooth / straighten / optim
 ac.shape_bone.add({ x1: 385, y1: 172, x2: 460, y2: 172 });  // inside a drawing object
 ac.shape_bone.pose({ x: 460, y: 172, to_x: 430, to_y: 240 });
 ```
+
+### Sound, lip-sync, interchange and publishing
+
+```js
+const id = ac.import.sound({ path: "voice.mp3" });                   // WAV / MP3 / OGG / FLAC
+ac.timeline.set_sound({ sound: id, sync: "stream", layer: "Voice", frame: 1 });   // event | start | stop | stream
+ac.timeline.set_sound({ sound: "music", repeat: 3 });                // or loop: true
+ac.sound.list();                                                     // [{ id, name, bytes, seconds }]
+ac.select.element({ layer: "Mouth", index: 0 });                     // the mouth instance (0 = bottom)
+ac.lipsync.apply({ audio_layer: "Voice", map: { "O": 5, "MBP": 2 } }); // shapes → symbol frames (1-based)
+ac.frame.info({ layer: 1, frame: 1 });                               // span, label, tween, script, sound, objects
+ac.symbol.new({ name: "Mouth", kind: "graphic" });                   // Ctrl+F8 (opens it for editing)
+```
+
+From the CLI, every document argument can be an `.acx.json`, `.fla`, `.xfl`
+or XFL folder, and `--save` writes whichever extension you give:
+
+```sh
+animationcraft-cli run build.js --doc old.fla --save new.fla
+animationcraft-cli html5 movie.fla site/            # or site.html for one file
+animationcraft-cli sprites movie.fla walk.png 0.5 --format starling
+animationcraft-cli lottie movie.fla movie.json
+animationcraft-cli svg-anim movie.fla movie.svg
+animationcraft-cli convert movie.acx.json movie.fla
+```
+
+### JSFL scripts
+
+`.jsfl` files (Script Console language "JSFL", or `animationcraft-cli run
+script.jsfl`) run through a compatibility layer over the same commands. Layers
+and frames are 0-based, as in JSFL:
+
+```js
+var doc = fl.getDocumentDOM(), tl = doc.getTimeline();
+tl.addNewLayer("Boxes");
+doc.setFillColor("#33AAFF");
+doc.addNewRectangle({ left: 10, top: 10, right: 90, bottom: 60 }, 6);
+doc.selectAll();
+doc.convertToSymbol("movie clip", "Box", "center");
+doc.selection[0].name = "box";
+tl.insertKeyframe(23);
+tl.setFrameProperty("tweenType", "motion", 0, 1);
+tl.layers[tl.currentLayer].frames[0].actionScript = "this.stop();";
+fl.trace(doc.library.items.length + " library items");
+```
+
+Covered: `fl` (getDocumentDOM, trace, outputPanel), Document (size, frame rate,
+colour, selection, add rectangle/oval/line/text/polystar/primitives, fill and
+stroke, move/scale/rotate/skew, align/distribute/match, group, break apart,
+arrange, convertToSymbol, swapElement, instance alpha/tint/brightness, blend,
+filters, import, exportPNG/SVG, saveAsCopy, scenes), Timeline (layers, frames,
+current frame/layer, insert/remove/convert/clear frames and keyframes, tweens,
+reverse, frame and layer properties), Layer/Frame/Element objects with live
+properties, and the Library (items, add to document, rename, delete, edit, new
+symbol). Anything else throws "JSFL: … is not supported by AnimationCraft yet".
 
 ### Any other language
 
