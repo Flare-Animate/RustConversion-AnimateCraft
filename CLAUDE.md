@@ -145,6 +145,7 @@ crates/
              html5_runtime.js), sprite sheets / Lottie (formats.rs), animated SVG; system fonts
   ac-audio   Symphonia decoding, Animate-rule sound mixing, waveforms, lip-sync analysis, cpal playback (feature)
   ac-xfl     .fla / XFL read + write (edges, .dat bitmaps, zip)
+  ac-package native .acx package (ZIP of JSON parts + media files)
   ac-script  scripting: sandboxed frame scripts (QuickJS), authoring scripts (JS embedded, JSFL shim, others via JSON bridge)
   ac-cli     headless: info / gif / png / svg / svg-anim / html5 / sprites / lottie / xfl / convert / run / commands
   ac-app     egui desktop editor (Animate "Essentials" layout)
@@ -162,7 +163,11 @@ crates/
 - **One renderer**: the stage, library preview, onion skin and every export use
   `ac_render::draw_items`, so what you see is what you export. A GPU path
   (wgpu/vello) can replace it later behind the same interface.
-- Native format: JSON (`.acx.json`) for now → zipped package with media later.
+- Native format: **`.acx`** (`ac-package`), a ZIP like `.fla`: `mimetype`, `manifest.json`
+  (format version), `document.json`, `scenes/NNN.json`, `library/index.json`,
+  `library/symbols/<id>.json`, `library/bitmaps/<id>.png`, `library/sounds/<id>.<ext>`,
+  `thumbnail.png`; atomic save; newer major versions are refused, unknown parts ignored.
+  Plain `.acx.json` (one JSON file) still opens and saves; autosave uses it.
 
 ## 4. Roadmap
 
@@ -176,7 +181,7 @@ The full feature-by-feature comparison with Animate and the current build order
 | **M0.3 (done)** | Every toolbar tool works (31): skew/distort/envelope, Transform panel, 3D tools, gradients, Fluid Brush, Width, Bone/IK, Asset Warp, Camera, view rotation; Library fills the panel / docks left; 48 tests |
 | **Phase 1 (done)** | Native file dialogs, recent files, autosave/recovery; groups, Align/Info; folders, masks, motion guides; filters + blend modes; bitmaps + SVG import; system fonts; PNG sequence + video export; rulers/guides/grid; frame-script instance access; 59 tests |
 | **Phase 3 (done)** | Merge Drawing engine (cut/merge, line splitting, floating selections, edge bending), brush/eraser modes, Faucet, bucket gaps, Lock Fill, Combine Objects, shape cleanup, primitives, stroke styles, bitmap fills, shape bones + Bind; 83 tests |
-| **Phase 4 (done)** | .fla/XFL read + write, sounds (sync modes, waveform, playback, video audio, lip-sync), HTML5 Canvas publish, sprite sheets, animated SVG, Lottie, JSFL shim; 101 tests |
+| **Phase 4 (done)** | .fla/XFL read + write, sounds (sync modes, waveform, playback, video audio, lip-sync), HTML5 Canvas publish, sprite sheets, animated SVG, Lottie, JSFL shim; 101 tests; then the native `.acx` package (104 tests) |
 | **Phase 2 (done)** | Custom eases + presets, motion tweens + Motion Editor + editable motion path, shape hints, Reverse / Frame-by-Frame / span-end drag, onion markers + Edit Multiple Frames, button states + Simple Buttons, Swap Symbol, Brightness/Advanced colour, scenes, layer parenting; 73 tests |
 | **M1** | Route every menu item through the registry; MCP server; rulers/guides, Align panel, native file dialogs |
 | **M2** | Merge Drawing planar-map engine, Brush/Eraser/Pen/Subselection, gradients, Selection-tool edge bending |

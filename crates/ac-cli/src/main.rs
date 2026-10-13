@@ -31,11 +31,18 @@ fn load(src: &str) -> Result<Document, String> {
         }
         return Ok(im.doc);
     }
+    if src.to_ascii_lowercase().ends_with(".acx") {
+        let l = ac_package::open(p)?;
+        for w in &l.warnings {
+            eprintln!("note: {w}");
+        }
+        return Ok(l.doc);
+    }
     let s = std::fs::read_to_string(src).map_err(|e| format!("{src}: {e}"))?;
     Document::from_json(&s).map_err(|e| format!("{src}: {e}"))
 }
 
-/// Save as .acx.json, or .fla / .xfl by extension.
+/// Save as .acx (package), .acx.json (plain JSON), or .fla / .xfl by extension.
 fn save_any(d: &Document, out: &str) -> Result<(), String> {
     let low = out.to_ascii_lowercase();
     if low.ends_with(".fla") || low.ends_with(".xfl") {
@@ -43,6 +50,9 @@ fn save_any(d: &Document, out: &str) -> Result<(), String> {
             eprintln!("note: {w}");
         }
         Ok(())
+    } else if low.ends_with(".acx") {
+        let thumb = ac_render::render_frame(d, 0, (256.0 / d.width.max(1.0)).min(1.0)).encode_png().ok();
+        ac_package::save(d, Path::new(out), thumb.as_deref())
     } else {
         std::fs::write(out, d.with_floats_committed().to_json()).map_err(|e| e.to_string())
     }
@@ -148,7 +158,7 @@ fn run(args: &[String]) -> Result<(), String> {
             println!("wrote {}", arg(2)?);
         }
         "save-demo" => {
-            std::fs::write(arg(1)?, demo_document().to_json()).map_err(|e| e.to_string())?;
+            save_any(&demo_document(), arg(1)?)?;
             println!("wrote {}", arg(1)?);
         }
         "commands" => {

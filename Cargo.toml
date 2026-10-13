@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/ac-core", "crates/ac-render", "crates/ac-script", "crates/ac-xfl", "crates/ac-audio", "crates/ac-cli", "crates/ac-app"]
+members = ["crates/ac-core", "crates/ac-render", "crates/ac-script", "crates/ac-xfl", "crates/ac-audio", "crates/ac-package", "crates/ac-cli", "crates/ac-app"]
 
 [workspace.package]
 version = "0.1.0"
@@ -14,6 +14,7 @@ ac-render = { path = "crates/ac-render" }
 ac-script = { path = "crates/ac-script" }
 ac-xfl = { path = "crates/ac-xfl" }
 ac-audio = { path = "crates/ac-audio" }
+ac-package = { path = "crates/ac-package" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tiny-skia = "0.11"

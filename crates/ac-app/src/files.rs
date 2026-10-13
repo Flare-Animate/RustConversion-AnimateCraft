@@ -51,7 +51,7 @@ impl FileAction {
     fn default_name(self, doc_name: &str) -> String {
         match self {
             FileAction::Open | FileAction::ImportImage | FileAction::ImportSvg | FileAction::ImportSequence | FileAction::ImportSound => String::new(),
-            FileAction::Save => format!("{doc_name}.acx.json"),
+            FileAction::Save => format!("{doc_name}.acx"),
             FileAction::ExportGif => format!("{doc_name}.gif"),
             FileAction::ExportPng => format!("{doc_name}.png"),
             FileAction::ExportSvg => format!("{doc_name}.svg"),
@@ -66,8 +66,8 @@ impl FileAction {
     }
     fn filters(self) -> (&'static str, &'static [&'static str]) {
         match self {
-            FileAction::Open => ("Documents (.acx.json, .fla, .xfl)", &["json", "fla", "xfl"]),
-            FileAction::Save => ("AnimationCraft document", &["json"]),
+            FileAction::Open => ("Documents (.acx, .acx.json, .fla, .xfl)", &["acx", "json", "fla", "xfl"]),
+            FileAction::Save => ("AnimationCraft document (.acx; .acx.json = plain JSON)", &["acx", "json"]),
             FileAction::ExportXfl => ("Animation document (.fla, .xfl)", &["fla", "xfl"]),
             FileAction::ImportSound => ("Sounds", &["wav", "mp3", "ogg", "oga", "flac"]),
             FileAction::ExportHtml5 => ("Folder or .html", &[]),
@@ -85,6 +85,17 @@ impl FileAction {
     fn picks_existing(self) -> bool {
         matches!(self, FileAction::Open | FileAction::ImportImage | FileAction::ImportSvg | FileAction::ImportSequence | FileAction::ImportSound)
     }
+}
+
+/// AnimationCraft packages (.acx).
+pub(crate) fn is_package(p: &Path) -> bool {
+    p.extension().is_some_and(|e| e.eq_ignore_ascii_case(ac_package::EXTENSION))
+}
+
+/// First frame, 256 px wide, for the package thumbnail.
+fn thumbnail(doc: &Document) -> Option<Vec<u8>> {
+    let scale = (256.0 / doc.width.max(1.0)).min(1.0);
+    ac_render::render_frame(doc, 0, scale).encode_png().ok()
 }
 
 /// .fla (zipped XFL), .xfl marker files and XFL folders.
@@ -178,7 +189,7 @@ impl App {
     pub(crate) fn file(&mut self, action: FileAction) {
         let name = action.default_name(&self.doc_name());
         if !native_dialogs() {
-            self.dialog = Dialog::Path { title: action.title().into(), path: if name.is_empty() { "untitled.acx.json".into() } else { name }, action };
+            self.dialog = Dialog::Path { title: action.title().into(), path: if name.is_empty() { "untitled.acx".into() } else { name }, action };
             return;
         }
         let mut d = rfd::FileDialog::new().set_title(action.title());
@@ -266,6 +277,23 @@ impl App {
             }
             FileAction::ExportXfl => Err("choose a .fla or .xfl file name".into()),
             FileAction::ImportSound => self.import_sound(path),
+            FileAction::Open if is_package(p) => ac_package::open(p).map(|l| {
+                let n = l.warnings.len();
+                self.report_warnings("Open", path, &l.warnings);
+                self.load_doc(l.doc, Some(path.into()));
+                self.settings.add_recent(path);
+                if n == 0 { format!("Opened {path}") } else { format!("Opened {path} ({n} notes, see Output)") }
+            }),
+            FileAction::Save if is_package(p) => {
+                let thumb = thumbnail(&self.ed.doc);
+                ac_package::save(&self.ed.doc, p, thumb.as_deref()).map(|_| {
+                    self.file_path = Some(path.into());
+                    self.saved_rev = self.ed.revision;
+                    self.settings.add_recent(path);
+                    clear_recovery();
+                    format!("Saved {}", std::fs::canonicalize(p).map(|c| c.display().to_string()).unwrap_or(path.into()))
+                })
+            }
             FileAction::Open => std::fs::read_to_string(p).map_err(|e| e.to_string()).and_then(|s| {
                 Document::from_json(&s).map_err(|e| format!("not an AnimationCraft document ({e})")).map(|d| {
                     self.load_doc(d, Some(path.into()));

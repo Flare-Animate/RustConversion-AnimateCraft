@@ -77,3 +77,8 @@
 - Removed the experimental edge parser from ac-core (now `ac_xfl::edges`).
 - Tests: 101 (58 core, 9 xfl, 5 audio, 13+3 render, 13 scripting). Xvfb runs: opening a .fla with a stream sound (Sound section, waveform in the Voice row, library waveform preview), Export submenu, Publish HTML5 Canvas through the typed-path dialog and the result checked in Chromium.
 - Known gaps: real-file .fla corpus (users' files with permission), motion-object tweens (`motionObjectXML`), shared edges between adjacent fills on export, sounds inside symbols, sound effects/envelopes, viseme frame picker UI, movie clips that keep playing while the main timeline is stopped (stage and HTML5 both follow the main clock), Lottie masks/filters.
+
+## 2026-10-13 — Native `.acx` package format
+- New crate `ac-package`: `.acx` is a ZIP like `.fla` — `mimetype` (first, stored), `manifest.json` (format version 1.0, generator, contents), `document.json` (settings), `scenes/NNN.json`, `library/index.json` + `library/symbols/<id>.json`, bitmaps as PNG files, sounds in their imported format, optional `thumbnail.png`. Same serde model as `.acx.json`, so nothing is lost (the demo renders byte-identical after a round trip). Saves write a temp file then rename. Readers refuse newer major versions and list unknown parts as notes.
+- App: Save defaults to `.acx` (with a 256 px thumbnail), Open/drop accept it; `.acx.json` still works and autosave keeps using it. CLI: any document argument and `--save`/`convert`/`save-demo` take `.acx`; script `doc.save` writes a package for `.acx`.
+- Tests: 104 (3 new). Xvfb: opened an .acx and saved it with Ctrl+S.

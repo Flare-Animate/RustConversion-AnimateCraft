@@ -93,6 +93,11 @@ tools. Options for the active tool are in Properties ▸ **Tool**.
 
 ### Files, import and export
 
+- **Documents are `.acx` files**: a ZIP package, like `.fla`, holding the
+  document as readable parts (`manifest.json`, `document.json`, one JSON file
+  per scene and per symbol) plus images as PNG files, sounds in their original
+  format and a thumbnail. Older single-file `.acx.json` documents still open
+  (and save, if you give that extension).
 - **File › Open / Save** use your system's file dialogs; **Open Recent**
   remembers 10 files. Unsaved work is **autosaved** every minute, and after a
   crash AnimationCraft offers to restore it. Closing with unsaved changes asks

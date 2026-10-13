@@ -267,7 +267,7 @@ The two engine milestones that unlock most of the rest:
 | Save As .xfl (uncompressed folder) | Yes | Yes (`name.xfl` → folder with the marker file) | ✅ | |
 | Import SWF | Old versions | — | ❌ | P3 |
 | Copy/paste with Illustrator/Photoshop (clipboard formats) | Yes | Internal clipboard | ❌ | P3 |
-| Native format | .fla | JSON `.acx.json` | 🟡 | (switch to XFL as native) |
+| Native format | .fla | `.acx` package (ZIP: manifest, document, one JSON per scene and symbol, PNG/audio files, thumbnail; versioned, atomic save); `.acx.json` still supported | ✅ | |
 
 ## 12. Accessibility, collaboration, misc
 

@@ -24,6 +24,7 @@ version = "0.1.0"
 dependencies = [
  "ac-audio",
  "ac-core",
+ "ac-package",
  "ac-render",
  "ac-script",
  "ac-xfl",
@@ -53,6 +54,7 @@ version = "0.1.0"
 dependencies = [
  "ac-audio",
  "ac-core",
+ "ac-package",
  "ac-render",
  "ac-script",
  "ac-xfl",
@@ -69,6 +71,16 @@ dependencies = [
  "png 0.17.16",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "ac-package"
+version = "0.1.0"
+dependencies = [
+ "ac-core",
+ "serde",
+ "serde_json",
+ "zip",
 ]
 
 [[package]]
@@ -89,6 +101,7 @@ name = "ac-script"
 version = "0.1.0"
 dependencies = [
  "ac-core",
+ "ac-package",
  "ac-render",
  "rquickjs",
  "serde",

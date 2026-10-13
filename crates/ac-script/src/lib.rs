@@ -165,7 +165,11 @@ pub fn exec(ed: &mut Editor, base: &Path, id: &str, args: &Value) -> Result<Valu
         }
         "doc.save" => {
             let p = path()?;
-            std::fs::write(&p, ed.doc.to_json()).map_err(|e| e.to_string())?;
+            if p.extension().is_some_and(|e| e.eq_ignore_ascii_case("acx")) {
+                ac_package::save(&ed.doc, &p, None)?;
+            } else {
+                std::fs::write(&p, ed.doc.to_json()).map_err(|e| e.to_string())?;
+            }
             Ok(json!(p.display().to_string()))
         }
         _ => commands::execute(ed, id, args),
@@ -176,7 +180,7 @@ pub const EXTRA_COMMANDS: &[(&str, &str, &str)] = &[
     ("export.gif", "path, scale?", "Export the animation as a GIF"),
     ("export.png", "path, frame?, scale?", "Export one frame as PNG"),
     ("export.svg", "path, frame?", "Export one frame as SVG"),
-    ("doc.save", "path", "Save the document (.acx.json)"),
+    ("doc.save", "path", "Save the document (.acx package, or .acx.json for plain JSON)"),
 ];
 
 pub fn all_command_ids() -> Vec<&'static str> {
