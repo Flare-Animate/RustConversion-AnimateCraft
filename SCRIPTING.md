@@ -161,6 +161,15 @@ ac.scene.add({ name: "Credits" });                              // scene.list / 
 ac.selection.swap_symbol({ symbol: "Ball 2" });
 ac.selection.color_effect({ style: "advanced", mul: [100, 60, 60, 100], add: [40, 0, 0, 0] });
 ac.selection.color_effect({ style: "brightness", amount: -30 });
+ac.selection.set_looping({ mode: "loop_reverse", first_frame: 5 });   // loop | play_once | single_frame | play_reverse_once
+ac.timeline.set_label({ label: "todo", type: "comment" });           // name | comment | anchor
+ac.timeline.set_tween_options({ sync: true, snap: false });          // classic tween Sync / Snap
+ac.timeline.set_property_ease({ property: "rotation", ease: "Back Out" }); // position | rotation | scale | color | filters
+ac.timeline.set_span_end({ layer: 1, frame: 3, end: 20 });           // any span; later keyframes move
+ac.motion.set_key({ prop: "rotation_y", frame: 24, value: 60 });     // also rotation_x, depth, tint
+ac.motion.set_key({ prop: "filter1.blur_x", frame: 24, value: 20 }); // filterN.blur_x|blur_y|strength|angle|distance|…
+ac.timeline.copy_frames({ layer: 1, frame: 1, to_frame: 12 });       // cut_frames / paste_frames
+ac.group.edit();                                                    // edit the selected group; group.exit closes it
 ```
 
 Exports (`export.gif`, `export.video`, …) play every scene in order; `doc.info`
@@ -184,6 +193,12 @@ ac.selection.stroke_style({ dash: "dashed", cap: "none", join: "miter" });
 ac.selection.bitmap_fill({ bitmap: "texture.png" });
 ac.selection.combine({ op: "punch" });            // union / intersect / punch / crop
 ac.selection.shape({ op: "smooth" });             // smooth / straighten / optimize
+ac.selection.stroke_style({ dash: "hatched" });   // also ragged / stipple
+ac.selection.set_gradient({ kind: "linear", colors: ["#000000", "#FFFFFF"], flow: "reflect" }); // extend | reflect | repeat
+ac.selection.break_apart();                       // text → letters → shapes; bitmap → bitmap-filled shape
+ac.select.magic_wand({ x: 120, y: 80, threshold: 20 }); // on a broken-apart bitmap
+ac.selection.add_filter({ type: "gradient_glow", kind: "outer", stops: [[0, "#FFFFFF00"], [1, "#FF8000FF"]] });
+ac.draw.text({ x: 40, y: 140, text: "Title", font: "DejaVu Sans", weight: 700, italic: true });
 
 ac.shape_bone.add({ x1: 385, y1: 172, x2: 460, y2: 172 });  // inside a drawing object
 ac.shape_bone.pose({ x: 460, y: 172, to_x: 430, to_y: 240 });
@@ -195,6 +210,7 @@ ac.shape_bone.pose({ x: 460, y: 172, to_x: 430, to_y: 240 });
 const id = ac.import.sound({ path: "voice.mp3" });                   // WAV / MP3 / OGG / FLAC
 ac.timeline.set_sound({ sound: id, sync: "stream", layer: "Voice", frame: 1 });   // event | start | stop | stream
 ac.timeline.set_sound({ sound: "music", repeat: 3 });                // or loop: true
+ac.timeline.set_sound({ sound: id, effect: "fade in" });            // left channel | right channel | fade to right | fade to left | fade in | fade out
 ac.sound.list();                                                     // [{ id, name, bytes, seconds }]
 ac.select.element({ layer: "Mouth", index: 0 });                     // the mouth instance (0 = bottom)
 ac.lipsync.apply({ audio_layer: "Voice", map: { "O": 5, "MBP": 2 } }); // shapes → symbol frames (1-based)
@@ -212,6 +228,7 @@ animationcraft-cli sprites movie.fla walk.png 0.5 --format starling
 animationcraft-cli lottie movie.fla movie.json
 animationcraft-cli svg-anim movie.fla movie.svg
 animationcraft-cli convert movie.acx.json movie.fla
+animationcraft-cli png movie.fla 1 poster.jpg 2 --quality 85   # .png / .jpg / .gif (--colors N, --transparent)
 ```
 
 ### JSFL scripts
@@ -241,8 +258,10 @@ arrange, convertToSymbol, swapElement, instance alpha/tint/brightness, blend,
 filters, import, exportPNG/SVG, saveAsCopy, scenes), Timeline (layers, frames,
 current frame/layer, insert/remove/convert/clear frames and keyframes, tweens,
 reverse, frame and layer properties), Layer/Frame/Element objects with live
-properties, and the Library (items, add to document, rename, delete, edit, new
-symbol). Anything else throws "JSFL: … is not supported by AnimationCraft yet".
+properties, copy/cut/paste frames, `FLfile` (exists, read, write, append,
+createFolder, listFolder; no remove), and the Library (items, add to document,
+rename, delete, edit, new symbol). JSFL asks before running, like external
+languages, because it can write files. Anything else throws "JSFL: … is not supported by AnimationCraft yet".
 
 ### Any other language
 

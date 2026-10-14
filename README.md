@@ -39,10 +39,13 @@ without sound output with `cargo run -p ac-app --no-default-features`.
    name for all its frames. Drag a selection to move keyframes. Right-click for
    F5/F6/F7, tweens, Clear Frames and Copy/Paste Frames. Delete clears frames.
 5. Draw with **R**, **O**, **N**, **Y**; press **F8** to make a symbol.
-   Double-click an instance (or a Library item) to edit its timeline; **Esc** returns.
+   Double-click an instance or a group to edit it in place (the rest of the
+   scene stays visible, dimmed); double-click a Library item for isolated
+   editing. **Esc** (or double-clicking empty space) goes back.
 6. **Library**: drag an item onto the stage; right-click to rename, duplicate,
    change type or delete.
-7. File → Export → Animated GIF / PNG / SVG.
+7. File → Export → Export Image (PNG / JPEG / GIF), SVG, Animated GIF, video,
+   HTML5 Canvas, sprite sheets, Lottie, .fla.
 
 ## Tools
 
@@ -53,7 +56,7 @@ tools. Options for the active tool are in Properties ▸ **Tool**.
 
 | Group | Tools (shortcut) |
 |---|---|
-| Select | Selection (V), Subselection (A), Free Transform (Q: scale, **skew**, rotate around a movable transformation point; **Distort** and **Envelope** modes), Gradient Transform (F), **3D Rotation (W)**, **3D Translation (G)**, Lasso (L), Polygon Lasso |
+| Select | Selection (V), Subselection (A), Free Transform (Q: scale, **skew**, rotate around a movable transformation point; **Distort** and **Envelope** modes), Gradient Transform (F), **3D Rotation (W)**, **3D Translation (G)**, Lasso (L), Polygon Lasso, **Magic Wand** |
 | Draw | Pen (P) + Add (=) / Delete (−) / Convert Anchor, Text (T), Line (N), Rectangle (R, corner radius), Oval (O, start/end angle, inner radius), PolyStar |
 | Paint | Paint Brush (Y), **Fluid Brush (B)**, Pencil (Shift+Y), **Width (U)**, **Bone (M)**, **Asset Warp (Shift+W)**, Paint Bucket (K), Ink Bottle (S), **Eyedropper (I)**, Eraser (E) |
 | View | **Camera (C)**, Hand (H / Space), **Rotation (Shift+H)**, Zoom (Z) |
@@ -84,9 +87,16 @@ tools. Options for the active tool are in Properties ▸ **Tool**.
   Properties ▸ Object shows the bone and Remove bone / Remove all bones.
 - **Asset Warp (Shift+W)**: click a shape to drop pins, drag pins to bend it,
   Alt+click removes a pin.
-- **Width (U)**: drag out from a stroke to make it thicker there.
-- **Gradients**: Properties ▸ Object ▸ Fill ▸ Linear/Radial (edit stops there),
-  then the Gradient Transform tool (F) to move, rotate and stretch.
+- **Width (U)**: drag out from a stroke to make it thicker there; Alt+click a
+  width point to delete it; Copy/Paste width profile in Properties.
+- **Paint Brush (Y)**: seven brush shapes (round, oval, square, flat, slanted)
+  and the five brush modes. **Magic Wand**: Break Apart a bitmap (Ctrl+B), then
+  click a colour to select it (threshold in Properties ▸ Tool).
+- **Selection (V)** on merge shapes: drag an edge to bend it, Ctrl-drag to add
+  a corner.
+- **Gradients**: Properties ▸ Object ▸ Fill ▸ Linear/Radial (edit stops and
+  Flow: extend / reflect / repeat there), then the Gradient Transform tool (F)
+  to move, rotate and stretch (bitmap fills too).
 - **Camera (C)**: adds a Camera layer; drag pans, scroll zooms, Shift+drag
   rotates. Keyframe and tween it like any layer; playback shows the camera view.
 - **Rotation (Shift+H)** turns the view only (double-click to reset).

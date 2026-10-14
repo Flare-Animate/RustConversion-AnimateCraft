@@ -19,17 +19,17 @@ files.
 
 | Area | Coverage | Biggest gaps |
 |---|---|---|
-| Workspace and panels | ~60% | docking/workspaces, Color & Swatches, History, preferences |
-| Drawing model | ~78% | shared edges in XFL export (fills and lines are written as separate edges), Convert Lines to Fills / Expand / Soften, ragged/hatched strokes |
-| Tools | ~90% | Magic Wand, pressure/tilt, Art/Pattern brushes |
-| Timeline | ~85% | frame view sizes, sound effects/envelopes, Synchronize Symbols |
-| Symbols | ~75% | 9-slice, Visible / Cache as bitmap, sounds inside symbols |
-| Animation | ~73% | 3D/filter/colour properties in motion tweens, tween presets, copy/paste motion, rig mapping |
-| Text | ~35% | dynamic/input text, rich text, paragraph options, font styles |
-| Media | ~60% | AIFF, sound effects/envelope editing, video, AI/PSD import, Trace Bitmap |
+| Workspace and panels | ~65% | docking/workspaces, Color & Swatches, History, preferences |
+| Drawing model | ~88% | Convert Lines to Fills / Expand / Soften, stroke-style parameters |
+| Tools | ~95% | pressure/tilt, Art/Pattern brushes, Asset Warp on symbols/bitmaps |
+| Timeline | ~92% | frame view sizes, sound envelopes, Synchronize Symbols command |
+| Symbols | ~82% | 9-slice, Visible / Cache as bitmap |
+| Animation | ~88% | tween presets, copy/paste motion, rig mapping, bone springs |
+| Text | ~40% | dynamic/input text, rich text, paragraph options |
+| Media | ~68% | envelope editing, video, AI/PSD import, Trace Bitmap |
 | Scripting | 🟡 different by design | ActionScript 3 (won't do), full CreateJS API, Code Snippets, debugger, rest of JSFL |
-| Publish / export | ~75% | publish profiles, a hierarchical HTML5 runtime (movie clips playing while the main timeline is stopped), WebGL, AIR, SWF |
-| File formats | ~60% | a corpus of real .fla files, motion-object tweens (motionObjectXML), legacy binary .fla, XFL as the native format |
+| Publish / export | ~82% | publish profiles, WebGL, AIR, SWF |
+| File formats | ~65% | a corpus of real .fla files, legacy binary .fla |
 | Preferences and polish | ~35% | preferences dialog, keyboard shortcut editor, workspaces, themes |
 
 The two engine milestones that unlock most of the rest:
@@ -49,9 +49,9 @@ The two engine milestones that unlock most of the rest:
 | Stage rotation (Rotation tool) | Yes | Yes | ✅ | |
 | Clip content outside stage | View › Pasteboard toggle | Always shows pasteboard | ❌ | P2 |
 | Rulers | View › Rulers (Ctrl+Alt+Shift+R) | Yes (with cursor markers) | ✅ | |
-| Guides (drag from rulers, lock, snap, Edit Guides dialog) | Yes | Drag from rulers, move, drop to remove, lock, snap, clear | 🟡 | P2 (Edit Guides dialog) |
+| Guides (drag from rulers, lock, snap, Edit Guides dialog) | Yes | Drag from rulers, move, drop to remove, lock, snap, clear, Edit Guides (colour, snap accuracy) | ✅ | |
 | Grid (show, snap, spacing, colour) | Yes | Yes (Edit Grid) | ✅ | |
-| Snapping: objects, pixels, align (smart guides), guides, grid | Yes | Objects, stage, guides, grid | 🟡 | P2 (pixels) |
+| Snapping: objects, pixels, align (smart guides), guides, grid | Yes | Objects, stage, guides, grid, pixels (View › Snapping) | 🟡 | P3 (smart-guide preferences) |
 | Panel docking, floating panels, tabs, collapse to icons | Yes | Fixed layout (Library can dock left) | 🟡 | P1 |
 | Workspaces (Essentials, Animator, Designer, Developer…, save/reset) | Yes | — | ❌ | P2 |
 | UI themes (dark / light / colour) | Yes | Dark only | ❌ | P3 |
@@ -69,12 +69,12 @@ The two engine milestones that unlock most of the rest:
 | Scene panel (multiple scenes) | Yes | Scene panel (Shift+F2), header switcher | ✅ | |
 | Movie Explorer | Yes | — | ❌ | P3 |
 | Components / Component Inspector | Yes (AS3, HTML5 components) | — | ❌ | P3 |
-| Frame Picker (lip-sync / graphic first-frame picker) | Yes | First frame number only | 🟡 | P2 |
+| Frame Picker (lip-sync / graphic first-frame picker) | Yes | First frame number; Lip Syncing "Mouth shapes" picker | 🟡 | P3 (visual frame picker) |
 | Native open/save dialogs, recent files | Yes | Yes (+ drag-and-drop files onto the window) | ✅ | |
 | Autosave / auto-recovery | Yes | Yes (recover prompt after a crash; unsaved-changes guard) | ✅ | |
 | Preferences dialog (General, Sync, Code Editor, Text, Drawing, Script) | Yes | — | ❌ | P1 |
 | Keyboard shortcut editor (sets, export as HTML) | Yes | Fixed shortcuts | ❌ | P2 |
-| Edit in place / Edit in new window | Yes | Edit-symbol mode only (other content hidden) | 🟡 | P1 |
+| Edit in place / Edit in new window | Yes | Edit in place (double-click; rest of the scene dimmed) and isolated edit-symbol mode | ✅ | P3 (new window) |
 | Multiple open documents (tabs) | Yes | One document | ❌ | P2 |
 | Document settings dialog (units, anchor, scale content, frame rate, platform) | Yes | W/H/FPS/colour in Properties | 🟡 | P1 |
 | Templates and sample files | Yes | Demo scene | 🟡 | P3 |
@@ -85,21 +85,21 @@ The two engine milestones that unlock most of the rest:
 |---|---|---|---|---|
 | Object Drawing mode (J) | Yes | Toggle (J), Tool properties | ✅ | |
 | **Merge Drawing** (default mode): overlapping shapes cut and merge; same-colour fills merge; strokes split fills | Yes | Yes (i_overlay booleans; curves flattened) | ✅ | |
-| Edge-based shape model (fill style left/right of each edge, as in XFL `<Edge fillStyle0/1 strokeStyle>`) | Yes | Disjoint fill regions + split stroke edges (convertible to XFL edges) | 🟡 | P1 (XFL edge writer, Phase 4) |
+| Edge-based shape model (fill style left/right of each edge, as in XFL `<Edge fillStyle0/1 strokeStyle>`) | Yes | Disjoint fill regions + split stroke edges; XFL export shares edges between fills | ✅ | |
 | Selection tool: click a fill vs stroke separately, double-click to select a connected stroke | Yes | Yes (marquee/lasso cut the shape too) | ✅ | |
-| Selection tool edge bending (drag an edge to curve it; Ctrl/Alt drag adds a corner) | Yes | Edge bending + corner drag (no Ctrl-drag corner yet) | 🟡 | P2 (add corner) |
+| Selection tool edge bending (drag an edge to curve it; Ctrl/Alt drag adds a corner) | Yes | Edge bending, corner drag, Ctrl-drag adds a corner | ✅ | |
 | Drag a selected part of a merge shape out of it | Yes | Yes (floats until deselected, then merges) | ✅ | |
-| Group (Ctrl+G) / Ungroup | Yes | Yes (edit-in-place of groups pending) | 🟡 | P1 (edit group in place) |
-| Break Apart: text → letters → shapes; bitmap → bitmap fill | Yes | Instances, groups, drawing objects → merge shape | 🟡 | P2 (text, bitmap) |
+| Group (Ctrl+G) / Ungroup | Yes | Yes, and edit groups in place (double-click) | ✅ | |
+| Break Apart: text → letters → shapes; bitmap → bitmap fill | Yes | Instances, groups, drawing objects, text (letters, then shapes), bitmaps (merge shape with a bitmap fill) | ✅ | |
 | Union / Intersect / Punch / Crop (Modify › Combine Objects) | Yes | Yes | ✅ | |
 | Smooth / Straighten / Optimize Curves | Yes | Yes | ✅ | |
 | Convert Lines to Fills, Expand Fill, Soften Fill Edges | Yes | — | ❌ | P2 |
 | Rectangle / Oval **Primitives** (live corner radii, start/end angle, inner radius) | Yes | Yes (per-corner and inverted radii, close path) | ✅ | |
-| Stroke styles: solid, dashed, dotted, ragged, stipple, hatched; cap/join/miter; scale mode; hinting | Yes | Solid / dashed / dotted, cap, join (on drawing objects) | 🟡 | P2 (ragged, stipple, hatched) |
-| Variable-width profiles (presets, save width profile) | Yes | Width tool only | 🟡 | P2 |
+| Stroke styles: solid, dashed, dotted, ragged, stipple, hatched; cap/join/miter; scale mode; hinting | Yes | Solid / dashed / dotted / ragged / stipple / hatched, cap, join | 🟡 | P3 (style parameters, scale mode, hinting) |
+| Variable-width profiles (presets, save width profile) | Yes | Width tool, delete width points, copy/paste profiles | 🟡 | P3 (named presets; merge-shape lines) |
 | Art / Pattern brushes (from Illustrator-style brush library), brush library panel | Yes | — | ❌ | P2 |
-| Gradient fills (linear, radial, up to 15 stops, overflow: extend / reflect / repeat, linear RGB) | Yes | Linear/radial, any stops, pad only | 🟡 | P2 |
-| Bitmap fills (and Lock Fill) | Yes | Bitmap fills on drawing objects; Lock Fill for gradients | 🟡 | P2 (merge shapes, Gradient Transform on bitmaps) |
+| Gradient fills (linear, radial, up to 15 stops, overflow: extend / reflect / repeat, linear RGB) | Yes | Linear/radial, any stops, extend / reflect / repeat | 🟡 | P3 (linear RGB) |
+| Bitmap fills (and Lock Fill) | Yes | Drawing objects and merge shapes; Gradient Transform edits them; Lock Fill for gradients | ✅ | |
 | Alpha per fill / stroke colour | Yes | Yes (colour alpha) | ✅ | |
 | Pressure / tilt (tablet) | Yes | — | ❌ | P2 |
 | Hairline strokes, stroke scaling (normal / horizontal / vertical / none) | Yes | — | ❌ | P2 |
@@ -112,16 +112,16 @@ The two engine milestones that unlock most of the rest:
 | Selection (V) | Click, marquee, Shift add, Alt-drag copy, edge bending | Click, marquee, Shift add, IK drag, edge bending | 🟡 | Alt-drag copy P1 |
 | Subselection (A) | Anchors and handles | Same | ✅ | |
 | Free Transform (Q) incl. Distort / Envelope / Rotate & Skew / Scale modes | Yes | Yes (combined mode + Distort + Envelope) | ✅ | |
-| Gradient Transform (F) | Yes (also bitmap fills) | Gradients only | 🟡 | P2 |
+| Gradient Transform (F) | Yes (also bitmap fills) | Gradients and bitmap fills | ✅ | |
 | 3D Rotation (W) / 3D Translation (G), global/local toggle | Yes (movie clips) | Yes; no global/local toggle | 🟡 | P2 |
-| Lasso (L), Polygon, **Magic Wand** (bitmap) | Yes | Lasso + Polygon | 🟡 | Magic Wand P2 |
+| Lasso (L), Polygon, **Magic Wand** (bitmap) | Yes | Lasso, Polygon, Magic Wand (threshold) on broken-apart bitmaps | ✅ | |
 | Pen (P) + Add / Delete / Convert Anchor | Yes | Yes | ✅ | |
 | Text (T) | Static, Dynamic, Input | Static | 🟡 | P1 |
 | Line (N), Rectangle (R), Oval (O), PolyStar | Yes | Yes | ✅ | |
 | Rectangle Primitive / Oval Primitive | Yes | Yes | ✅ | |
 | Pencil (Shift+Y): Straighten / Smooth / Ink | Yes | Yes | ✅ | |
 | Paint Brush (Y): art / pattern / vector brushes, width, pressure | Yes | Calligraphic-free round brush | 🟡 | P2 |
-| **Classic Brush** (B): Paint Normal / Fills / Behind / Selection / Inside, brush shape, Lock Fill | Yes | Paint Brush with all five modes | 🟡 | P2 (brush shapes) |
+| **Classic Brush** (B): Paint Normal / Fills / Behind / Selection / Inside, brush shape, Lock Fill | Yes | All five modes, seven brush shapes, Lock Fill | ✅ | |
 | Fluid Brush (B): velocity, pressure, smoothing, taper, size | Yes | Velocity + taper + size | 🟡 | P2 |
 | Bone (M) incl. **shape bones** (bones inside one shape) | Yes | Both (shape bones pose with IK, tween) | ✅ | |
 | **Bind** tool (attach shape control points to bones) | Yes | Yes | ✅ | |
@@ -129,7 +129,7 @@ The two engine milestones that unlock most of the rest:
 | Ink Bottle (S) | Yes | Yes | ✅ | |
 | Eyedropper (I) incl. bitmap sampling | Yes | Yes (no bitmaps) | ✅ | |
 | Eraser (E): Erase Normal / Fills / Lines / Selected Fills / Inside, Faucet, shape and size | Yes | All modes + Faucet on merge shapes (round eraser) | ✅ | |
-| Width (U) incl. delete width point, copy/paste width | Yes | Add/drag width points | 🟡 | P2 |
+| Width (U) incl. delete width point, copy/paste width | Yes | Add/drag, Alt+click delete, copy/paste profile | ✅ | |
 | Asset Warp (Shift+W) incl. bitmaps/symbols, mesh options, Reset Warped Asset | Yes | Shapes only; reset via Properties | 🟡 | P2 |
 | Camera (C), camera colour effects, layer depth (Ctrl+D) | Yes | Pan/zoom/rotate | 🟡 | Layer Depth P2 |
 | Hand (H), Rotation (Shift+H), Zoom (Z) | Yes | Yes | ✅ | |
@@ -144,14 +144,14 @@ The two engine milestones that unlock most of the rest:
 | **Layer folders** (nest, collapse, folder show/lock) | Yes | Yes (drag into/out of folders, collapse, hide) | ✅ | |
 | **Mask layers** (mask + masked layers, show mask) | Yes | Yes (any shapes/symbols as mask, several masked layers) | ✅ | |
 | Guide layers and **Classic motion guides** (orient to path, snap) | Yes | Yes (guides don't export; Orient to path) | ✅ | |
-| **Layer parenting** (parent layer view) | Yes | Layer menu ▸ Parent Layer; no drag-to-link column yet | 🟡 | P2 (parent view column) |
+| **Layer parenting** (parent layer view) | Yes | Layer menu ▸ Parent Layer and Show Parenting View (drag link dots) | ✅ | |
 | Layer depth (2.5D, with camera) | Yes | — | ❌ | P2 |
 | Layer properties dialog; layer effects (filters on layers) | Yes | Properties dialog; no layer effects | 🟡 | P2 |
 | Frames: insert/remove (F5), keyframe (F6), blank (F7), clear, convert | Yes | Yes | ✅ | |
 | Select frames, copy/cut/paste/move frames, labels | Yes | Yes | ✅ | |
-| Frame label types: Name / Comment / Anchor | Yes | Name only | 🟡 | P2 |
+| Frame label types: Name / Comment / Anchor | Yes | All three (comments are never jump targets) | ✅ | |
 | Reverse Frames, Synchronize Symbols, Insert Blank Keyframe on ranges | Yes | Reverse Frames, ranges | 🟡 | P2 (Synchronize Symbols) |
-| Drag the end of a span to extend / shorten it | Yes | Ctrl+drag a layer's last frame; motion tweens stretch | 🟡 | P2 (spans mid-layer) |
+| Drag the end of a span to extend / shorten it | Yes | Any span (Ctrl, or any motion tween); later keyframes move | ✅ | |
 | Auto Keyframe toggle | Yes | Edits auto-key | 🟡 | P2 |
 | Copy / Paste Layers (with folders) | Yes | Duplicate Layer | 🟡 | P1 |
 | Onion skin: range markers, Advanced settings, colours, outline mode | Yes | Draggable/anchored markers, Onion 2/5/All, outlines | 🟡 | P3 (colour settings) |
@@ -160,25 +160,25 @@ The two engine milestones that unlock most of the rest:
 | Frame-rate change with "scale spans", time display (s / frames) | Yes | FPS only | 🟡 | P2 |
 | Loop playback range, play in a range | Yes | Whole timeline loop | 🟡 | P2 |
 | Scenes (add, duplicate, reorder, Scene panel) | Yes | Yes; exports play every scene | ✅ | |
-| Sound on frames (sync: event/start/stop/stream; loop; effects) and waveform | Yes | Sync Event/Start/Stop/Stream, repeat/loop, waveform in the frames, playback, audio in video export; no effects/envelopes | 🟡 | P2 (effects) |
+| Sound on frames (sync: event/start/stop/stream; loop; effects) and waveform | Yes | Sync modes, repeat/loop, effects (left/right, fades), sounds inside symbols, waveform, playback, video audio | 🟡 | P3 (custom envelopes) |
 
 ## 5. Symbols and instances
 
 | Feature | Animate | AnimationCraft | Status | Pri |
 |---|---|---|---|---|
 | Graphic, Movie Clip, Button symbols; Convert (F8); New (Ctrl+F8) | Yes | Yes | ✅ | |
-| Graphic looping: Loop / Play Once / Single Frame / Play Reverse once / Loop Reverse | Yes | First three | 🟡 | P2 |
+| Graphic looping: Loop / Play Once / Single Frame / Play Reverse once / Loop Reverse | Yes | All five | ✅ | |
 | **Button states** Up / Over / Down / Hit + preview with Control › Enable Simple Buttons | Yes | Yes (Hit area, live on stage) | ✅ | |
 | Instance name (for scripting) | Yes | Yes; frame scripts read/set `this.name.x/y/rotation/scaleX/scaleY/alpha/visible` | ✅ | |
 | Swap Symbol | Yes | Properties ▸ Symbol | ✅ | |
 | Duplicate Symbol and swap | Yes | Duplicate only | 🟡 | P2 |
 | Colour effects: Brightness, Tint, Advanced (RGBA multiply/offset), Alpha | Yes | All five, tweenable | ✅ | |
-| **Filters**: Drop Shadow, Blur, Glow, Bevel, Gradient Glow, Gradient Bevel, Adjust Color; presets; filter tweening | Yes | Drop Shadow, Blur, Glow, Bevel, Adjust Color, tweened; SVG export of blur/shadow/glow | 🟡 | P2 (gradient glow/bevel, presets) |
+| **Filters**: Drop Shadow, Blur, Glow, Bevel, Gradient Glow, Gradient Bevel, Adjust Color; presets; filter tweening | Yes | All seven, presets, tweening (and motion-tween tracks); SVG export of blur/shadow/glow; HTML5 approximates gradient filters | ✅ | |
 | **Blend modes** (Normal, Layer, Darken, Multiply, Lighten, Screen, Overlay, Hard Light, Add, Subtract, Difference, Invert, Alpha, Erase) | Yes | All 14 | ✅ | |
 | Render: Original / Cache as Bitmap / Export as Bitmap; Visible flag | Yes | — | ❌ | P2 |
 | 9-slice scaling guides | Yes | — | ❌ | P2 |
 | Registration point choice on convert; transformation point vs registration | Yes | Registration from bounds | 🟡 | P1 |
-| Edit in Place / Edit Symbols across the library; Update library item | Yes | Isolated edit | 🟡 | P1 |
+| Edit in Place / Edit Symbols across the library; Update library item | Yes | Edit in place and isolated edit | 🟡 | P3 (Update library item) |
 | Linkage (class name, export for ActionScript/runtime) | Yes | — | ❌ | P2 |
 | Symbol folders in Library | Yes | — | ❌ | P1 |
 
@@ -186,18 +186,18 @@ The two engine milestones that unlock most of the rest:
 
 | Feature | Animate | AnimationCraft | Status | Pri |
 |---|---|---|---|---|
-| Classic tween (scale, skew, rotate ±turns, colour, ease, Sync, Snap, Orient to path) | Yes | Scale/skew/rotate/turns/colour/ease | 🟡 | P1 (Sync, orient, Snap) |
-| Classic tween **custom ease** (Edit easing curve per property, presets) | Yes | Curve editor + 30 presets per span (not per property) | 🟡 | P2 (per-property) |
+| Classic tween (scale, skew, rotate ±turns, colour, ease, Sync, Snap, Orient to path) | Yes | All of these | ✅ | |
+| Classic tween **custom ease** (Edit easing curve per property, presets) | Yes | Curve editor + 30 presets per span, or per property (position, rotation, scale, colour, filters) | ✅ | |
 | Shape tween + **shape hints** | Yes | Yes (first shape on the layer) | ✅ | |
-| **Motion tweens** (object-based, property keyframes, auto-span, motion path you can edit with Selection/Subselection, Orient to path) | Yes | Position/rotation/skew/scale/alpha/brightness; 3D, filters, colour pending | 🟡 | P2 |
-| **Motion Editor** (per-property graphs, Bezier eases, add anchor, presets, Copy/paste curves) | Yes | Graphs, keys, eases; no handle editing or copy/paste | 🟡 | P2 |
+| **Motion tweens** (object-based, property keyframes, auto-span, motion path you can edit with Selection/Subselection, Orient to path) | Yes | Position/rotation/skew/scale/alpha/brightness, 3D rotation/depth, tint, every filter parameter | ✅ | |
+| **Motion Editor** (per-property graphs, Bezier eases, add anchor, presets, Copy/paste curves) | Yes | Graphs, keys, eases, Bezier handles, copy/paste curves | ✅ | |
 | Motion presets panel (bounce, fly-in…, save your own) | Yes | — | ❌ | P2 |
 | Copy / Paste Motion, Copy Motion as JS/XML | Yes | — | ❌ | P2 |
 | Convert to Frame-by-Frame Animation, Convert to Keyframes | Yes | Yes | ✅ | |
 | Bones: IK poses on keyframes, joint rotation/translation constraints, **springiness / damping**, bone ease, runtime vs authoring | Yes | Poses + IK | 🟡 | P2 |
 | Asset Warp: pins, mesh density, tween warped poses, **Create Warped Asset / Reset** | Yes | Pins, rigid MLS | 🟡 | P2 |
 | Camera: tween, colour effects, attach layers, layer depth | Yes | Tweenable pan/zoom/rotate | 🟡 | P2 |
-| **Auto lip-sync** (map visemes from audio) | Yes | Properties ▸ Lip Syncing on a graphic instance; FFT-band heuristic (no speech recognition), `lipsync.apply` with a viseme → frame map | 🟡 | P2 (viseme picker UI, better analysis) |
+| **Auto lip-sync** (map visemes from audio) | Yes | Properties ▸ Lip Syncing with a Mouth-shapes picker; FFT-band heuristic (no speech recognition), `lipsync.apply` | 🟡 | P3 (better analysis) |
 | **Rig mapping** (map a rig onto symbols) | Yes | — | ❌ | P3 |
 | Frame-by-frame workflow helpers (onion skin keyframes-only, Ctrl+Alt+L loop) | Yes | Basic | 🟡 | P1 |
 
@@ -206,7 +206,7 @@ The two engine milestones that unlock most of the rest:
 | Feature | Animate | AnimationCraft | Status | Pri |
 |---|---|---|---|---|
 | Static text, outlined at render | Yes | Yes (2 bundled fonts) | 🟡 | |
-| **System and web fonts**: font family/style picker, Typekit/Adobe Fonts | Yes | Installed fonts, searchable picker | 🟡 | P2 (styles/weights, web fonts) |
+| **System and web fonts**: font family/style picker, Typekit/Adobe Fonts | Yes | Installed fonts, searchable picker, styles/weights (simulated when missing) | 🟡 | P3 (web fonts) |
 | Character: size, letter spacing, colour, auto-kern, anti-alias, selectable, link, superscript/subscript | Yes | Size, spacing, colour | 🟡 | P1 |
 | Paragraph: align, justify, indent, line spacing, margins, wrap, fixed-width boxes | Yes | Align + newlines | 🟡 | P1 |
 | Vertical text, orientation | Yes | — | ❌ | P3 |
@@ -222,7 +222,7 @@ The two engine milestones that unlock most of the rest:
 | Bitmap properties (smoothing, compression, quality), Trace Bitmap | Yes | — | ❌ | P1 (Trace P2) |
 | Import image sequences | Yes | Yes | ✅ | |
 | Import SVG, Illustrator (.ai), Photoshop (.psd) with layer options | Yes | SVG (shapes, gradients, text as outlines) | 🟡 | P2 (.ai/.psd) |
-| Import audio (WAV, MP3, AIFF), sound properties, edit envelope | Yes | WAV, MP3, OGG Vorbis, FLAC (Symphonia); library preview with waveform; no AIFF, no envelope | 🟡 | P2 |
+| Import audio (WAV, MP3, AIFF), sound properties, edit envelope | Yes | WAV, MP3, OGG Vorbis, FLAC, AIFF (Symphonia); library preview with waveform; no envelope editor | 🟡 | P3 |
 | Import video (embedded or FLVPlayback), video layers | Yes | — | ❌ | P3 |
 | Import animated GIF as frames | Yes | Yes | ✅ | |
 
@@ -233,7 +233,7 @@ The two engine milestones that unlock most of the rest:
 | ActionScript 3 (frame scripts, classes, Flash Player/AIR) | Yes | Not planned: dead runtime | — | P3 |
 | HTML5 Canvas frame scripts (JavaScript/CreateJS) | Yes | Sandboxed QuickJS in the editor; the same API in published pages, plus `addEventListener` click/mouseover/mouseout | 🟡 | P2 (rest of the CreateJS display API) |
 | Code Snippets panel | Yes | Actions snippets | 🟡 | P2 |
-| **JSFL** (authoring automation, Commands menu, `fl.getDocumentDOM()`) | Yes | JSFL shim (`fl`, Document, Timeline, Layer, Frame, Library, Element; ~120 calls) on the command registry; `.jsfl` in the Script Console and CLI | 🟡 | P2 (FLfile, copy/paste frames, the rest of the API) |
+| **JSFL** (authoring automation, Commands menu, `fl.getDocumentDOM()`) | Yes | JSFL shim (`fl`, Document, Timeline, Layer, Frame, Library, Element, FLfile, copy/cut/paste frames) on the command registry; `.jsfl` in the Script Console and CLI | 🟡 | P3 (the rest of the API) |
 | Run Command, saved Commands, Manage Saved Commands | Yes | Run Script / Run Example | 🟡 | P2 |
 | History → Save as Command | Yes | — | ❌ | P2 |
 | Debugger, Compiler Errors | Yes | Output panel | 🟡 | P3 |
@@ -247,7 +247,7 @@ The two engine milestones that unlock most of the rest:
 | **HTML5 Canvas** publish (JS + HTML, CreateJS runtime, sprite sheets for bitmaps) | Yes | Own runtime: per-frame display lists over shared tables (exact match with the stage), masks, gradients, bitmaps, filters/blend via canvas filters, frame scripts, buttons with Over/Down/Hit, sounds (Web Audio); folder or one self-contained .html | ✅ | (movie clips follow the main clock, as on our stage) |
 | Export Video / Media (MP4/H.264 via Adobe Media Encoder, MOV) | Yes | MP4 (H.264), WebM (VP9, alpha), MOV (ProRes 4444) via ffmpeg, background job with progress | ✅ | |
 | Export Animated GIF (with settings: size, colours, loop, dither) | Yes (Save for Web) | Size, range, loop, quality, transparency | ✅ | |
-| Export Image (PNG/JPG/GIF/SVG with options, transparency) | Yes | PNG ×2, SVG | 🟡 | P1 |
+| Export Image (PNG/JPG/GIF/SVG with options, transparency) | Yes | PNG (transparency), JPEG (quality), GIF (palette, transparency) at any size; SVG | ✅ | |
 | PNG sequence | Yes | Yes | ✅ | |
 | Generate Sprite Sheet / Texture Atlas | Yes | PNG + JSON hash / JSON array / Starling XML; trim, padding, duplicate detection, shelf packing | ✅ | (MaxRects, rotation) |
 | Animated SVG (SMIL) export | Yes | Frame groups with discrete SMIL timing; identical frames shared | ✅ | |
@@ -261,8 +261,8 @@ The two engine milestones that unlock most of the rest:
 
 | Feature | Animate | AnimationCraft | Status | Pri |
 |---|---|---|---|---|
-| **.fla read** (ZIP of XFL: `DOMDocument.xml`, `LIBRARY/*.xml`, `bin/*.dat` bitmaps, media) | Yes | `ac-xfl`: scenes, layers (folders/masks/guides), frames (classic/shape tweens, custom eases, labels, scripts, sounds), raw shapes → merge shapes, drawing objects, primitives, instances (loop, colour effects, filters, blend), groups, static text, bitmaps (.dat lossless/JPEG/PNG), sounds; warnings for the rest | 🟡 | P1 (real-file corpus, motion-object tweens) |
-| **.fla / XFL write** | Yes | Zipped .fla and XFL folders; round-trip tested; motion tweens baked frame by frame | 🟡 | P2 (shared edges, motion objects) |
+| **.fla read** (ZIP of XFL: `DOMDocument.xml`, `LIBRARY/*.xml`, `bin/*.dat` bitmaps, media) | Yes | `ac-xfl`: scenes, layers, frames (classic/shape tweens, custom and per-property eases, label types, scripts, sounds), motion-object tweens (experimental), raw shapes, drawing objects, primitives, instances, groups, static text (faces → weight/italic), bitmaps, sounds, all filters; warnings for the rest | 🟡 | P1 (real-file corpus) |
+| **.fla / XFL write** | Yes | Zipped .fla and XFL folders; shared edges; round-trip tested; motion tweens baked frame by frame | 🟡 | P2 (motion objects) |
 | Legacy binary .fla (CS4 and earlier) | Yes | — | ❌ | P3 |
 | Save As .xfl (uncompressed folder) | Yes | Yes (`name.xfl` → folder with the marker file) | ✅ | |
 | Import SWF | Old versions | — | ❌ | P3 |
@@ -327,6 +327,17 @@ The phases put dependencies first. Each phase ends with tests, a UI run under Xv
 4. Sprite sheets / texture atlas; animated SVG; Lottie
 5. Audio layers (waveform, sync modes), auto lip-sync
 6. JSFL compatibility shim for existing Animate scripts
+
+### Gap closing for Phases 1–4 — ✅ done (Oct 2026)
+The partial items left in Phases 1–4 were closed in four batches (see the devlog):
+A (Phase 4) sounds inside symbols, sound effects, AIFF, viseme picker, movie clips playing while
+the main timeline is held, shared XFL edges, motion-object import, JSFL frames/FLfile, Lottie mattes;
+B (Phase 3) gradient flow, ragged/stipple/hatched strokes, bitmap fills on merge shapes, Break Apart
+text/bitmaps, Magic Wand, brush shapes, Ctrl-drag corners, width point delete + profile copy/paste;
+C (Phase 2) per-property classic eases, Sync/Snap, 3D/tint/filter motion tracks, Motion Editor
+Bezier handles + curve copy/paste, reverse loops, label types, any-span end drag, Parenting View;
+D (Phase 1) edit in place (symbols, groups), Gradient Glow/Bevel + filter presets, Export Image
+PNG/JPEG/GIF, font weights/italic, Edit Guides, Snap to Pixels.
 
 ### Phase 5: Workspace polish
 Docking/floating panels and workspaces, preferences, a shortcut editor, the History panel,
