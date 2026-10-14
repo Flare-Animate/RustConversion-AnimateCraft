@@ -169,26 +169,29 @@ pub fn outline_polyline(pts: &[Pt], widths: &[f32], closed: bool) -> Path {
 
 /// Variable-width stroke of a path. `profile` = (t, width) pairs over the
 /// whole path length (t in 0..1), linearly interpolated.
+/// A width profile ((t, width) pairs, sorted) at `t`, linearly interpolated.
+pub fn profile_at(profile: &[(f32, f32)], t: f32) -> f32 {
+    if profile.is_empty() {
+        return 1.0;
+    }
+    let mut prev = profile[0];
+    if t <= prev.0 {
+        return prev.1;
+    }
+    for &(pt_, w) in &profile[1..] {
+        if t <= pt_ {
+            let k = (t - prev.0) / (pt_ - prev.0).max(1e-6);
+            return prev.1 + (w - prev.1) * k;
+        }
+        prev = (pt_, w);
+    }
+    prev.1
+}
+
 pub fn variable_stroke(path: &Path, profile: &[(f32, f32)]) -> Path {
     let polys = path.flatten(10);
     let total: f32 = polys.iter().map(|(p, closed)| poly_len(p, *closed)).sum::<f32>().max(1e-6);
-    let width_at = |t: f32| -> f32 {
-        if profile.is_empty() {
-            return 1.0;
-        }
-        let mut prev = profile[0];
-        if t <= prev.0 {
-            return prev.1;
-        }
-        for &(pt_, w) in &profile[1..] {
-            if t <= pt_ {
-                let k = (t - prev.0) / (pt_ - prev.0).max(1e-6);
-                return prev.1 + (w - prev.1) * k;
-            }
-            prev = (pt_, w);
-        }
-        prev.1
-    };
+    let width_at = |t: f32| profile_at(profile, t);
     let mut out = Path::default();
     let mut acc = 0.0;
     // Resample so width points between the path's own vertices take effect.

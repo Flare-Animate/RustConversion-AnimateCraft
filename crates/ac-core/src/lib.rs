@@ -1,19 +1,24 @@
 //! AnimationCraft core: document model, timeline evaluation, tweens, editing
 //! commands. No UI or rendering dependencies (portable to wasm).
 
+pub mod assist;
 pub mod bitmap;
+pub mod centerline;
 pub mod deform;
 pub mod fx;
 pub mod demo;
 pub mod editor;
+pub mod expr;
 pub mod frames;
 pub mod geom;
 pub mod model;
 pub mod merge;
 pub mod rig;
+pub mod sculpt;
 pub mod sound;
 pub mod strokes;
 pub mod motion;
+pub mod paint;
 pub mod text;
 pub mod trace;
 pub mod xdts;

@@ -73,8 +73,11 @@ Status: ✅ in the demo · 🟡 partial · ⬜ planned
 - ✅ Width tool on merge-shape lines (profiles survive cuts/splits); camera colour effects + blur
 - ✅ Free camera (VCam) mode: the camera is an orange frame on the stage you move, zoom and rotate,
   with follow (named object, lag, offset), shake and Preview through camera; all exports match
-- ✅ Trace Bitmap (colour threshold, minimum area, curve fit, corners → merge-shape fills; approach from OpenToonz)
-- ⬜ Toolbar gaps: Art/Pattern brushes, pressure/tilt, Asset Warp on symbols/bitmaps, layer depth
+- ✅ Trace Bitmap (colour threshold, minimum area, curve fit, corners → merge-shape fills; approach from OpenToonz), Centerline mode for line art (lines with the ink's thickness)
+- ✅ From OpenToonz: 13 more stroke styles (Rope, Chain, Plait, Herringbone, Fuzz, Tulle, Wave, Curl, Zigzag…) with parameters; deformation
+  tools Magnet / Pinch / Pump / Bender / Iron; drawing assistants (line, vanishing point, ellipse guides; mirror, star, grid symmetry);
+  Raster Brush with 25 MyPaint brushes (hokusai engine, crates.io) painting frame by frame into bitmaps
+- ⬜ Toolbar gaps: Pattern brushes, pressure/tilt, Asset Warp on symbols/bitmaps, layer depth
 - ✅ Groups, bitmaps (PNG/JPG/GIF/BMP, animated GIF, sequences), SVG import, system fonts with styles and weights (simulated when missing)
 - ⬜ Dynamic/input text
 
@@ -113,7 +116,9 @@ Status: ✅ in the demo · 🟡 partial · ⬜ planned
   add/clear property keys; keys survive splitting, reversing and span stretching
 - ✅ 3D/tint/filter properties in motion tweens, Motion Editor Bezier handles + copy/paste
   curves, classic per-property eases, Sync, Snap; Play Reverse Once / Loop Reverse
-- ⬜ Tween presets, rig mapping, bone springiness / joint constraints, armature layers
+- ✅ Motion Editor keyframe types from OpenToonz (Constant, Linear, Ease In/Out, Exponential, Expression, Similar Shape) and its expression language
+- ✅ Joint constraints: rotation on/off and min/max limits (object bones and shape bones)
+- ⬜ Tween presets, rig mapping, bone springiness, pinned joints, armature layers
 - ✅ Bones (FK at evaluation, CCD inverse kinematics), Asset Warp pins, 3D
   properties and gradients all tween with Classic tweens
 
@@ -154,7 +159,9 @@ Status: ✅ in the demo · 🟡 partial · ⬜ planned
 ```
 crates/
   ac-core    model, timeline evaluation, tweens (motion.rs), merge drawing (merge.rs), shape armatures (rig.rs), sounds (sound.rs), editor commands,
-             Trace Bitmap (trace.rs), XDTS (xdts.rs), retained tween curves from Flare (tween_edit.rs)   (no UI, wasm-portable)
+             Trace Bitmap (trace.rs, centerline.rs), XDTS (xdts.rs), retained tween curves from Flare (tween_edit.rs),
+             OpenToonz ports: stroke styles (strokes.rs), deformation tools (sculpt.rs), assistants (assist.rs),
+             expressions (expr.rs), MyPaint raster painting (paint.rs, hokusai)   (no UI, wasm-portable)
   ac-render  tiny-skia rasteriser shared by stage + exports (filters, blend modes, masks);
              SVG, GIF, PNG, PNG sequence, video via ffmpeg (with sound); HTML5 Canvas (html5.rs +
              html5_runtime.js), sprite sheets / Lottie (formats.rs), animated SVG; system fonts;

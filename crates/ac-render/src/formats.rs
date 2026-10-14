@@ -329,9 +329,9 @@ fn lottie_item(it: &DrawItem, warn: &mut Vec<&'static str>) -> Option<String> {
             };
             let w = st.width.max(0.1) * line_scale;
             let dashes = match ss.dash {
-                Dash::Solid | Dash::Ragged | Dash::Stipple | Dash::Hatched => String::new(),
                 Dash::Dashed => format!(",\"d\":[{{\"n\":\"d\",\"nm\":\"dash\",\"v\":{{\"a\":0,\"k\":{}}}}},{{\"n\":\"g\",\"nm\":\"gap\",\"v\":{{\"a\":0,\"k\":{}}}}}]", f3((ss.dash_len * w).max(0.5)), f3((ss.gap * w).max(0.5))),
                 Dash::Dotted => format!(",\"d\":[{{\"n\":\"d\",\"nm\":\"dash\",\"v\":{{\"a\":0,\"k\":0.01}}}},{{\"n\":\"g\",\"nm\":\"gap\",\"v\":{{\"a\":0,\"k\":{}}}}}]", f3((ss.gap * w).max(w * 1.2))),
+                _ => String::new(),
             };
             parts.push(format!("{{\"ty\":\"st\",\"c\":{{\"a\":0,\"k\":[{},{},{},1]}},\"o\":{{\"a\":0,\"k\":{}}},\"w\":{{\"a\":0,\"k\":{}}},\"lc\":{lc},\"lj\":{lj},\"ml\":4{dashes}}}", f3(c[0]), f3(c[1]), f3(c[2]), f3(o), f3(w)));
         }

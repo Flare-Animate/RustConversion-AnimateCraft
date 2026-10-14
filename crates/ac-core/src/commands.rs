@@ -47,6 +47,7 @@ cmds! {
     "motion.set_key", "prop ('x'|'y'|'rotation'|'skew'|'scale_x'|'scale_y'|'alpha'|'brightness'|'rotation_x'|'rotation_y'|'depth'|'tint'|'filterN.blur_x|blur_y|strength|angle|distance|brightness|contrast|saturation|hue'), frame, value, layer?", "Property keyframe in the motion tween containing frame (scale/alpha in 0..1, angles in degrees)";
     "motion.remove_key", "frame, prop? (all), layer?", "Remove property keyframe(s)";
     "motion.set_ease", "prop ('position' or a property), ease (preset name, 'custom', or 'none'), layer?, frame?", "Ease one property of the motion tween (Motion Editor)";
+    "motion.set_interp", "prop, key (frame of the key starting the segment, 1-based), type ('auto'|'constant'|'linear'|'ease_in_out'|'ease_in_out_pct'|'exponential'|'expression'|'similar_shape'), ease_in?, ease_out? (frames or %), expression? (OpenToonz syntax, displayed units: degrees, %, px), offset? (similar shape), layer?", "How a property curve runs from a key to the next (OpenToonz keyframe types)";
     "timeline.set_label", "label, type? ('name'|'comment'|'anchor'), layer?, frame?", "Frame label on the keyframe at the target";
     "timeline.set_tween_options", "sync?, snap?, layer?, frame?", "Classic tween Sync (graphics keep counting across keyframes) and Snap (to the motion guide)";
     "timeline.set_property_ease", "property ('position'|'rotation'|'scale'|'color'|'filters'), ease? (preset name; omit = use the span's ease), layer?, frame?", "Classic tween: ease one property group separately";
@@ -75,7 +76,11 @@ cmds! {
     "draw.oval", "x, y, w, h, fill?, stroke?, stroke_width?", "Oval inside a box";
     "draw.line", "x1, y1, x2, y2, stroke?, stroke_width?", "Straight line";
     "draw.polystar", "cx, cy, r, sides? (5), star? (false), inner? (0.5), fill?, stroke?", "Polygon or star";
-    "draw.path", "points [[x,y]...], closed?, smooth?, fill?, stroke?, stroke_width?", "Path through points";
+    "draw.path", "points [[x,y]...], closed?, smooth?, fill?, stroke?, stroke_width?, assist? (apply drawing assistants: snap + symmetry)", "Path through points";
+    "assistant.add", "type ('line'|'vanishing_point'|'ellipse'|'mirror'|'star'|'grid'), x, y, size? (100), count? (star), mirror? (star), parallel? (line), concentric? (ellipse), magnetism? (0..1)", "Add a drawing assistant (OpenToonz): guides snap freehand strokes, replicators repeat them; returns its index (1-based)";
+    "assistant.list", "", "Drawing assistants with their points";
+    "assistant.set", "index (1-based), enabled?, magnetism?, points? [[x,y]...], count?, mirror?, parallel?, concentric?, count_a?, count_b?, count_a_inv?, count_b_inv?", "Change a drawing assistant";
+    "assistant.remove", "index (1-based) or 'all'", "Delete drawing assistants";
     "draw.text", "x, y, text, size? (24), color?, font? ('sans'|'mono'|system family), align?, weight? (100–900), bold?, italic?", "Static text";
     "select.all", "", "Select everything editable on the current frame";
     "select.none", "", "Clear the selection";
@@ -104,6 +109,7 @@ cmds! {
     "bone.list", "layer?", "Bones on a layer";
     "bone.clear", "layer?", "Remove all bones on a layer";
     "bone.drag", "x, y, to_x, to_y", "IK: drag the bonded object point at (x,y) to (to_x,to_y), posing the chain";
+    "bone.joint", "x, y (an object attached by a bone), rotate? (bool), min?, max? (degrees from the pose when the bone was made; omit both or free:true = no limit), free?", "Joint constraints: whether the joint turns, and how far";
     "camera.add", "", "Add a camera layer to the scene";
     "camera.set", "x?, y?, zoom?, rotation?, frame?", "Camera centre, zoom (1 = 100%) and rotation at a frame (makes a keyframe)";
     "camera.remove", "", "Remove the camera layer";
@@ -120,11 +126,15 @@ cmds! {
     "merge.to_object", "", "Turn the floating merge selection into a drawing object";
     "selection.combine", "op ('union'|'intersect'|'punch'|'crop')", "Modify ▸ Combine Objects on the selected drawing objects";
     "selection.shape", "op ('smooth'|'straighten'|'optimize')", "Modify ▸ Shape cleanup on drawing objects or a merge selection";
-    "selection.stroke_style", "dash? ('solid'|'dashed'|'dotted'|'ragged'|'stipple'|'hatched'), cap? ('none'|'round'|'square'), join? ('miter'|'round'|'bevel'), dash_len?, gap?", "Stroke style of selected drawing objects";
+    "selection.stroke_style", "dash? ('solid'|'dashed'|'dotted'|'ragged'|'stipple'|'hatched'|OpenToonz: 'herringbone'|'chain'|'circlets'|'scratchy'|'rope'|'tulle'|'plait'|'fuzz'|'bubbles'|'jagged'|'zigzag'|'wave'|'curl'), cap? ('none'|'round'|'square'), join? ('miter'|'round'|'bevel'), dash_len?, gap?, params? ({name: value}, e.g. {\"tilt\": 0.8}), colors? ([\"#RRGGBB\"|null, …] extra colours)", "Stroke style of selected drawing objects";
+    "paint.brushes", "", "The bundled MyPaint brushes (id, name, group)";
+    "paint.stroke", "points [[x,y] or [x,y,pressure]...], brush? (id or name, default 'classic_pencil'), color?, size? (radius px), opacity? (0..1), eraser?", "Raster Brush: paint a stroke with a MyPaint brush into the bitmap under it (or a new one on the current layer)";
+    "shape.deform", "tool ('magnet'|'pinch'|'pump'|'bender'|'iron'), x, y, to_x, to_y, size? (px, default 40), sharp? (pinch: corner), strength? (iron 0..1); bender: x, y, x2, y2 = the segment across the lines, from_x, from_y → to_x, to_y = the drag", "OpenToonz deformation tools on drawing objects and merge shapes (one drag); returns how many objects changed";
     "selection.bitmap_fill", "bitmap (name or id, null = none)", "Fill selected drawing objects, or the merge-shape selection, with a library bitmap";
     "draw.rect_primitive", "x, y, w, h, radius? or radii [tl,tr,br,bl], fill?, stroke?", "Rectangle Primitive (corner radii stay editable)";
     "draw.oval_primitive", "x, y, w, h, start?, end?, inner? (%), fill?, stroke?", "Oval Primitive (angles and inner radius stay editable)";
     "shape_bone.add", "x1, y1, x2, y2", "Bone inside the drawing object at (x1,y1), from (x1,y1) to (x2,y2); chains onto a bone ending at (x1,y1)";
+    "shape_bone.joint", "x, y (near the bone's tail), rotate? (bool), min?, max? (degrees from rest), free?", "Joint constraints of a shape bone";
     "shape_bone.pose", "x, y, to_x, to_y", "Drag the shape bone whose tail is at (x,y) to (to_x,to_y) (IK)";
     "selection.set_looping", "mode? ('loop'|'play_once'|'single_frame'|'play_reverse_once'|'loop_reverse'), first_frame? (1-based)", "Graphic instance looping options";
     "selection.swap_symbol", "symbol (name or id)", "Swap Symbol: selected instances show another symbol, keeping transform and effects";
@@ -134,7 +144,7 @@ cmds! {
     "selection.align", "op ('left'|'hcenter'|'right'|'top'|'vcenter'|'bottom'|'dist_left'|'dist_hcenter'|'dist_right'|'dist_top'|'dist_vcenter'|'dist_bottom'|'match_width'|'match_height'|'match_size'|'space_h'|'space_v'), to_stage?", "Align panel";
     "selection.add_filter", "type ('drop_shadow'|'blur'|'glow'|'bevel'|'gradient_glow'|'gradient_bevel'|'adjust_color'|'motion_blur'|'effect'), …filter fields (blur_x, blur_y, strength, angle, distance, color, kind, stops [[pos, '#RRGGBBAA']…], brightness, contrast, saturation, hue, shutter (degrees), samples…); effect: id (EffectCraft id, e.g. 'ec.blur.radial'; `animationcraft-cli effects` lists them), params {id: number | bool | [x, y] (fraction of the object) | '#RRGGBBAA'}", "Add a filter to the selected objects";
     "selection.clear_filters", "", "Remove all filters";
-    "bitmap.trace", "color_threshold? (0–500, 100), min_area? (px, 8), curve_fit? ('pixels'|'very tight'|'tight'|'normal'|'smooth'|'very smooth'), corners? ('many'|'normal'|'few')", "Trace Bitmap: the selected bitmaps become vector fills in the layer's shape; returns the region count";
+    "bitmap.trace", "color_threshold? (0–500, 100), min_area? (px, 8), curve_fit? ('pixels'|'very tight'|'tight'|'normal'|'smooth'|'very smooth'), corners? ('many'|'normal'|'few'), mode? ('outline'|'centerline'), line_threshold? (centerline ink darkness 1–254, 128), uniform_width? (centerline)", "Trace Bitmap: the selected bitmaps become vector fills (outline) or lines (centerline, OpenToonz) in the layer's shape; returns how many fills/lines";
     "selection.set_blend", "mode ('normal'|'multiply'|'screen'|…)", "Blend mode";
     "import.image", "path (PNG), x?, y?, place? (true)", "Import a PNG into the library (and place it)";
     "import.sound", "path (WAV/MP3/OGG/FLAC), name?", "Import a sound into the library; returns its id";
@@ -174,6 +184,58 @@ fn boolean(a: &Value, k: &str) -> Option<bool> {
 }
 
 /// `"#RRGGBB"`, `"#RRGGBBAA"`, `[r,g,b(,a)]`, or null (= none).
+/// `min` / `max` / `free` of the joint commands (degrees).
+fn joint_limit(a: &Value, cur: Option<(f32, f32)>) -> Result<Option<(f32, f32)>, String> {
+    if boolean(a, "free").unwrap_or(false) {
+        return Ok(None);
+    }
+    match (num(a, "min"), num(a, "max")) {
+        (None, None) => Ok(cur),
+        (lo, hi) => {
+            let (c0, c1) = cur.unwrap_or((-180.0, 180.0));
+            let (lo, hi) = (lo.unwrap_or(c0), hi.unwrap_or(c1));
+            if lo > 0.0 || hi < 0.0 {
+                return Err("the range must include the current pose: min ≤ 0 ≤ max".into());
+            }
+            Ok(Some((lo, hi)))
+        }
+    }
+}
+
+/// Type-specific options of `assistant.add` / `assistant.set`.
+fn assistant_options(kind: &mut crate::assist::AssistantKind, a: &Value) {
+    use crate::assist::AssistantKind as K;
+    let int = |k: &str| num(a, k).map(|v| v.clamp(0.0, 64.0) as u32);
+    match kind {
+        K::Line { parallel, .. } => {
+            if let Some(v) = boolean(a, "parallel") {
+                *parallel = v;
+            }
+        }
+        K::Ellipse { concentric, .. } => {
+            if let Some(v) = boolean(a, "concentric") {
+                *concentric = v;
+            }
+        }
+        K::Star { count, mirror, .. } => {
+            if let Some(v) = int("count") {
+                *count = v.max(1);
+            }
+            if let Some(v) = boolean(a, "mirror") {
+                *mirror = v;
+            }
+        }
+        K::Grid { count_a, count_a_inv, count_b, count_b_inv, .. } => {
+            for (k, f) in [("count_a", count_a), ("count_a_inv", count_a_inv), ("count_b", count_b), ("count_b_inv", count_b_inv)] {
+                if let Some(v) = int(k) {
+                    *f = v;
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
 fn color_arg(a: &Value, k: &str) -> Result<Option<Option<Color>>, String> {
     match a.get(k) {
         None => Ok(None),
@@ -566,6 +628,51 @@ pub fn execute(ed: &mut Editor, id: &str, a: &Value) -> Result<Value, String> {
             ed.edit_motion(Some("Property Ease"), |m, _| m.set_ease(p, ease));
             Ok(Value::Null)
         }
+        "motion.set_interp" => {
+            let key = num(a, "key").ok_or("missing 'key' (frame of the key, 1-based)")? as u32;
+            let mut a2 = a.clone();
+            if let Some(m) = a2.as_object_mut() {
+                m.insert("frame".into(), json!(key));
+            }
+            target(ed, &a2)?;
+            let p = prop_arg(a)?;
+            if matches!(p, crate::motion::Prop::X | crate::motion::Prop::Y) {
+                return Err("position follows the motion path; set interpolation on other properties".into());
+            }
+            let (st, _) = ed.motion_span(ed.layer, ed.frame).ok_or("no motion tween at the target")?;
+            let local = key.saturating_sub(1).checked_sub(st).ok_or("key is before the tween")?;
+            let ty = string(a, "type").unwrap_or("auto");
+            let n = |k: &str, d: f32| num(a, k).unwrap_or(d).max(0.0);
+            let text = || -> Result<String, String> {
+                let t = string(a, "expression").ok_or("missing 'expression'")?.to_string();
+                let props = crate::motion::expr_props();
+                let names: Vec<&str> = props.iter().map(|s| s.as_str()).collect();
+                crate::expr::Expr::parse(&t, &names)?;
+                Ok(t)
+            };
+            use crate::motion::Interp;
+            let interp = match ty {
+                "auto" => Interp::Auto,
+                "constant" => Interp::Constant,
+                "linear" => Interp::Linear,
+                "ease_in_out" => Interp::EaseInOut { ease_in: n("ease_in", 3.0), ease_out: n("ease_out", 3.0) },
+                "ease_in_out_pct" => Interp::EaseInOutPct { ease_in: n("ease_in", 33.0).min(100.0), ease_out: n("ease_out", 33.0).min(100.0) },
+                "exponential" => Interp::Exponential,
+                "expression" => Interp::Expression { text: text()? },
+                "similar_shape" => Interp::SimilarShape { text: text()?, offset: num(a, "offset").unwrap_or(0.0) },
+                t => return Err(format!("unknown interpolation '{t}'")),
+            };
+            let has = ed.current_motion().and_then(|(_, _, m, _)| m.track(p).map(|t| t.has_key(local))).unwrap_or(false);
+            if !has {
+                return Err(format!("no {} key at frame {key}", p.id()));
+            }
+            ed.edit_motion(Some("Interpolation"), |m, _| {
+                if let Some(k) = m.track_mut(p).and_then(|t| t.keys.iter_mut().find(|k| k.frame == local)) {
+                    k.interp = interp;
+                }
+            });
+            Ok(Value::Null)
+        }
         "timeline.copy_frames" | "timeline.cut_frames" => {
             target(ed, a)?;
             if ed.frame_sel.is_none() {
@@ -773,7 +880,76 @@ pub fn execute(ed: &mut Editor, id: &str, a: &Value) -> Result<Value, String> {
             }
             let (fill, stroke) = shape_style(a, None)?;
             let stroke = if fill.is_none() && stroke.is_none() { Some(Stroke { color: Color::rgb(0, 0, 0), width: num(a, "stroke_width").unwrap_or(1.0) }) } else { stroke };
+            if boolean(a, "assist").unwrap_or(false) && !ed.doc.assistants.is_empty() {
+                let smooth = boolean(a, "smooth").unwrap_or(false);
+                let mut last = Value::Null;
+                for poly in crate::assist::apply(&ed.doc.assistants, &pts, 1.0) {
+                    let mut p = if smooth { Path::smooth_polyline(&poly, 0.0) } else { Path::polygon(&poly) };
+                    if !closed {
+                        p.segs.retain(|s| !matches!(s, Seg::Z));
+                    }
+                    last = add_shape(ed, "Path", p, if closed { fill } else { None }, stroke)?;
+                }
+                return Ok(last);
+            }
             add_shape(ed, "Path", path, if closed { fill } else { None }, stroke)
+        }
+        "assistant.add" => {
+            let ty = string(a, "type").ok_or("missing 'type'")?;
+            let c = pt(num(a, "x").unwrap_or(ed.doc.width / 2.0), num(a, "y").unwrap_or(ed.doc.height / 2.0));
+            let mut kind = crate::assist::AssistantKind::create(ty, c, num(a, "size").unwrap_or(100.0)).ok_or_else(|| format!("unknown assistant '{ty}' (line, vanishing_point, ellipse, mirror, star, grid)"))?;
+            assistant_options(&mut kind, a);
+            let mut asst = crate::assist::Assistant::new(kind);
+            if let Some(m) = num(a, "magnetism") {
+                asst.magnetism = m.clamp(0.0, 1.0);
+            }
+            Ok(json!(ed.add_assistant(asst) + 1))
+        }
+        "assistant.list" => Ok(Value::Array(
+            ed.doc.assistants.iter().enumerate().map(|(i, x)| json!({ "index": i + 1, "type": x.name(), "enabled": x.enabled, "magnetism": x.magnetism, "points": x.points().iter().map(|p| json!([p.x, p.y])).collect::<Vec<_>>() })).collect(),
+        )),
+        "assistant.set" => {
+            let i = (num(a, "index").ok_or("missing 'index'")? as usize).checked_sub(1).filter(|i| *i < ed.doc.assistants.len()).ok_or("no such assistant")?;
+            let mut x = ed.doc.assistants[i].clone();
+            if let Some(v) = boolean(a, "enabled") {
+                x.enabled = v;
+            }
+            if let Some(m) = num(a, "magnetism") {
+                x.magnetism = m.clamp(0.0, 1.0);
+            }
+            if let Some(ps) = a.get("points").and_then(Value::as_array) {
+                for (k, p) in ps.iter().enumerate() {
+                    if let (Some(px), Some(py)) = (p.get(0).and_then(Value::as_f64), p.get(1).and_then(Value::as_f64)) {
+                        // set exactly (no carrying of the other handles)
+                        let n = x.points().len();
+                        if k < n {
+                            let others: Vec<Pt> = x.points();
+                            x.set_point(k, pt(px as f32, py as f32));
+                            if k == 0 {
+                                for (j, q) in others.iter().enumerate().skip(1) {
+                                    x.set_point(j, *q);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            assistant_options(&mut x.kind, a);
+            ed.set_assistant(i, x, true);
+            Ok(Value::Null)
+        }
+        "assistant.remove" => {
+            if string(a, "index") == Some("all") {
+                while !ed.doc.assistants.is_empty() {
+                    ed.remove_assistant(0);
+                }
+                return Ok(Value::Null);
+            }
+            let i = (num(a, "index").ok_or("missing 'index'")? as usize).checked_sub(1).ok_or("no such assistant")?;
+            if !ed.remove_assistant(i) {
+                return Err("no such assistant".into());
+            }
+            Ok(Value::Null)
         }
         "layer.wrap" => {
             if let Some(i) = layer_arg(ed, a, "layer")? {
@@ -881,11 +1057,92 @@ pub fn execute(ed: &mut Editor, id: &str, a: &Value) -> Result<Value, String> {
             if let Some(v) = string(a, "corners") {
                 o.corners = crate::trace::Corners::from_name(v).ok_or_else(|| format!("unknown corners '{v}'"))?;
             }
+            if let Some(v) = string(a, "mode") {
+                o.mode = crate::trace::TraceMode::from_name(v).ok_or_else(|| format!("unknown mode '{v}' (outline, centerline)"))?;
+            }
+            if let Some(v) = num(a, "line_threshold") {
+                o.line_threshold = v.clamp(1.0, 254.0) as u8;
+            }
+            if let Some(v) = boolean(a, "uniform_width") {
+                o.uniform_width = v;
+            }
             let n = ed.trace_bitmap(&o);
             if n == 0 {
                 return Err("select a bitmap to trace".into());
             }
             Ok(json!(n))
+        }
+        "paint.brushes" => Ok(Value::Array(crate::paint::PRESETS.iter().map(|p| json!({ "id": p.id, "name": p.name, "group": p.group })).collect())),
+        "paint.stroke" => {
+            let pts: Vec<(Pt, Option<f32>)> = a
+                .get("points")
+                .and_then(Value::as_array)
+                .ok_or("missing 'points' [[x,y], ...]")?
+                .iter()
+                .filter_map(|p| Some((pt(p.get(0)?.as_f64()? as f32, p.get(1)?.as_f64()? as f32), p.get(2).and_then(Value::as_f64).map(|v| v as f32))))
+                .collect();
+            if pts.is_empty() {
+                return Err("need at least one point".into());
+            }
+            let id = string(a, "brush").unwrap_or("classic_pencil");
+            let preset = crate::paint::preset(id).ok_or_else(|| format!("unknown brush '{id}' (see paint.brushes)"))?;
+            let mut o = crate::paint::PaintOpts::default();
+            if let Some(Some(c)) = color_arg(a, "color")? {
+                o.color = c;
+            }
+            o.radius = num(a, "size").map(|v| v.clamp(0.2, 500.0));
+            o.opacity = num(a, "opacity").unwrap_or(1.0).clamp(0.0, 1.0);
+            o.eraser = boolean(a, "eraser").unwrap_or(false);
+            let mut s = ed.paint_begin(pts[0].0, preset, &o)?;
+            // the first event seeds the position; resample long segments so speed stays sane
+            let mut last = pts[0].0;
+            ed.paint_to(&mut s, last, pts[0].1, 0.01);
+            for (q, pr) in &pts {
+                let n = (last.dist(*q) / 4.0).ceil().max(1.0) as usize;
+                for i in 1..=n {
+                    ed.paint_to(&mut s, last.lerp(*q, i as f32 / n as f32), *pr, 0.01);
+                }
+                last = *q;
+            }
+            let bmp = s.bitmap;
+            ed.paint_end(s);
+            Ok(json!(bmp))
+        }
+        "shape.deform" => {
+            let tool = string(a, "tool").unwrap_or("magnet");
+            let kind = crate::sculpt::Kind::from_id(tool).ok_or_else(|| format!("unknown deformation tool '{tool}' (magnet, pinch, pump, bender, iron)"))?;
+            let need = |k: &str| num(a, k).ok_or_else(|| format!("'{k}' is required"));
+            let (x, y, tx, ty) = (need("x")?, need("y")?, need("to_x")?, need("to_y")?);
+            let mut o = crate::sculpt::Opts::default();
+            if let Some(v) = num(a, "size") {
+                o.size = v.clamp(1.0, 2000.0);
+            }
+            if let Some(v) = a.get("sharp").and_then(Value::as_bool) {
+                o.sharp = v;
+            }
+            if let Some(v) = num(a, "strength") {
+                o.strength = v.clamp(0.0, 1.0);
+            }
+            // Bender: (x, y)–(x2, y2) is the segment; the drag goes from (from_x, from_y) to (to_x, to_y)
+            let (seg, from) = if kind == crate::sculpt::Kind::Bender {
+                let b = pt(need("x2")?, need("y2")?);
+                (Some((pt(x, y), b)), pt(need("from_x")?, need("from_y")?))
+            } else {
+                (None, pt(x, y))
+            };
+            let mut s = ed.sculpt_begin(kind, from, o, 6.0, seg).ok_or_else(|| format!("{}: nothing to deform there", kind.name()))?;
+            let to = pt(tx, ty);
+            if kind == crate::sculpt::Kind::Iron {
+                // brush along the drag
+                let n = (from.dist(to) / 2.0).ceil().max(1.0) as usize;
+                for i in 0..=n {
+                    ed.sculpt_drag(&mut s, from.lerp(to, i as f32 / n as f32));
+                }
+            } else {
+                ed.sculpt_drag(&mut s, to);
+            }
+            ed.sculpt_end(&s);
+            Ok(json!(s.targets.len()))
         }
         "selection.clear_filters" => {
             need_selection(ed)?;
@@ -1243,6 +1500,15 @@ pub fn execute(ed: &mut Editor, id: &str, a: &Value) -> Result<Value, String> {
             ed.ik_drag(h.layer, h.element, grab, to);
             Ok(Value::Null)
         }
+        "bone.joint" => {
+            let p = pt(req(a, "x")?, req(a, "y")?);
+            let h = ed.hit_test(p).ok_or("no object at (x, y)")?;
+            let b = *ed.bones(h.layer).iter().find(|b| b.child == h.element).ok_or("that object isn't attached by a bone (the root has no joint)")?;
+            let rotate = boolean(a, "rotate").unwrap_or(b.rotate);
+            let limit = joint_limit(a, b.limit)?;
+            ed.set_joint(h.layer, h.element, rotate, limit);
+            Ok(Value::Null)
+        }
         "camera.add" => Ok(json!(ed.add_camera() + 1)),
         "camera.remove" => {
             ed.remove_camera();
@@ -1442,19 +1708,36 @@ pub fn execute(ed: &mut Editor, id: &str, a: &Value) -> Result<Value, String> {
             Ok(Value::Null)
         }
         "selection.stroke_style" => {
-            let (dash, cap, join) = (string(a, "dash").map(str::to_string), string(a, "cap").map(str::to_string), string(a, "join").map(str::to_string));
+            let (cap, join) = (string(a, "cap").map(str::to_string), string(a, "join").map(str::to_string));
+            let dash = match string(a, "dash") {
+                Some(d) => Some(Dash::from_id(d).ok_or_else(|| format!("unknown stroke style '{d}'"))?),
+                None => None,
+            };
             let (dl, gap) = (num(a, "dash_len"), num(a, "gap"));
+            let params: Vec<(String, f32)> = match a.get("params") {
+                Some(Value::Object(m)) => m.iter().map(|(k, v)| (k.to_ascii_lowercase().replace('_', " "), v.as_f64().unwrap_or(0.0) as f32)).collect(),
+                _ => vec![],
+            };
+            let colors: Option<Vec<Option<Color>>> = match a.get("colors") {
+                Some(Value::Array(v)) => Some(v.iter().map(|c| color_arg(&serde_json::json!({ "c": c }), "c").map(|c| c.flatten())).collect::<Result<_, _>>()?),
+                _ => None,
+            };
+            if let Some(d) = dash.or(ed.selected_shape_dash()) {
+                for (k, _) in &params {
+                    if !crate::strokes::params(d).iter().any(|p| p.name.to_ascii_lowercase() == *k) {
+                        let names: Vec<&str> = crate::strokes::params(d).iter().map(|p| p.name).collect();
+                        return Err(format!("{} has no parameter '{k}' (has: {})", d.name(), if names.is_empty() { "none".into() } else { names.join(", ") }));
+                    }
+                }
+            }
             ed.modify_selected("Stroke Style", move |e| {
                 if let ElementKind::Shape(sh) = &mut e.kind {
                     let st = &mut sh.stroke_style;
-                    match dash.as_deref() {
-                        Some("dashed") => st.dash = Dash::Dashed,
-                        Some("dotted") => st.dash = Dash::Dotted,
-                        Some("solid") => st.dash = Dash::Solid,
-                        Some("ragged") => st.dash = Dash::Ragged,
-                        Some("stipple") => st.dash = Dash::Stipple,
-                        Some("hatched") => st.dash = Dash::Hatched,
-                        _ => {}
+                    if let Some(d) = dash {
+                        if d != st.dash {
+                            st.art = Default::default();
+                        }
+                        st.dash = d;
                     }
                     match cap.as_deref() {
                         Some("none") => st.cap = Cap::None,
@@ -1473,6 +1756,17 @@ pub fn execute(ed: &mut Editor, id: &str, a: &Value) -> Result<Value, String> {
                     }
                     if let Some(v) = gap {
                         st.gap = v;
+                    }
+                    let ps = crate::strokes::params(st.dash);
+                    for (k, v) in &params {
+                        if let Some(i) = ps.iter().position(|p| p.name.to_ascii_lowercase() == *k) {
+                            st.art.p[i] = Some(v.clamp(ps[i].min, ps[i].max));
+                        }
+                    }
+                    if let Some(cs) = &colors {
+                        for (i, c) in cs.iter().take(2).enumerate() {
+                            st.art.colors[i] = *c;
+                        }
                     }
                 }
             });
@@ -1522,6 +1816,24 @@ pub fn execute(ed: &mut Editor, id: &str, a: &Value) -> Result<Value, String> {
                 None => ed.hit_test(h).ok_or("no drawing object at x1, y1")?,
             };
             let b = ed.rig_add_bone(s, h, t).ok_or("shape bones go inside a drawing object")?;
+            Ok(json!(b + 1))
+        }
+        "shape_bone.joint" => {
+            let from = pt(req(a, "x")?, req(a, "y")?);
+            let (sel, b, _, _) = ed.rig_bones().into_iter().min_by(|x, y| x.3.dist(from).partial_cmp(&y.3.dist(from)).unwrap()).ok_or("no shape bones")?;
+            let ElementKind::Shape(Shape { rig: Some(r), .. }) = ed.element_at(sel).ok_or("no object")?.kind else { return Err("no shape bones".into()) };
+            let cur = r.bones[b];
+            let rotate = boolean(a, "rotate").unwrap_or(cur.rotate);
+            let limit = joint_limit(a, cur.limit)?;
+            ed.selection = vec![sel];
+            ed.modify_selected("Joint", move |e| {
+                if let ElementKind::Shape(Shape { rig: Some(r), .. }) = &mut e.kind {
+                    if let Some(bone) = r.bones.get_mut(b) {
+                        bone.rotate = rotate;
+                        bone.limit = limit;
+                    }
+                }
+            });
             Ok(json!(b + 1))
         }
         "shape_bone.pose" => {

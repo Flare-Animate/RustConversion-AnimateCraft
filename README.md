@@ -163,10 +163,35 @@ tools. Options for the active tool are in Properties ▸ **Tool**.
   brings in its latest version. They render in the stage and every raster export.
 - **Trace Bitmap** (Modify › Trace Bitmap…): colour threshold, minimum area, curve fit
   and corner threshold; the bitmap becomes merge-shape fills that meet exactly.
+  **Centerline** mode turns line art into lines along the middle of the ink, with
+  its thickness.
 - **Shift & Trace** (timeline toolbar): the previous and next keyframes as ghosts you
   slide (drag; Shift+drag for the next one) and turn (Alt+drag) under your drawing.
 - **Import Photoshop (PSD)**: one bitmap layer per Photoshop layer, in place.
 - **Export Timing Sheet (XDTS)**: layer timing for Clip Studio Paint / OpenToonz.
+
+### From OpenToonz: styles, deformers, assistants, painting
+
+- **Stroke styles** (Properties ▸ Fill and stroke): besides Animate's Solid, Dashed,
+  Dotted, Ragged, Stipple and Hatched, OpenToonz's Herringbone, Chain, Circlets,
+  Scratchy, Rope, Tulle, Plait, Fuzz, Bubbles, Jagged, Zigzag, Wave and Curl, each
+  with its own parameters and extra colours.
+- **Deformation tools** (flyout next to the Width tool): **Magnet** pulls everything
+  within a radius, **Pinch** drags a line (smooth or a corner), **Pump** thickens or
+  thins a line, **Bender** bends lines where they cross a segment you draw,
+  **Iron** smooths wobbles. They work on drawing objects and merge shapes.
+- **Drawing assistants** (Assistants tool): guides that straighten freehand
+  strokes (Line or parallels, Vanishing point, Ellipse or concentric) and symmetry
+  that repeats them (Mirror, Star with optional kaleidoscope, Grid), for the Pencil,
+  Paint Brush and Fluid Brush.
+- **Raster Brush** (Brush flyout): 25 MyPaint brushes (pencils, inks, charcoal,
+  chalk, airbrush, watercolour, smudge, erasers) painting pixels into a bitmap on
+  the current keyframe, frame by frame.
+- **Motion Editor**: right-click a key ▸ *Interpolation to next key*: Constant,
+  Linear, Ease In/Out, Exponential, **Expression** (`sin(frame*10)*20`,
+  `100 - rotation/2`, `random(0, 5)` …) or Similar Shape.
+- **Joint constraints** (Properties ▸ Bones): turn a joint off or limit how far it
+  bends.
 
 ### Sound
 

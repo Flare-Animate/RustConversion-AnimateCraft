@@ -126,6 +126,8 @@ impl W<'_> {
             Dash::Ragged => ("RaggedStroke", String::new()),
             Dash::Stipple => ("StippleStroke", String::new()),
             Dash::Hatched => ("HatchedStroke", String::new()),
+            // OpenToonz styles have no .fla form (warned by the caller)
+            _ => ("SolidStroke", String::new()),
         };
         let mut caps_a = String::new();
         if caps != "round" {
@@ -264,6 +266,9 @@ impl W<'_> {
             sh.fill.map(FillKey::Solid)
         };
         let fills: Vec<FillKey> = fill.into_iter().collect();
+        if sh.stroke.is_some() && !sh.stroke_style.dash.in_fla() {
+            self.warn.push(format!("{} strokes (OpenToonz style) exported as solid lines", sh.stroke_style.dash.name()));
+        }
         let strokes: Vec<(Stroke, StrokeStyle)> = sh.stroke.map(|s| (s, sh.stroke_style)).into_iter().collect();
         let subs = edges::path_pieces(&path);
         // which subpaths are holes (inside an odd number of the others)

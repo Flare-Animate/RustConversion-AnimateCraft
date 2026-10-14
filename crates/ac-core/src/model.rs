@@ -107,10 +107,57 @@ pub enum Dash {
     Stipple,
     /// Short strokes across the line.
     Hatched,
+    // ---- OpenToonz stroke styles (generated in `strokes.rs`) ----
+    /// Slanted hairs on alternating sides (OpenToonz "Herringbone").
+    Herringbone,
+    /// Linked rings.
+    Chain,
+    /// Scattered little circles (OpenToonz "Circlets").
+    Circlets,
+    /// Pen strokes across the line (OpenToonz "Dashes").
+    Scratchy,
+    /// Twisted strands with an outline.
+    Rope,
+    /// Translucent creased band (OpenToonz "Tulle").
+    Tulle,
+    /// Three coloured stripes woven together (OpenToonz "Plait").
+    Plait,
+    /// Many short sketchy strands (OpenToonz "Fuzz").
+    Fuzz,
+    /// Circles along the line in two colours.
+    Bubbles,
+    /// Saw-tooth triangles (OpenToonz "Jagged").
+    Jagged,
+    /// Random zigzag.
+    Zigzag,
+    /// Sine-wave ribbon.
+    Wave,
+    /// Curling ribbon (OpenToonz "Curl").
+    Curl,
 }
 
 impl Dash {
-    pub const ALL: [Dash; 6] = [Dash::Solid, Dash::Dashed, Dash::Dotted, Dash::Ragged, Dash::Stipple, Dash::Hatched];
+    pub const ALL: [Dash; 19] = [
+        Dash::Solid,
+        Dash::Dashed,
+        Dash::Dotted,
+        Dash::Ragged,
+        Dash::Stipple,
+        Dash::Hatched,
+        Dash::Herringbone,
+        Dash::Chain,
+        Dash::Circlets,
+        Dash::Scratchy,
+        Dash::Rope,
+        Dash::Tulle,
+        Dash::Plait,
+        Dash::Fuzz,
+        Dash::Bubbles,
+        Dash::Jagged,
+        Dash::Zigzag,
+        Dash::Wave,
+        Dash::Curl,
+    ];
     pub fn name(self) -> &'static str {
         match self {
             Dash::Solid => "Solid",
@@ -119,9 +166,34 @@ impl Dash {
             Dash::Ragged => "Ragged",
             Dash::Stipple => "Stipple",
             Dash::Hatched => "Hatched",
+            Dash::Herringbone => "Herringbone",
+            Dash::Chain => "Chain",
+            Dash::Circlets => "Circlets",
+            Dash::Scratchy => "Scratchy",
+            Dash::Rope => "Rope",
+            Dash::Tulle => "Tulle",
+            Dash::Plait => "Plait",
+            Dash::Fuzz => "Fuzz",
+            Dash::Bubbles => "Bubbles",
+            Dash::Jagged => "Jagged",
+            Dash::Zigzag => "Zigzag",
+            Dash::Wave => "Wave",
+            Dash::Curl => "Curl",
         }
     }
+    /// Styles .fla files can store (the rest come from OpenToonz).
+    pub fn in_fla(self) -> bool {
+        matches!(self, Dash::Solid | Dash::Dashed | Dash::Dotted | Dash::Ragged | Dash::Stipple | Dash::Hatched)
+    }
+    /// Script name (`selection.set_stroke_style`).
+    pub fn id(self) -> String {
+        self.name().to_ascii_lowercase()
+    }
+    pub fn from_id(s: &str) -> Option<Dash> {
+        Dash::ALL.into_iter().find(|d| d.id() == s.to_ascii_lowercase())
+    }
 }
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Cap {
     None,
@@ -148,6 +220,27 @@ pub struct StrokeStyle {
     pub dash_len: f32,
     #[serde(default = "default_dash")]
     pub gap: f32,
+    /// Parameters of the OpenToonz styles (`None` = the style's default; see
+    /// `strokes::params`).
+    #[serde(default, skip_serializing_if = "ArtParams::is_default")]
+    pub art: ArtParams,
+}
+
+/// Parameters and extra colours of a generated stroke style.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct ArtParams {
+    #[serde(default)]
+    pub p: [Option<f32>; 5],
+    /// Second/third colours (Rope outline, Plait stripes, Bubbles); `None`
+    /// derives one from the stroke colour.
+    #[serde(default)]
+    pub colors: [Option<Color>; 2],
+}
+
+impl ArtParams {
+    pub fn is_default(&self) -> bool {
+        *self == ArtParams::default()
+    }
 }
 fn default_dash() -> f32 {
     3.0
@@ -155,7 +248,7 @@ fn default_dash() -> f32 {
 
 impl Default for StrokeStyle {
     fn default() -> Self {
-        StrokeStyle { dash: Dash::Solid, cap: Cap::Round, join: Join::Round, dash_len: 3.0, gap: 3.0 }
+        StrokeStyle { dash: Dash::Solid, cap: Cap::Round, join: Join::Round, dash_len: 3.0, gap: 3.0, art: ArtParams::default() }
     }
 }
 
@@ -702,6 +795,50 @@ pub struct Bone {
     pub tail_parent: Pt,
     /// …and the same joint in the child's local space.
     pub tail_child: Pt,
+    /// Joint: Rotation ▸ Enable. Off: the joint stays as it is while posing.
+    #[serde(default = "yes", skip_serializing_if = "is_true")]
+    pub rotate: bool,
+    /// Joint: Rotation ▸ Constrain: how far (degrees) the child may turn
+    /// from `rest`, as (min ≤ 0, max ≥ 0). `None` = free.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit: Option<(f32, f32)>,
+    /// The child's rotation relative to its parent when the bone was made (degrees).
+    #[serde(default)]
+    pub rest: f32,
+}
+
+impl Bone {
+    /// The child's rotation relative to the parent (degrees, −180…180).
+    pub fn relative_angle(els: &[Element], parent: usize, child: usize) -> Option<f32> {
+        let (p, c) = (els.get(parent)?.matrix, els.get(child)?.matrix);
+        let a = c.b.atan2(c.a).to_degrees() - p.b.atan2(p.a).to_degrees();
+        Some(wrap_deg(a))
+    }
+    /// Clamp a joint turn of `d` degrees from relative angle `rel` to the limits.
+    pub fn allowed_turn(&self, rel: f32, d: f32) -> f32 {
+        if !self.rotate {
+            return 0.0;
+        }
+        match self.limit {
+            Some((lo, hi)) => {
+                let off = wrap_deg(rel - self.rest);
+                let to = (off + d).clamp(lo.min(0.0), hi.max(0.0));
+                to - off
+            }
+            None => d,
+        }
+    }
+}
+
+/// An angle in degrees wrapped to −180…180.
+pub fn wrap_deg(a: f32) -> f32 {
+    let mut a = a % 360.0;
+    if a > 180.0 {
+        a -= 360.0;
+    } else if a <= -180.0 {
+        a += 360.0;
+    }
+    a
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -843,6 +980,10 @@ pub struct Document {
     /// move around the scene; output still renders through it).
     #[serde(default, skip_serializing_if = "CameraMode::is_stage")]
     pub camera_mode: CameraMode,
+    /// Drawing assistants and symmetry (OpenToonz): guides and replicators
+    /// that shape freehand strokes, in stage coordinates.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub assistants: Vec<crate::assist::Assistant>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -880,6 +1021,7 @@ impl Default for Document {
             more_scenes: vec![],
             sounds: vec![],
             camera_mode: CameraMode::Stage,
+            assistants: vec![],
         }
     }
 }
@@ -1110,7 +1252,7 @@ pub struct Clip {
 
 impl DrawItem {
     pub fn new(path: Path, matrix: Matrix) -> DrawItem {
-        DrawItem { path, fill: None, stroke: None, matrix, alpha: 1.0, tint: None, outline: None, src: None, gradient: None, fx: vec![], clips: vec![], image: None, cx: None, stroke_style: StrokeStyle { dash: Dash::Solid, cap: Cap::Round, join: Join::Round, dash_len: 3.0, gap: 3.0 }, pattern: None }
+        DrawItem { path, fill: None, stroke: None, matrix, alpha: 1.0, tint: None, outline: None, src: None, gradient: None, fx: vec![], clips: vec![], image: None, cx: None, stroke_style: StrokeStyle { dash: Dash::Solid, cap: Cap::Round, join: Join::Round, dash_len: 3.0, gap: 3.0, art: ArtParams::default() }, pattern: None }
     }
 }
 
@@ -1123,7 +1265,21 @@ impl DrawItem {
         if !self.clips.is_empty() && !self.clips.iter().all(|c| c.shapes.iter().any(|(sp, m)| m.invert().map(|i| sp.hit(i.apply(p), true, 0.0)).unwrap_or(false))) {
             return false; // masked out here
         }
-        self.path.hit(lp, self.fill.is_some() || self.gradient.is_some() || self.image.is_some(), tol)
+        if let Some(img) = &self.image {
+            // bitmaps: only where there are pixels (a transparent paint
+            // bitmap must not hide what is under it)
+            let (cx, cy) = (lp.x.floor() as i64, lp.y.floor() as i64);
+            let r = (2.0 / scale).ceil().max(1.0) as i64;
+            for y in (cy - r)..=(cy + r) {
+                for x in (cx - r)..=(cx + r) {
+                    if x >= 0 && y >= 0 && (x as u32) < img.width && (y as u32) < img.height && img.rgba[((y as u32 * img.width + x as u32) * 4 + 3) as usize] > 16 {
+                        return true;
+                    }
+                }
+            }
+            return false;
+        }
+        self.path.hit(lp, self.fill.is_some() || self.gradient.is_some(), tol)
     }
 }
 
@@ -1502,7 +1658,7 @@ pub fn eval_element(ctx: &EvalCtx, el: &Element, parent: &Matrix, alpha: f32, lo
                 }
                 _ => s,
             };
-            let art = crate::strokes::is_artistic(s.stroke_style.dash) && s.stroke.is_some() && s.width_profile.is_none();
+            let art = crate::strokes::is_artistic(s.stroke_style.dash) && s.stroke.is_some();
             if art {
                 shape_items(&Shape { stroke: None, ..s.clone() }, m, a, el.tint, outline, out);
             } else {
@@ -1518,7 +1674,7 @@ pub fn eval_element(ctx: &EvalCtx, el: &Element, parent: &Matrix, alpha: f32, lo
             if art {
                 // ragged / stipple / hatched: generated geometry, drawn solid
                 let solid = StrokeStyle { dash: Dash::Solid, ..s.stroke_style };
-                for (path, fill, stroke) in crate::strokes::artistic(&s.path, s.stroke.unwrap(), s.stroke_style.dash) {
+                for (path, fill, stroke) in crate::strokes::styled(&s.path, s.stroke.unwrap(), &s.stroke_style, s.width_profile.as_deref()) {
                     out.push(DrawItem { fill, stroke, alpha: a, tint: el.tint, outline, stroke_style: solid, ..DrawItem::new(path, m) });
                 }
             }

@@ -13,3 +13,5 @@ ab_glyph = "0.2"
 epaint_default_fonts = "0.29"
 base64 = "0.22"
 png.workspace = true
+# MyPaint brush engine (pure-Rust libmypaint port), referenced, not copied
+hokusai = { version = "0.3", default-features = false, features = ["myb-json", "tile-mem"] }

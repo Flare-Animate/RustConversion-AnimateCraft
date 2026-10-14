@@ -34,6 +34,8 @@ pub enum Tool {
     Pencil,
     Brush,
     FluidBrush,
+    /// MyPaint raster brushes painting into bitmaps (OpenToonz).
+    RasterBrush,
     Bone,
     Bind,
     Bucket,
@@ -42,6 +44,14 @@ pub enum Tool {
     Eraser,
     Width,
     AssetWarp,
+    // OpenToonz deformation tools
+    Magnet,
+    Pinch,
+    Pump,
+    Bender,
+    Iron,
+    /// Drawing assistants and symmetry (OpenToonz).
+    Assistant,
     Camera,
     Hand,
     RotateView,
@@ -101,6 +111,13 @@ impl Tool {
             Tool::Eraser => t("Eraser", Some(E), false, "Erase whole objects you drag over (cutting fills needs Merge Drawing)"),
             Tool::Width => t("Width", Some(U), false, "Drag out from a stroke to make it thicker or thinner at that point"),
             Tool::AssetWarp => t("Asset Warp", Some(W), true, "Click a shape to pin it, drag pins to bend it. Alt+click removes a pin"),
+            Tool::RasterBrush => t("Raster Brush", None, false, "Paint pixels with MyPaint brushes (pencil, ink, charcoal, watercolour, airbrush…) into a bitmap on this frame. From OpenToonz"),
+            Tool::Magnet => t("Magnet", None, false, "Drag near lines and shapes to pull them along (falloff over the Size radius). From OpenToonz"),
+            Tool::Pinch => t("Pinch", None, false, "Drag a point of a line: the line follows over Size units each side; Corner makes it pointed. From OpenToonz"),
+            Tool::Pump => t("Pump", None, false, "Press on a line and drag up to thicken it there, down to thin it (over Size units). From OpenToonz"),
+            Tool::Bender => t("Bender", None, false, "Drag a segment across lines, then drag on one side of it to bend them around its start. From OpenToonz"),
+            Tool::Iron => t("Iron", None, false, "Brush over wobbly lines to smooth them (Size, Strength). From OpenToonz"),
+            Tool::Assistant => t("Assistants", None, false, "Place guides (line, vanishing point, ellipse) that straighten freehand strokes, and symmetry (mirror, star, grid) that repeats them. From OpenToonz"),
             Tool::Camera => t("Camera", Some(C), false, "Pan the camera by dragging, scroll to zoom, Shift+drag to rotate. Tweenable like any layer"),
             Tool::Hand => t("Hand", Some(H), false, "Drag to pan (or hold Space with any tool)"),
             Tool::RotateView => t("Rotation", Some(H), true, "Rotate the view of the stage (like turning paper). Shift snaps to 15°"),
@@ -135,7 +152,7 @@ impl Tool {
 pub const SECTIONS: &[&[&[Tool]]] = &[
     &[&[Tool::Select], &[Tool::Subselect], &[Tool::FreeTransform, Tool::GradientTransform], &[Tool::Rotate3D, Tool::Translate3D], &[Tool::Lasso, Tool::PolyLasso, Tool::MagicWand]],
     &[&[Tool::Pen, Tool::AddAnchor, Tool::DeleteAnchor, Tool::ConvertAnchor], &[Tool::Text], &[Tool::Line], &[Tool::Rect, Tool::RectPrimitive, Tool::Oval, Tool::OvalPrimitive, Tool::PolyStar]],
-    &[&[Tool::Brush, Tool::FluidBrush, Tool::Pencil], &[Tool::Width], &[Tool::Bone, Tool::Bind], &[Tool::AssetWarp], &[Tool::Bucket, Tool::InkBottle], &[Tool::Eyedropper], &[Tool::Eraser]],
+    &[&[Tool::Brush, Tool::FluidBrush, Tool::Pencil, Tool::RasterBrush], &[Tool::Width], &[Tool::Magnet, Tool::Pinch, Tool::Pump, Tool::Bender, Tool::Iron], &[Tool::Assistant], &[Tool::Bone, Tool::Bind], &[Tool::AssetWarp], &[Tool::Bucket, Tool::InkBottle], &[Tool::Eyedropper], &[Tool::Eraser]],
     &[&[Tool::Camera], &[Tool::Hand, Tool::RotateView], &[Tool::Zoom]],
 ];
 
@@ -201,6 +218,20 @@ pub struct ToolOpts {
     pub bucket_gap: u8,
     /// Lock Fill: gradients span the stage instead of each shape.
     pub lock_fill: bool,
+    /// Deformation tools (OpenToonz): radius / reach, Pinch corner, Iron strength.
+    pub sculpt_size: f32,
+    pub sculpt_sharp: bool,
+    pub sculpt_strength: f32,
+    /// Raster Brush: brush (index into `ac_core::paint::PRESETS`), radius
+    /// (0 = the brush's own), opacity, erase.
+    pub raster_brush: usize,
+    pub raster_size: f32,
+    pub raster_opacity: f32,
+    pub raster_eraser: bool,
+    /// Pressure the brush sees (mouse input has none).
+    pub raster_pressure: f32,
+    /// Use the drawing assistants (guides + symmetry) with freehand tools.
+    pub assist_on: bool,
     /// Remembered tool per slot (slot index → tool).
     pub slot_memory: Vec<Tool>,
     pub hidden: BTreeSet<Tool>,
@@ -242,6 +273,15 @@ impl Default for ToolOpts {
             faucet: false,
             bucket_gap: 1,
             lock_fill: false,
+            raster_brush: ac_core::paint::PRESETS.iter().position(|p| p.id == "classic_pencil").unwrap_or(0),
+            raster_size: 0.0,
+            raster_opacity: 1.0,
+            raster_eraser: false,
+            raster_pressure: 0.6,
+            assist_on: true,
+            sculpt_size: 40.0,
+            sculpt_sharp: false,
+            sculpt_strength: 0.5,
             slot_memory: SECTIONS.iter().flat_map(|s| s.iter()).map(|slot| slot[0]).collect(),
             hidden: BTreeSet::new(),
             flyout: None,
@@ -523,6 +563,13 @@ pub fn draw_icon(p: &egui::Painter, r: Rect, t: Tool, col: Color32) {
             p.line_segment([c + vec2(-6.0, 6.0), c + vec2(7.0, -7.0)], Stroke::new(4.0_f32, col));
             p.add(poly(vec![c + vec2(-6.5, 3.5), c + vec2(-3.5, 6.5), c + vec2(-9.0, 9.0)], col, Stroke::NONE));
         }
+        Tool::RasterBrush => {
+            p.line_segment([c + vec2(-1.0, 1.0), c + vec2(8.0, -8.0)], Stroke::new(2.0_f32, col));
+            // a dabbed, grainy blob
+            for (d, r) in [(vec2(-4.0, 4.0), 3.2_f32), (vec2(-7.5, 6.5), 1.6), (vec2(-2.0, 8.0), 1.4), (vec2(-8.0, 1.5), 1.2), (vec2(-5.5, 9.5), 0.9)] {
+                p.circle_filled(c + d, r, col);
+            }
+        }
         Tool::Brush | Tool::FluidBrush => {
             p.line_segment([c + vec2(-1.0, 1.0), c + vec2(8.0, -8.0)], Stroke::new(2.0_f32, col));
             p.circle_filled(c + vec2(-4.0, 4.0), 4.5, col);
@@ -560,6 +607,46 @@ pub fn draw_icon(p: &egui::Painter, r: Rect, t: Tool, col: Color32) {
         Tool::AssetWarp => {
             p.circle_filled(c + vec2(0.0, -3.0), 4.0, col);
             p.line_segment([c + vec2(0.0, 1.0), c + vec2(0.0, 9.0)], s);
+        }
+        Tool::Magnet => {
+            // horseshoe magnet
+            let pts: Vec<_> = (0..=12).map(|i| { let a = std::f32::consts::PI * i as f32 / 12.0; c + vec2(a.cos() * 6.0, a.sin() * 6.0 + 0.0) }).collect();
+            p.add(egui::Shape::line(pts, Stroke::new(3.0_f32, col)));
+            p.line_segment([c + vec2(-6.0, 0.0), c + vec2(-6.0, -7.0)], Stroke::new(3.0_f32, col));
+            p.line_segment([c + vec2(6.0, 0.0), c + vec2(6.0, -7.0)], Stroke::new(3.0_f32, col));
+            p.line_segment([c + vec2(-7.5, -8.0), c + vec2(-4.5, -8.0)], thin);
+            p.line_segment([c + vec2(4.5, -8.0), c + vec2(7.5, -8.0)], thin);
+        }
+        Tool::Pinch => {
+            p.add(egui::Shape::line(vec![c + vec2(-10.0, 6.0), c + vec2(-4.0, 5.0), c + vec2(0.0, -6.0), c + vec2(4.0, 5.0), c + vec2(10.0, 6.0)], s));
+            p.circle_filled(c + vec2(0.0, -6.0), 2.2, col);
+        }
+        Tool::Pump => {
+            let pts: Vec<_> = (0..=16).map(|i| { let x = -10.0 + i as f32 * 1.25; c + vec2(x, 2.0) }).collect();
+            p.add(egui::Shape::line(pts, thin));
+            p.add(poly(vec![c + vec2(-6.0, 2.0), c + vec2(0.0, -3.0), c + vec2(6.0, 2.0), c + vec2(0.0, 7.0)], col, Stroke::NONE));
+            p.arrow(c + vec2(0.0, -4.0), vec2(0.0, -5.0), thin);
+        }
+        Tool::Bender => {
+            let pts: Vec<_> = (0..=12).map(|i| { let a = std::f32::consts::FRAC_PI_2 * i as f32 / 12.0; c + vec2(-8.0 + (1.0 - a.cos()) * 0.0 + a.sin() * 12.0, 8.0 - (1.0 - a.cos()) * 12.0) }).collect();
+            p.add(egui::Shape::line(pts, s));
+            p.line_segment([c + vec2(-3.0, -9.0), c + vec2(-3.0, 9.0)], Stroke::new(1.0_f32, col.gamma_multiply(0.6)));
+        }
+        Tool::Iron => {
+            p.add(poly(vec![c + vec2(-9.0, 4.0), c + vec2(7.0, 4.0), c + vec2(9.0, -1.0), c + vec2(1.0, -4.0), c + vec2(-6.0, -4.0)], col, Stroke::NONE));
+            p.line_segment([c + vec2(-3.0, -4.0), c + vec2(-1.0, -9.0)], s);
+            p.line_segment([c + vec2(-1.0, -9.0), c + vec2(6.0, -9.0)], s);
+            p.line_segment([c + vec2(-10.0, 8.0), c + vec2(10.0, 8.0)], thin);
+        }
+        Tool::Assistant => {
+            // a dashed mirror line between a stroke and its reflection
+            for k in 0..5 {
+                let y = -10.0 + k as f32 * 4.5;
+                p.line_segment([c + vec2(0.0, y), c + vec2(0.0, y + 2.5)], thin);
+            }
+            let arc = |sx: f32| -> Vec<egui::Pos2> { (0..=10).map(|i| { let a = -1.2 + i as f32 * 0.24; c + vec2(sx * (3.0 + a.cos() * 5.5), a.sin() * 8.0) }).collect() };
+            p.add(egui::Shape::line(arc(-1.0), s));
+            p.add(egui::Shape::line(arc(1.0), s));
         }
         Tool::Camera => {
             p.rect_stroke(Rect::from_center_size(c + vec2(-2.0, 1.0), vec2(14.0, 10.0)), 2.0, s);

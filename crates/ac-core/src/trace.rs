@@ -31,11 +31,35 @@ pub struct TraceOpts {
     pub min_area: u32,
     pub curve_fit: CurveFit,
     pub corners: Corners,
+    /// Outline: colour regions become fills. Centerline: dark line art
+    /// becomes lines along its middle (OpenToonz's centerline vectorizer).
+    pub mode: TraceMode,
+    /// Centerline: pixels darker than this (0–255 luminance) are ink.
+    pub line_threshold: u8,
+    /// Centerline: one width per line instead of following the ink's thickness.
+    pub uniform_width: bool,
 }
 
 impl Default for TraceOpts {
     fn default() -> TraceOpts {
-        TraceOpts { color_threshold: 100, min_area: 8, curve_fit: CurveFit::Normal, corners: Corners::Normal }
+        TraceOpts { color_threshold: 100, min_area: 8, curve_fit: CurveFit::Normal, corners: Corners::Normal, mode: TraceMode::Outline, line_threshold: 128, uniform_width: false }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum TraceMode {
+    #[default]
+    Outline,
+    Centerline,
+}
+
+impl TraceMode {
+    pub fn from_name(s: &str) -> Option<TraceMode> {
+        match s.to_ascii_lowercase().as_str() {
+            "outline" | "fills" => Some(TraceMode::Outline),
+            "centerline" | "centreline" | "lines" => Some(TraceMode::Centerline),
+            _ => None,
+        }
     }
 }
 
@@ -62,7 +86,7 @@ impl CurveFit {
         }
     }
     /// Simplification tolerance in pixels, and smoothing passes.
-    fn params(self) -> (f32, usize) {
+    pub(crate) fn params(self) -> (f32, usize) {
         match self {
             CurveFit::Pixels => (0.0, 0),
             CurveFit::VeryTight => (0.35, 1),
@@ -95,7 +119,7 @@ impl Corners {
         }
     }
     /// Turning angle (degrees) above which a vertex stays a sharp corner.
-    fn angle(self) -> f32 {
+    pub(crate) fn angle(self) -> f32 {
         match self {
             Corners::Many => 50.0,
             Corners::Normal => 75.0,
@@ -117,6 +141,9 @@ const NONE: u32 = u32::MAX;
 /// Trace premultiplied RGBA pixels (`w` × `h`) into fill regions, in pixel
 /// coordinates (0,0 = the bitmap's top-left).
 pub fn trace(rgba: &[u8], w: u32, h: u32, opts: &TraceOpts) -> MergeShape {
+    if opts.mode == TraceMode::Centerline {
+        return crate::centerline::trace(rgba, w, h, opts);
+    }
     let (w, h) = (w as usize, h as usize);
     if w == 0 || h == 0 || rgba.len() < w * h * 4 {
         return MergeShape::default();
@@ -426,7 +453,7 @@ fn border_chains(label: &[u32], w: usize, h: usize) -> Vec<Chain> {
 
 /// Smooth and simplify a chain; open chains keep their end points (shared
 /// junctions), and corners sharper than `corner_deg` stay sharp.
-fn simplify_chain(pts: &[Pt], closed: bool, tol: f32, passes: usize, corner_deg: f32) -> Vec<Pt> {
+pub(crate) fn simplify_chain(pts: &[Pt], closed: bool, tol: f32, passes: usize, corner_deg: f32) -> Vec<Pt> {
     if tol <= 0.0 {
         return merge_collinear(pts, closed);
     }

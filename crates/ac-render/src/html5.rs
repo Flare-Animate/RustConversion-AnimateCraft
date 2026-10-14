@@ -312,13 +312,13 @@ impl Tables {
                 }
                 let w = st.width.max(0.1);
                 match ss.dash {
-                    Dash::Solid | Dash::Ragged | Dash::Stipple | Dash::Hatched => {}
                     Dash::Dashed => {
                         let _ = write!(s, ",\"d\":[{},{}]", n((ss.dash_len * w).max(0.5)), n((ss.gap * w).max(0.5)));
                     }
                     Dash::Dotted => {
                         let _ = write!(s, ",\"d\":[0.01,{}]", n((ss.gap * w).max(w * 1.2)));
                     }
+                    _ => {}
                 }
             }
         }

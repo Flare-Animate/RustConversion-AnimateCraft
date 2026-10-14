@@ -617,8 +617,77 @@ impl Prop {
     }
 }
 
+/// How a property curve gets from a key to the next one: OpenToonz's
+/// keyframe types (`common/tparam/tdoubleparam.cpp`; BSD-3-Clause, © DWANGO
+/// and OpenToonz contributors). Stored on the key that starts the segment.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum Interp {
+    /// Smooth / corner point or Bezier handles (Animate's Motion Editor).
+    #[default]
+    Auto,
+    /// Hold the key's value until the next key (stepped).
+    Constant,
+    Linear,
+    /// Accelerate over `ease_in` frames, decelerate over the last `ease_out`.
+    EaseInOut { ease_in: f32, ease_out: f32 },
+    /// Same with percentages of the segment.
+    EaseInOutPct { ease_in: f32, ease_out: f32 },
+    /// Geometric progression (both values must be positive; else linear).
+    Exponential,
+    /// Any expression (see `expr.rs`), in the property's displayed units.
+    Expression { text: String },
+    /// The shape of an expression, scaled to run from this key's value to the next.
+    SimilarShape {
+        text: String,
+        #[serde(default)]
+        offset: f32,
+    },
+}
+
+impl Interp {
+    pub fn is_auto(&self) -> bool {
+        *self == Interp::Auto
+    }
+    pub const NAMES: [&'static str; 8] = ["Auto (smooth / corner / Bezier)", "Constant", "Linear", "Ease In/Out (frames)", "Ease In/Out (%)", "Exponential", "Expression", "Similar shape"];
+    pub fn index(&self) -> usize {
+        match self {
+            Interp::Auto => 0,
+            Interp::Constant => 1,
+            Interp::Linear => 2,
+            Interp::EaseInOut { .. } => 3,
+            Interp::EaseInOutPct { .. } => 4,
+            Interp::Exponential => 5,
+            Interp::Expression { .. } => 6,
+            Interp::SimilarShape { .. } => 7,
+        }
+    }
+    /// A fresh interpolation of type `i` (NAMES order); `seg` = segment length in frames.
+    pub fn of_index(i: usize, seg: f32) -> Interp {
+        match i {
+            1 => Interp::Constant,
+            2 => Interp::Linear,
+            3 => Interp::EaseInOut { ease_in: (seg / 3.0).round(), ease_out: (seg / 3.0).round() },
+            4 => Interp::EaseInOutPct { ease_in: 33.0, ease_out: 33.0 },
+            5 => Interp::Exponential,
+            6 => Interp::Expression { text: "v0 + (v1 - v0) * t".into() },
+            7 => Interp::SimilarShape { text: "sin(frame * 30)".into(), offset: 0.0 },
+            _ => Interp::Auto,
+        }
+    }
+    /// Script id.
+    pub fn id(&self) -> &'static str {
+        ["auto", "constant", "linear", "ease_in_out", "ease_in_out_pct", "exponential", "expression", "similar_shape"][self.index()]
+    }
+}
+
+/// Property names an expression may use (ids of the animatable properties).
+pub fn expr_props() -> Vec<String> {
+    Prop::ALL.into_iter().chain(Prop::EXTRA).map(|p| p.id()).collect()
+}
+
 /// A property keyframe. `frame` is relative to the tween span's start.
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct PropKey {
     pub frame: u32,
     pub value: f32,
@@ -629,11 +698,40 @@ pub struct PropKey {
     /// the key: `[in_df, in_dv, out_df, out_dv]`. Overrides `smooth`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub handles: Option<[f32; 4]>,
+    /// How the curve continues to the next key (OpenToonz keyframe types).
+    #[serde(default, skip_serializing_if = "Interp::is_auto")]
+    pub interp: Interp,
 }
 
 impl PropKey {
     pub fn new(frame: u32, value: f32, smooth: bool) -> PropKey {
-        PropKey { frame, value, smooth, handles: None }
+        PropKey { frame, value, smooth, handles: None, interp: Interp::Auto }
+    }
+}
+
+/// OpenToonz's ease in/out: constant acceleration over `e0` frames, constant
+/// speed, constant deceleration over the last `e1` (x3 = segment length).
+fn ease_in_out(x: f32, x3: f32, e0: f32, e1: f32) -> f32 {
+    if x3 <= 0.0 || x >= x3 {
+        return 1.0;
+    }
+    if x <= 0.0 {
+        return 0.0;
+    }
+    let (mut e0, mut e1) = (e0.max(0.0), e1.max(0.0));
+    if e0 + e1 >= x3 {
+        let m = ((e0 + x3 - e1) / 2.0).clamp(0.0, x3);
+        e0 = m;
+        e1 = x3 - m;
+    }
+    let (x1, x2) = (e0, x3 - e1);
+    let v = 2.0 / (x3 + x2 - x1);
+    if x < x1 {
+        0.5 * (v / e0) * x * x
+    } else if x > x2 {
+        1.0 - 0.5 * (v / e1) * (x3 - x) * (x3 - x)
+    } else {
+        x * v - 0.5 * v * e0
     }
 }
 
@@ -646,19 +744,60 @@ pub struct Track {
 
 impl Track {
     pub fn value_at(&self, f: f32) -> Option<f32> {
+        self.value_at_ctx(f, 1.0, &|_, _| None, 0)
+    }
+    /// The value at `f`; `scale` converts to the displayed units expressions
+    /// work in; `refs` gives other properties (displayed units, 1-based frame).
+    pub fn value_at_ctx(&self, f: f32, scale: f32, refs: &dyn Fn(&str, f64) -> Option<f64>, depth: u32) -> Option<f32> {
         let k = &self.keys;
         let first = k.first()?;
-        if f <= first.frame as f32 {
+        // (at the first key itself, an expression segment already applies)
+        if f < first.frame as f32 || k.len() == 1 || (f == first.frame as f32 && matches!(first.interp, Interp::Auto)) {
             return Some(first.value);
         }
-        let last = k[k.len() - 1];
+        let last = &k[k.len() - 1];
         if f >= last.frame as f32 {
             return Some(last.value);
         }
         let i = k.windows(2).position(|w| f >= w[0].frame as f32 && f <= w[1].frame as f32)?;
-        let (a, b) = (k[i], k[i + 1]);
+        let (a, b) = (&k[i], &k[i + 1]);
         let span = (b.frame - a.frame).max(1) as f32;
         let u = (f - a.frame as f32) / span;
+        let lerp = |w: f32| a.value + (b.value - a.value) * w;
+        let expr_at = |text: &str, fr: f32| -> Option<f32> {
+            let props = expr_props();
+            let names: Vec<&str> = props.iter().map(|s| s.as_str()).collect();
+            let e = crate::expr::Expr::parse(text, &names).ok()?;
+            let own = |fr1: f64| if depth < 8 { self.value_at_ctx(fr1 as f32 - 1.0, scale, refs, depth + 1).map(|v| (v * scale) as f64) } else { None };
+            let c = crate::expr::Ctx { frame: fr as f64 + 1.0, rframe: (fr - a.frame as f32) as f64 + 1.0, t: ((fr - a.frame as f32) / span) as f64, v0: (a.value * scale) as f64, v1: (b.value * scale) as f64, refs, own: &own };
+            Some(e.eval(&c) as f32 / scale.max(1e-9))
+        };
+        match &a.interp {
+            Interp::Auto => {}
+            Interp::Constant => return Some(a.value),
+            Interp::Linear => return Some(lerp(u)),
+            Interp::EaseInOut { ease_in, ease_out } => return Some(lerp(ease_in_out(f - a.frame as f32, span, *ease_in, *ease_out))),
+            Interp::EaseInOutPct { ease_in, ease_out } => return Some(lerp(ease_in_out(f - a.frame as f32, span, ease_in * span * 0.01, ease_out * span * 0.01))),
+            Interp::Exponential => {
+                let (mut va, mut vb, mut t) = (a.value, b.value, u);
+                if va <= 0.0 || vb <= 0.0 {
+                    return Some(lerp(u));
+                }
+                if vb < va {
+                    t = 1.0 - t;
+                    std::mem::swap(&mut va, &mut vb);
+                }
+                return Some(va * (t * (vb / va).ln()).exp());
+            }
+            Interp::Expression { text } => return Some(expr_at(text, f).unwrap_or_else(|| lerp(u))),
+            Interp::SimilarShape { text, offset } => {
+                let r = (expr_at(text, a.frame as f32 + offset), expr_at(text, b.frame as f32 + offset), expr_at(text, f + offset));
+                return Some(match r {
+                    (Some(r0), Some(r1), Some(rv)) if (r1 - r0).abs() > 1e-9 => a.value + (b.value - a.value) * (rv - r0) / (r1 - r0),
+                    _ => lerp(u),
+                });
+            }
+        }
         if a.handles.is_some() || b.handles.is_some() {
             // a cubic Bezier in (frame, value); solve frame → curve parameter
             let (o, n) = (self.handle(i, true), self.handle(i + 1, false));
@@ -690,8 +829,8 @@ impl Track {
                 // corner: aim at the neighbour on this segment
                 return (b.value - a.value) / span;
             }
-            let p = if j > 0 { k[j - 1] } else { k[j] };
-            let n = if j + 1 < k.len() { k[j + 1] } else { k[j] };
+            let p = if j > 0 { &k[j - 1] } else { &k[j] };
+            let n = if j + 1 < k.len() { &k[j + 1] } else { &k[j] };
             let df = (n.frame as f32 - p.frame as f32).max(1.0);
             (n.value - p.value) / df
         };
@@ -703,7 +842,7 @@ impl Track {
     /// its own, or the one a smooth/corner key implies.
     pub fn handle(&self, j: usize, out: bool) -> (f32, f32) {
         let k = &self.keys;
-        let key = k[j];
+        let key = &k[j];
         if let Some(h) = key.handles {
             return if out { (h[2], h[3]) } else { (h[0], h[1]) };
         }
@@ -711,8 +850,8 @@ impl Track {
         let Some(nb) = nb else { return (0.0, 0.0) };
         let df = (nb.frame as f32 - key.frame as f32) / 3.0;
         let slope = if key.smooth {
-            let p = if j > 0 { k[j - 1] } else { key };
-            let n = if j + 1 < k.len() { k[j + 1] } else { key };
+            let p = if j > 0 { &k[j - 1] } else { key };
+            let n = if j + 1 < k.len() { &k[j + 1] } else { key };
             (n.value - p.value) / (n.frame as f32 - p.frame as f32).max(1.0)
         } else {
             (nb.value - key.value) / (nb.frame as f32 - key.frame as f32)
@@ -954,6 +1093,29 @@ impl Motion {
         }
     }
 
+    /// A property's value at span frame `f` (no eases), with expressions able
+    /// to read the object's other properties.
+    pub fn prop_value(&self, base: &Pose, p: Prop, f: f32, depth: u32) -> Option<f32> {
+        match p {
+            Prop::X => return self.path_point(f).map(|q| q.x),
+            Prop::Y => return self.path_point(f).map(|q| q.y),
+            _ => {}
+        }
+        let t = self.track(p)?;
+        if t.keys.is_empty() {
+            return None;
+        }
+        let refs = |name: &str, frame1: f64| -> Option<f64> {
+            if depth >= 6 {
+                return None;
+            }
+            let q = Prop::from_id(name)?;
+            let v = self.prop_value(base, q, frame1 as f32 - 1.0, depth + 1).or_else(|| (!q.is_extra()).then(|| base.get(q)))?;
+            Some((v * q.display_scale()) as f64)
+        };
+        t.value_at_ctx(f, p.display_scale(), &refs, depth)
+    }
+
     fn eased_frame(&self, local: f32, len: u32, ease: Option<&Ease>, simple: f32) -> f32 {
         let len = len.max(1) as f32 - 1.0;
         if len <= 0.0 {
@@ -971,9 +1133,8 @@ impl Motion {
             p.pos = pos;
         }
         for prop in [Prop::Rotation, Prop::Skew, Prop::ScaleX, Prop::ScaleY, Prop::Alpha, Prop::Brightness] {
-            let t = self.track(prop).unwrap();
             let f = self.eased_frame(local, len, self.ease_of(prop, span_ease), simple);
-            if let Some(v) = t.value_at(f) {
+            if let Some(v) = self.prop_value(base, prop, f, 0) {
                 p.set(prop, v);
             }
         }
@@ -986,9 +1147,10 @@ impl Motion {
 
     /// Write the 3D / tint / filter tracks onto the posed element.
     pub fn apply_extra(&self, el: &mut crate::model::Element, local: f32, len: u32, simple: f32, span_ease: Option<&Ease>) {
+        let base = Pose::of(el, self.pivot);
         for (p, t) in &self.extra {
             let f = self.eased_frame(local, len, t.ease.as_ref().or(span_ease), simple);
-            if let Some(v) = t.value_at(f) {
+            if let Some(v) = self.prop_value(&base, *p, f, 0) {
                 p.write(el, v);
             }
         }
@@ -1246,7 +1408,7 @@ impl Motion {
             let t = self.track_mut(prop).unwrap();
             let mut nt = Track { keys: vec![], ease: t.ease.clone() };
             if !t.keys.is_empty() {
-                nt.keys = t.keys.iter().filter(|k| k.frame > at).map(|k| PropKey { frame: k.frame - at, ..*k }).collect();
+                nt.keys = t.keys.iter().filter(|k| k.frame > at).map(|k| PropKey { frame: k.frame - at, ..k.clone() }).collect();
                 nt.keys.insert(0, PropKey::new(0, pose.get(prop), false));
                 t.keys.retain(|k| k.frame < at);
                 t.set(at, pose.get(prop));
@@ -1256,7 +1418,7 @@ impl Motion {
         for (p, t) in &mut self.extra {
             let mut nt = Track { keys: vec![], ease: t.ease.clone() };
             if let Some(v) = t.value_at(at as f32) {
-                nt.keys = t.keys.iter().filter(|k| k.frame > at).map(|k| PropKey { frame: k.frame - at, ..*k }).collect();
+                nt.keys = t.keys.iter().filter(|k| k.frame > at).map(|k| PropKey { frame: k.frame - at, ..k.clone() }).collect();
                 nt.keys.insert(0, PropKey::new(0, v, false));
                 t.keys.retain(|k| k.frame < at);
                 t.set(at, v);

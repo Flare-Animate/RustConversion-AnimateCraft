@@ -34,7 +34,7 @@ pub(crate) fn b64_de<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<u8>, D::Erro
 }
 
 /// Decoded, premultiplied RGBA pixels (tiny-skia's layout).
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct Image {
     pub width: u32,
     pub height: u32,
@@ -74,6 +74,9 @@ impl BitmapAsset {
 
     /// Decoded pixels (cached across frames and undo snapshots).
     pub fn image(&self) -> Option<Arc<Image>> {
+        if let Some(live) = live_pixels(self.id) {
+            return Some(live);
+        }
         type Cache = Mutex<HashMap<(u32, usize, u64), Arc<Image>>>;
         static CACHE: OnceLock<Cache> = OnceLock::new();
         let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
@@ -89,6 +92,29 @@ impl BitmapAsset {
         c.insert(k, img.clone());
         Some(img)
     }
+}
+
+type Live = Mutex<HashMap<BitmapId, Arc<Image>>>;
+fn live() -> &'static Live {
+    static LIVE: OnceLock<Live> = OnceLock::new();
+    LIVE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+/// While a raster brush stroke is in progress its bitmap shows these pixels
+/// (no PNG round trip per mouse move); `None` ends the override.
+pub fn set_live_pixels(id: BitmapId, img: Option<Arc<Image>>) {
+    if let Ok(mut m) = live().lock() {
+        match img {
+            Some(i) => {
+                m.insert(id, i);
+            }
+            None => {
+                m.remove(&id);
+            }
+        }
+    }
+}
+fn live_pixels(id: BitmapId) -> Option<Arc<Image>> {
+    live().lock().ok()?.get(&id).cloned()
 }
 
 fn decode_png(bytes: &[u8], smoothing: bool) -> Option<Image> {

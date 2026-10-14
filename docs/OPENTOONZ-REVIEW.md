@@ -12,6 +12,20 @@ art/pattern brushes, raster painting, PSD import, better lip-sync and IK, a
 fuller curve editor, drawing guides, particles). The exposure-sheet/level
 model, the render farm, scanning and Qt UI code are not worth taking.
 
+## Status (October 2026)
+
+Ported or rebuilt in AnimationCraft, each with tests and a devlog entry:
+#1 Trace Bitmap (outline and centerline), #2 Magic Wand, #3 stroke styles
+(13 OpenToonz styles), #4 raster painting (MyPaint brushes through the
+pure-Rust `hokusai` port), #5 Rhubarb lip sync, #6 curve keyframe types and
+expressions, #7 joint limits (the solver is still CCD), #9 drawing assistants
+and symmetry, #10 vector deformation tools, #11 PSD import, #14 Shift & Trace,
+#15 XDTS export. Still open: damped-least-squares IK and pinned joints (#7),
+mesh deformation of bitmaps/symbols (#8), particles (#12), more effects (#13,
+partly covered by EffectCraft), XDTS import and PDF timing sheets (#15), extra
+image formats (#16), perspective/fisheye assistants and the jitter/affine
+replicators (#9).
+
 ## 1. What Flare is made of
 
 C++/C lines, excluding `thirdparty/` (≈670k lines of bundled libraries).

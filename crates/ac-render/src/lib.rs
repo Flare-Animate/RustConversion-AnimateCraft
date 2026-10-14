@@ -168,9 +168,9 @@ fn sk_stroke(width: f32, st: &ac_core::StrokeStyle) -> sk::Stroke {
         Join::Bevel => sk::LineJoin::Bevel,
     };
     let dash = match st.dash {
-        Dash::Solid | Dash::Ragged | Dash::Stipple | Dash::Hatched => None,
         Dash::Dashed => sk::StrokeDash::new(vec![(st.dash_len * w).max(0.5), (st.gap * w).max(0.5)], 0.0),
         Dash::Dotted => sk::StrokeDash::new(vec![0.01, (st.gap * w).max(w * 1.2)], 0.0),
+        _ => None,
     };
     sk::Stroke { width: w, line_cap, line_join, dash, ..Default::default() }
 }
@@ -667,9 +667,9 @@ impl SvgWriter<'_> {
                             Join::Bevel => "bevel",
                         };
                         let dash = match st.dash {
-                            Dash::Solid | Dash::Ragged | Dash::Stipple | Dash::Hatched => String::new(),
                             Dash::Dashed => format!(" stroke-dasharray=\"{} {}\"", st.dash_len * s.width, st.gap * s.width),
                             Dash::Dotted => format!(" stroke-dasharray=\"0.01 {}\"", (st.gap * s.width).max(s.width * 1.2)),
+                            _ => String::new(),
                         };
                         format!(" stroke=\"{h}\" stroke-opacity=\"{a:.3}\" stroke-width=\"{}\" stroke-linecap=\"{cap}\" stroke-linejoin=\"{join}\"{dash}", s.width)
                     }

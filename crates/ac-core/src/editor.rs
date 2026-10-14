@@ -997,6 +997,14 @@ impl Editor {
         Some(el)
     }
     /// The first selected element (drives the Properties panel).
+    /// Stroke style of the selected drawing object, if one is selected.
+    pub fn selected_shape_dash(&self) -> Option<Dash> {
+        match self.selected_element()?.kind {
+            ElementKind::Shape(s) => Some(s.stroke_style.dash),
+            _ => None,
+        }
+    }
+
     pub fn selected_element(&self) -> Option<Element> {
         self.element_at(*self.selection.first()?)
     }
@@ -1661,7 +1669,7 @@ impl Editor {
             let Some(img) = self.doc.bitmap(b.bitmap).and_then(|a| a.image()) else { continue };
             let mut piece = crate::trace::trace(&img.rgba, img.width, img.height, opts);
             piece.transform(&el.matrix);
-            made += piece.fills.len();
+            made += piece.fills.len() + piece.strokes.len();
             let Some(key) = self.target_keyframe(s.layer, false) else { continue };
             let els = &mut self.timeline_mut().layers[s.layer].keyframes.get_mut(&key).unwrap().elements;
             if s.element < els.len() {
@@ -2142,8 +2150,11 @@ impl Editor {
     }
     /// Stage → canvas coordinates on `layer`.
     fn canvas_inv(&self, layer: usize) -> Matrix {
-        let (_, ei) = self.canvas_at(layer).unwrap_or((0, 0));
-        self.element_at(Selection { layer, element: ei }).and_then(|e| e.matrix.invert()).unwrap_or(Matrix::IDENTITY)
+        // the keyframe's own element (an evaluated tween frame may order elements differently)
+        let Some((k, ei)) = self.canvas_at(layer) else { return Matrix::IDENTITY };
+        let Some(el) = self.timeline().layers[layer].keyframes.get(&k).and_then(|kf| kf.elements.get(ei)) else { return Matrix::IDENTITY };
+        let pm = self.layer_parent_at(layer).unwrap_or(Matrix::IDENTITY);
+        pm.concat(&el.matrix).invert().unwrap_or(Matrix::IDENTITY)
     }
     // ---- Width tool on merge-shape lines
     /// A merge-shape line near stage point `p` (within `tol` + half its width):
@@ -3006,10 +3017,24 @@ impl Editor {
         let (els, _) = layer_elements_at(l, self.frame).ok_or("nothing on this frame")?;
         let pm = els.get(parent).ok_or("no such object")?.matrix.invert().ok_or("object has no size")?;
         let cm = els.get(child).ok_or("no such object")?.matrix.invert().ok_or("object has no size")?;
-        let bone = Bone { parent, child, head: pm.apply(head), tail_parent: pm.apply(tail), tail_child: cm.apply(tail) };
+        let rest = Bone::relative_angle(&els, parent, child).unwrap_or(0.0);
+        let bone = Bone { parent, child, head: pm.apply(head), tail_parent: pm.apply(tail), tail_child: cm.apply(tail), rotate: true, limit: None, rest };
         self.checkpoint("Add Bone");
         self.timeline_mut().layers[layer].bones.push(bone);
         Ok(())
+    }
+
+    /// Joint settings of the bone that attaches `child`: rotation on/off and limits.
+    pub fn set_joint(&mut self, layer: usize, child: usize, rotate: bool, limit: Option<(f32, f32)>) -> bool {
+        if !self.bones(layer).iter().any(|b| b.child == child) {
+            return false;
+        }
+        self.checkpoint("Joint");
+        if let Some(b) = self.timeline_mut().layers[layer].bones.iter_mut().find(|b| b.child == child) {
+            b.rotate = rotate;
+            b.limit = limit.map(|(lo, hi)| (lo.min(0.0), hi.max(0.0)));
+        }
+        true
     }
 
     /// Remove the bone that attaches `child` to its parent.
@@ -3072,6 +3097,14 @@ impl Editor {
                     }
                     if eff.dist(j) < 1e-3 {
                         continue;
+                    }
+                    // joint constraints (enable / rotation limits)
+                    if let Some(b) = bones.iter().find(|b| b.child == x) {
+                        let rel = Bone::relative_angle(&els, b.parent, x).unwrap_or(0.0);
+                        d = b.allowed_turn(rel, d.to_degrees()).to_radians();
+                        if d.abs() < 1e-7 {
+                            continue;
+                        }
                     }
                     let r = Matrix::translate(j.x, j.y).concat(&Matrix::rotate(d)).concat(&Matrix::translate(-j.x, -j.y));
                     for y in Self::bone_subtree(&bones, x) {
@@ -3844,4 +3877,437 @@ pub enum LayerFlag {
 
 fn letters_is_shape(parts: &[Element]) -> bool {
     parts.len() == 1 && matches!(parts[0].kind, ElementKind::Shape(_))
+}
+
+// ------------------------------------------------------------ deformation tools (OpenToonz)
+
+/// An element being deformed: where it lives, stage → local, and its geometry
+/// when the gesture started.
+#[derive(Clone, Debug)]
+pub struct SculptTarget {
+    pub layer: usize,
+    pub key: u32,
+    pub ei: usize,
+    pub inv: Matrix,
+    /// Stage units → local units.
+    pub k: f32,
+    pub base: ElementKind,
+}
+
+/// A Magnet / Pinch / Pump / Bender / Iron gesture in progress.
+#[derive(Clone, Debug)]
+pub struct Sculpt {
+    pub kind: crate::sculpt::Kind,
+    pub opts: crate::sculpt::Opts,
+    pub from: Pt,
+    pub last: Pt,
+    pub tol: f32,
+    pub targets: Vec<SculptTarget>,
+    /// Bender: the segment drawn across the lines, and the side being rotated.
+    pub seg: Option<(Pt, Pt)>,
+    pub versus: f32,
+    pub started: bool,
+}
+
+fn kind_lines(kind: &ElementKind) -> Vec<(Vec<Pt>, bool)> {
+    match kind {
+        ElementKind::Shape(s) => s.path.flatten(12),
+        ElementKind::Canvas(c) => {
+            let mut v: Vec<(Vec<Pt>, bool)> = c.strokes.iter().map(|s| (s.pts.clone(), s.closed)).collect();
+            v.extend(c.fills.iter().flat_map(|r| r.contours.iter().map(|c| (c.clone(), true))));
+            v
+        }
+        _ => vec![],
+    }
+}
+
+fn lines_dist(lines: &[(Vec<Pt>, bool)], p: Pt) -> f32 {
+    let mut best = f32::MAX;
+    for (pts, closed) in lines {
+        let n = pts.len();
+        if n == 1 {
+            best = best.min(pts[0].dist(p));
+        }
+        let segs = if *closed { n } else { n.saturating_sub(1) };
+        for i in 0..segs {
+            let (a, b) = (pts[i], pts[(i + 1) % n]);
+            let (dx, dy) = (b.x - a.x, b.y - a.y);
+            let l2 = dx * dx + dy * dy;
+            let t = if l2 > 1e-12 { (((p.x - a.x) * dx + (p.y - a.y) * dy) / l2).clamp(0.0, 1.0) } else { 0.0 };
+            best = best.min(p.dist(a.lerp(b, t)));
+        }
+    }
+    best
+}
+
+fn lines_cross(lines: &[(Vec<Pt>, bool)], a: Pt, b: Pt) -> bool {
+    let cr = |o: Pt, p: Pt, q: Pt| (p.x - o.x) * (q.y - o.y) - (p.y - o.y) * (q.x - o.x);
+    lines.iter().any(|(pts, closed)| {
+        let n = pts.len();
+        let segs = if *closed { n } else { n.saturating_sub(1) };
+        (0..segs).any(|i| {
+            let (c, d) = (pts[i], pts[(i + 1) % n]);
+            (cr(a, b, c) > 0.0) != (cr(a, b, d) > 0.0) && (cr(c, d, a) > 0.0) != (cr(c, d, b) > 0.0)
+        })
+    })
+}
+
+impl Editor {
+    /// Deformable elements (drawing objects without bones, merge shapes) on
+    /// `li` at the playhead's keyframe.
+    fn sculpt_candidates(&self, li: usize) -> Vec<SculptTarget> {
+        let Some(l) = self.timeline().layers.get(li) else { return vec![] };
+        let Some((key, kf, _)) = l.span_at(self.frame) else { return vec![] };
+        let pm = self.layer_parent_at(li).unwrap_or(Matrix::IDENTITY);
+        let mut out = vec![];
+        for (ei, el) in kf.elements.iter().enumerate() {
+            let ok = match &el.kind {
+                ElementKind::Shape(s) => s.rig.as_ref().map(|r| r.bones.is_empty()).unwrap_or(true),
+                ElementKind::Canvas(_) => true,
+                _ => false,
+            };
+            let Some(inv) = pm.concat(&el.matrix).invert() else { continue };
+            if ok {
+                let k = (inv.a * inv.d - inv.b * inv.c).abs().sqrt().max(1e-6);
+                out.push(SculptTarget { layer: li, key, ei, inv, k, base: el.kind.clone() });
+            }
+        }
+        out
+    }
+
+    /// Start a deformation at stage point `p`. `tol` is the pick distance for
+    /// Pinch/Pump (stage units); `seg` is the Bender's segment.
+    pub fn sculpt_begin(&mut self, kind: crate::sculpt::Kind, p: Pt, opts: crate::sculpt::Opts, tol: f32, seg: Option<(Pt, Pt)>) -> Option<Sculpt> {
+        use crate::sculpt::Kind;
+        self.commit_floats();
+        let layers: Vec<usize> = (0..self.timeline().layers.len()).filter(|li| self.layer_editable(*li) && self.timeline().layers[*li].visible).collect();
+        let mut targets = vec![];
+        match kind {
+            Kind::Pinch | Kind::Pump => {
+                // the nearest line on the topmost layer that has one
+                for li in layers {
+                    let mut best: Option<(f32, SculptTarget)> = None;
+                    for t in self.sculpt_candidates(li) {
+                        if kind == Kind::Pump && matches!(&t.base, ElementKind::Shape(s) if s.stroke.is_none()) {
+                            continue;
+                        }
+                        let lines = match (&t.base, kind) {
+                            (ElementKind::Canvas(c), Kind::Pump) => c.strokes.iter().map(|s| (s.pts.clone(), s.closed)).collect(),
+                            (k, _) => kind_lines(k),
+                        };
+                        let d = lines_dist(&lines, t.inv.apply(p)) / t.k;
+                        if d <= tol && best.as_ref().map(|b| d < b.0).unwrap_or(true) {
+                            best = Some((d, t));
+                        }
+                    }
+                    if let Some((_, t)) = best {
+                        targets.push(t);
+                        break;
+                    }
+                }
+            }
+            Kind::Magnet | Kind::Iron => {
+                // everything within reach on the topmost layer that has something there
+                for li in layers {
+                    let near: Vec<SculptTarget> = self.sculpt_candidates(li).into_iter().filter(|t| lines_dist(&kind_lines(&t.base), t.inv.apply(p)) / t.k <= opts.size).collect();
+                    if !near.is_empty() {
+                        targets = near;
+                        break;
+                    }
+                }
+            }
+            Kind::Bender => {
+                let (a, b) = seg?;
+                for li in layers {
+                    let hit: Vec<SculptTarget> = self.sculpt_candidates(li).into_iter().filter(|t| lines_cross(&kind_lines(&t.base), t.inv.apply(a), t.inv.apply(b))).collect();
+                    if !hit.is_empty() {
+                        targets = hit;
+                        break;
+                    }
+                }
+            }
+        }
+        if targets.is_empty() {
+            return None;
+        }
+        let versus = match seg {
+            Some((a, b)) => {
+                let c = (b.x - a.x) * (p.y - a.y) - (b.y - a.y) * (p.x - a.x);
+                if c >= 0.0 { 1.0 } else { -1.0 }
+            }
+            None => 1.0,
+        };
+        Some(Sculpt { kind, opts, from: p, last: p, tol, targets, seg, versus, started: false })
+    }
+
+    /// Continue the gesture at `p` (one undo step for the whole drag).
+    pub fn sculpt_drag(&mut self, s: &mut Sculpt, p: Pt) {
+        use crate::sculpt::{self as sc, Kind};
+        if !s.started {
+            if p.dist(s.from) < 0.5 && s.kind != Kind::Iron {
+                return;
+            }
+            self.checkpoint(s.kind.name());
+            s.started = true;
+        } else {
+            self.revision += 1;
+        }
+        for t in &s.targets {
+            let (from, cur) = (t.inv.apply(s.from), t.inv.apply(p));
+            let delta = pt(cur.x - from.x, cur.y - from.y);
+            let size = s.opts.size * t.k;
+            let current = self.timeline().layers.get(t.layer).and_then(|l| l.keyframes.get(&t.key)).and_then(|kf| kf.elements.get(t.ei)).map(|e| e.kind.clone());
+            let new = match (&t.base, s.kind) {
+                (ElementKind::Shape(sh), _) => {
+                    let mut sh2 = sh.clone();
+                    match s.kind {
+                        Kind::Magnet => sh2.path = sc::magnet_path(&sh.path, from, size, delta),
+                        Kind::Pinch => match sc::pinch_path(&sh.path, from, s.tol * t.k, size, s.opts.sharp, delta) {
+                            Some(path) => sh2.path = path,
+                            None => continue,
+                        },
+                        Kind::Pump => {
+                            let Some((t0, _)) = crate::deform::nearest_t(&sh.path, from) else { continue };
+                            let len: f32 = sh.path.flatten(12).iter().map(|(v, c)| {
+                                let mut l: f32 = v.windows(2).map(|w| w[0].dist(w[1])).sum();
+                                if *c && v.len() > 1 {
+                                    l += v[0].dist(v[v.len() - 1]);
+                                }
+                                l
+                            }).sum();
+                            sh2.width_profile = Some(sc::pump_profile(sh.width_profile.as_deref(), t0, size / len.max(1.0), sc::pump_factor(p.y - s.from.y)));
+                        }
+                        Kind::Bender => {
+                            let Some((a, b)) = s.seg else { continue };
+                            let (la, lb) = (t.inv.apply(a), t.inv.apply(b));
+                            let ang = |q: Pt| (q.y - la.y).atan2(q.x - la.x);
+                            let mut angle = ang(cur) - ang(from);
+                            while angle > std::f32::consts::PI {
+                                angle -= std::f32::consts::TAU;
+                            }
+                            while angle < -std::f32::consts::PI {
+                                angle += std::f32::consts::TAU;
+                            }
+                            let dir = pt(lb.x - la.x, lb.y - la.y);
+                            let side = dir.x * (from.y - la.y) - dir.y * (from.x - la.x);
+                            let bm = sc::BendMap { p0: la, dir, versus: if side >= 0.0 { 1.0 } else { -1.0 }, angle, band: sc::BENDER_BAND * t.k };
+                            sh2.path = sc::bend_path(&sh.path, la, lb, &bm);
+                        }
+                        Kind::Iron => {
+                            let Some(ElementKind::Shape(c)) = &current else { continue };
+                            let mut c = c.clone();
+                            c.path = sc::iron_path(&c.path, cur, size, s.opts.strength);
+                            c.primitive = None;
+                            c.warp = None;
+                            if let Some(slot) = self.sculpt_slot(t) {
+                                *slot = ElementKind::Shape(c);
+                            }
+                            continue;
+                        }
+                    }
+                    if s.kind != Kind::Pump {
+                        sh2.primitive = None;
+                        sh2.warp = None;
+                    }
+                    ElementKind::Shape(sh2)
+                }
+                (ElementKind::Canvas(m), _) => match s.kind {
+                    Kind::Magnet => ElementKind::Canvas(sc::magnet_merge(m, from, size, delta)),
+                    Kind::Pinch => match sc::pinch_merge(m, from, s.tol * t.k, size, s.opts.sharp, delta) {
+                        Some(m2) => ElementKind::Canvas(m2),
+                        None => continue,
+                    },
+                    Kind::Pump => {
+                        let mut m2 = m.clone();
+                        let best = m2.strokes.iter().enumerate().map(|(i, e)| (lines_dist(&[(e.pts.clone(), e.closed)], from), i)).min_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+                        let Some((_, i)) = best else { continue };
+                        let e = &mut m2.strokes[i];
+                        let t0 = e.t_of(from);
+                        let mut l: f32 = e.pts.windows(2).map(|w| w[0].dist(w[1])).sum();
+                        if e.closed && e.pts.len() > 1 {
+                            l += e.pts[0].dist(e.pts[e.pts.len() - 1]);
+                        }
+                        e.width = Some(sc::pump_profile(e.width.as_deref(), t0, size / l.max(1.0), sc::pump_factor(p.y - s.from.y)));
+                        ElementKind::Canvas(m2)
+                    }
+                    Kind::Bender => {
+                        let Some((a, b)) = s.seg else { continue };
+                        let (la, lb) = (t.inv.apply(a), t.inv.apply(b));
+                        let ang = |q: Pt| (q.y - la.y).atan2(q.x - la.x);
+                        let mut angle = ang(cur) - ang(from);
+                        while angle > std::f32::consts::PI {
+                            angle -= std::f32::consts::TAU;
+                        }
+                        while angle < -std::f32::consts::PI {
+                            angle += std::f32::consts::TAU;
+                        }
+                        let dir = pt(lb.x - la.x, lb.y - la.y);
+                        let side = dir.x * (from.y - la.y) - dir.y * (from.x - la.x);
+                        let bm = sc::BendMap { p0: la, dir, versus: if side >= 0.0 { 1.0 } else { -1.0 }, angle, band: sc::BENDER_BAND * t.k };
+                        ElementKind::Canvas(sc::bend_merge(m, la, lb, &bm))
+                    }
+                    Kind::Iron => {
+                        let Some(ElementKind::Canvas(c)) = &current else { continue };
+                        ElementKind::Canvas(sc::iron_merge(c, cur, size, s.opts.strength))
+                    }
+                },
+                _ => continue,
+            };
+            if let Some(slot) = self.sculpt_slot(t) {
+                *slot = new;
+            }
+        }
+        s.last = p;
+    }
+
+    fn sculpt_slot(&mut self, t: &SculptTarget) -> Option<&mut ElementKind> {
+        Some(&mut self.timeline_mut().layers.get_mut(t.layer)?.keyframes.get_mut(&t.key)?.elements.get_mut(t.ei)?.kind)
+    }
+
+    /// Finish the gesture: merge shapes re-resolve overlapping fills.
+    pub fn sculpt_end(&mut self, s: &Sculpt) {
+        if !s.started {
+            return;
+        }
+        for t in &s.targets {
+            if let Some(ElementKind::Canvas(c)) = self.sculpt_slot(t) {
+                c.resolve();
+            }
+        }
+        self.revision += 1;
+    }
+}
+
+// ------------------------------------------------------------ drawing assistants (OpenToonz)
+impl Editor {
+    pub fn add_assistant(&mut self, a: crate::assist::Assistant) -> usize {
+        self.checkpoint(&format!("Add {} Assistant", a.name()));
+        self.doc.assistants.push(a);
+        self.doc.assistants.len() - 1
+    }
+    /// Replace assistant `i`; `first` makes the undo step (drags pass false after).
+    pub fn set_assistant(&mut self, i: usize, a: crate::assist::Assistant, first: bool) {
+        if i >= self.doc.assistants.len() {
+            return;
+        }
+        if first {
+            self.checkpoint("Edit Assistant");
+        } else {
+            self.revision += 1;
+        }
+        self.doc.assistants[i] = a;
+    }
+    pub fn remove_assistant(&mut self, i: usize) -> bool {
+        if i >= self.doc.assistants.len() {
+            return false;
+        }
+        self.checkpoint("Delete Assistant");
+        self.doc.assistants.remove(i);
+        true
+    }
+}
+
+// ------------------------------------------------------------ raster painting (MyPaint brushes)
+
+/// A Raster Brush stroke in progress.
+pub struct PaintSession {
+    pub layer: usize,
+    pub key: u32,
+    pub ei: usize,
+    pub bitmap: crate::bitmap::BitmapId,
+    /// Stage → bitmap pixels.
+    pub inv: Matrix,
+    pub stroke: crate::paint::PaintStroke,
+    img: crate::bitmap::Image,
+    /// A new paint bitmap was made for this stroke.
+    pub created: bool,
+}
+
+impl Editor {
+    /// Start a Raster Brush stroke at stage point `p` on the current layer: it
+    /// paints into the bitmap under the point, or into a new stage-sized
+    /// transparent bitmap on this keyframe. A bitmap used elsewhere is copied
+    /// first, so frame-by-frame painting never changes other frames.
+    pub fn paint_begin(&mut self, p: Pt, preset: &crate::paint::Preset, opts: &crate::paint::PaintOpts) -> Result<PaintSession, String> {
+        let li = self.layer;
+        if !self.layer_editable(li) {
+            return Err("the current layer is locked or hidden".into());
+        }
+        self.commit_floats();
+        self.checkpoint(if opts.eraser { "Raster Eraser" } else { "Raster Brush" });
+        let key = self.target_keyframe(li, false).ok_or("can't paint on this layer")?;
+        let pm = self.layer_parent_at(li).unwrap_or(Matrix::IDENTITY);
+        // the topmost bitmap under the point
+        let found = {
+            let kf = &self.timeline().layers[li].keyframes[&key];
+            kf.elements.iter().enumerate().rev().find_map(|(i, e)| {
+                let ElementKind::Bitmap(b) = &e.kind else { return None };
+                let a = self.doc.bitmap(b.bitmap)?;
+                let q = pm.concat(&e.matrix).invert()?.apply(p);
+                (q.x >= 0.0 && q.y >= 0.0 && q.x < a.width as f32 && q.y < a.height as f32).then_some((i, b.bitmap))
+            })
+        };
+        let (ei, mut id, created) = match found {
+            Some((i, id)) => (i, id, false),
+            None => {
+                let (w, h) = (self.doc.width.round().max(1.0) as u32, self.doc.height.round().max(1.0) as u32);
+                let n = self.doc.bitmaps.iter().filter(|b| b.name.starts_with("Paint ")).count() + 1;
+                let mut asset = crate::bitmap::BitmapAsset::from_rgba(0, &format!("Paint {n}"), w, h, &vec![0; (w * h * 4) as usize])?;
+                asset.id = self.doc.next_bitmap_id();
+                let id = asset.id;
+                self.doc.bitmaps.push(asset);
+                let inv_pm = pm.invert().unwrap_or(Matrix::IDENTITY);
+                let el = Element::bitmap("", id, inv_pm);
+                let kf = self.timeline_mut().layers[li].keyframes.get_mut(&key).ok_or("no keyframe")?;
+                kf.elements.push(el);
+                (kf.elements.len() - 1, id, true)
+            }
+        };
+        if !created && self.bitmap_usage(id) > 1 {
+            // copy on write
+            let mut copy = self.doc.bitmap(id).cloned().ok_or("missing bitmap")?;
+            copy.id = self.doc.next_bitmap_id();
+            copy.name = format!("{} copy", copy.name);
+            let new_id = copy.id;
+            self.doc.bitmaps.push(copy);
+            if let Some(ElementKind::Bitmap(b)) = self.timeline_mut().layers[li].keyframes.get_mut(&key).and_then(|kf| kf.elements.get_mut(ei)).map(|e| &mut e.kind) {
+                b.bitmap = new_id;
+            }
+            id = new_id;
+        }
+        let el = self.timeline().layers[li].keyframes[&key].elements[ei].clone();
+        let inv = pm.concat(&el.matrix).invert().ok_or("the bitmap has no size")?;
+        let img = (*self.doc.bitmap(id).and_then(|a| a.image()).ok_or("can't read the bitmap")?).clone();
+        let stroke = crate::paint::PaintStroke::new(&img, preset, opts)?;
+        self.selection.clear();
+        Ok(PaintSession { layer: li, key, ei, bitmap: id, inv, stroke, img, created })
+    }
+
+    /// Continue the stroke to stage point `p`.
+    pub fn paint_to(&mut self, s: &mut PaintSession, p: Pt, pressure: Option<f32>, dtime: f64) {
+        let q = s.inv.apply(p);
+        if s.stroke.to(q.x, q.y, pressure, dtime) {
+            s.stroke.write_into(&mut s.img);
+            crate::bitmap::set_live_pixels(s.bitmap, Some(std::sync::Arc::new(s.img.clone())));
+            self.revision += 1;
+        }
+    }
+
+    /// Finish: the painted pixels become the bitmap's PNG.
+    pub fn paint_end(&mut self, s: PaintSession) {
+        crate::bitmap::set_live_pixels(s.bitmap, None);
+        if s.stroke.dirty.is_none() {
+            // nothing painted: drop the empty step (and any bitmap/keyframe it made)
+            self.undo();
+            self.redo.clear();
+            return;
+        }
+        let rgba = crate::paint::unpremultiply(&s.img);
+        if let Ok(a) = crate::bitmap::BitmapAsset::from_rgba(s.bitmap, "", s.img.width, s.img.height, &rgba) {
+            if let Some(b) = self.doc.bitmaps.iter_mut().find(|b| b.id == s.bitmap) {
+                b.png = a.png;
+            }
+        }
+        self.revision += 1;
+    }
 }

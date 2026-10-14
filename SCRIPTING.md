@@ -232,6 +232,59 @@ ac.shape_bone.add({ x1: 385, y1: 172, x2: 460, y2: 172 });  // inside a drawing 
 ac.shape_bone.pose({ x: 460, y: 172, to_x: 430, to_y: 240 });
 ```
 
+### OpenToonz features: styles, deformers, assistants, painting, expressions
+
+```js
+// stroke styles with their parameters (names as in Properties; `selection.stroke_style` lists them on error)
+ac.selection.stroke_style({ dash: "rope", params: { tilt: 0.8 }, colors: ["#402000"] });
+ac.selection.stroke_style({ dash: "zigzag", params: { "min distance": 2, "max distance": 8, thickness: 1.5 } });
+// herringbone | chain | circlets | scratchy | rope | tulle | plait | fuzz | bubbles | jagged | zigzag | wave | curl
+
+// deformation tools: one drag from (x, y) to (to_x, to_y); size = radius / reach in px
+ac.shape.deform({ tool: "magnet", x: 200, y: 150, to_x: 200, to_y: 110, size: 40 });
+ac.shape.deform({ tool: "pinch", x: 300, y: 150, to_x: 300, to_y: 190, size: 30, sharp: true });
+ac.shape.deform({ tool: "pump", x: 120, y: 150, to_x: 120, to_y: 110, size: 25 });     // up = thicker
+ac.shape.deform({ tool: "iron", x: 100, y: 150, to_x: 300, to_y: 150, size: 30, strength: 0.6 });
+// bender: (x, y)–(x2, y2) is the segment across the lines; the drag turns what lies on its side
+ac.shape.deform({ tool: "bender", x: 400, y: 120, x2: 400, y2: 180, from_x: 440, from_y: 150, to_x: 400, to_y: 230 });
+
+// drawing assistants (stored in the document); draw.path with assist:true goes through them
+ac.assistant.add({ type: "star", x: 275, y: 200, count: 8, mirror: true });  // line | vanishing_point | ellipse | mirror | star | grid
+ac.assistant.add({ type: "line", x: 100, y: 100, parallel: true, magnetism: 1 });
+ac.draw.path({ points: [[275, 150], [290, 120], [300, 90]], smooth: true, assist: true });
+ac.assistant.set({ index: 1, enabled: false });      // also points, count, mirror, parallel, concentric, count_a/_b(_inv)
+ac.assistant.list(); ac.assistant.remove({ index: "all" });
+
+// Raster Brush: MyPaint brushes painting into the bitmap under the stroke (or a new one on this keyframe)
+ac.paint.brushes();                                   // ids, names, groups
+ac.paint.stroke({ brush: "classic_charcoal", color: "#203040", size: 6, points: [[50, 50], [120, 80, 0.9], [200, 60]] }); // [x, y, pressure?]
+ac.paint.stroke({ brush: "classic_pen", eraser: true, size: 10, points: [[100, 40], [100, 90]] });
+
+// Trace Bitmap, centerline mode: line art → lines with the ink's width
+ac.bitmap.trace({ mode: "centerline", line_threshold: 128, curve_fit: "smooth" });
+
+// Motion Editor keyframe types (OpenToonz): on the segment that starts at `key` (1-based frame)
+ac.motion.set_interp({ prop: "rotation", key: 1, type: "ease_in_out", ease_in: 6, ease_out: 6 });
+// constant | linear | ease_in_out | ease_in_out_pct | exponential | expression | similar_shape | auto
+ac.motion.set_interp({ prop: "alpha", key: 1, type: "expression", expression: "100 - rotation / 2" });
+ac.motion.set_interp({ prop: "scale_x", key: 1, type: "similar_shape", expression: "abs(sin(frame * 20))" }); // not on x/y (the path)
+
+// joint constraints (degrees from the pose when the bone was made)
+ac.bone.joint({ x: 250, y: 10, min: -30, max: 45 });   // the object attached at that point
+ac.bone.joint({ x: 150, y: 10, rotate: false });       // a locked joint
+ac.shape_bone.joint({ x: 195, y: 10, min: -45, max: 45 });
+```
+
+Expressions use OpenToonz's syntax: `+ - * / ^ %`, comparisons, `and or not`,
+`c ? a : b`; `sin cos tan` (degrees), `atan atan2`, `abs sign sqrt sqr exp log floor
+ceil round min max clamp step smoothstep pulse saw wave`, `random(min, max)`,
+`random_s(seed, …)`, `random_p(period, …)`, `cycle(period)`. Variables: `t` (0–1
+across the segment), `frame` and `rframe` (1-based: in the tween span and in the
+segment), `v0`/`v1` (the segment's key values) and the object's other properties
+(`x y rotation skew scale_x scale_y alpha brightness rotation_x rotation_y depth
+tint`, optionally at another frame: `rotation(frame - 3)`), all in displayed units
+(degrees, %, px).
+
 ### Sound, lip-sync, interchange and publishing
 
 ```js

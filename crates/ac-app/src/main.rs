@@ -42,7 +42,7 @@ pub(crate) enum Dialog {
     Unsaved(files::Pending),
     Recover { original: Option<String>, age_secs: u64 },
     ScaleRotate { scale: f32, rotate: f32 },
-    TraceBitmap { threshold: u32, min_area: u32, fit: usize, corners: usize },
+    TraceBitmap { threshold: u32, min_area: u32, fit: usize, corners: usize, centerline: bool, ink: u8, uniform: bool },
     LayerProps { i: usize, name: String, kind: ac_core::LayerKind, parent: Option<usize>, color: Color32, visible: bool, locked: bool, outline: bool, height: u16 },
     About,
 }
@@ -106,6 +106,12 @@ pub struct App {
     pub(crate) topts: toolbar::ToolOpts,
     pub(crate) pen: Option<stage::PenState>,
     pub(crate) poly_lasso: Vec<Pt>,
+    /// Bender tool: the segment drawn across the lines (stage coordinates).
+    pub(crate) bender_seg: Option<(Pt, Pt)>,
+    /// Assistants tool: the selected assistant.
+    pub(crate) assist_sel: Option<usize>,
+    /// Set while committing one already-assisted stroke (no second pass).
+    pub(crate) assist_bypass: bool,
     /// Ctrl/Cmd held during the current stage press (Ctrl-drag adds a corner).
     pub(crate) cmd_down: bool,
     /// Copied variable-width profile (Width tool ▸ Copy width profile).
@@ -215,6 +221,9 @@ impl App {
             topts: Default::default(),
             pen: None,
             poly_lasso: vec![],
+            bender_seg: None,
+            assist_sel: None,
+            assist_bypass: false,
             cmd_down: false,
             width_clip: None,
             text_edit: None,
@@ -276,6 +285,7 @@ impl App {
                 self.finish_text();
             }
             self.poly_lasso.clear();
+            self.bender_seg = None;
         }
         self.tool = t;
         // remember the tool in its toolbar slot
@@ -552,7 +562,7 @@ impl App {
         }
         let has_bitmap = self.ed.selection.iter().any(|s| matches!(self.ed.element_at(*s).map(|e| e.kind), Some(ElementKind::Bitmap(_))));
         if ui.add_enabled(has_bitmap, egui::Button::new("Trace Bitmap…")).on_hover_text("Modify › Bitmap › Trace Bitmap: turn the selected bitmap into vector fills").clicked() {
-            self.dialog = Dialog::TraceBitmap { threshold: 100, min_area: 8, fit: 3, corners: 1 };
+            self.dialog = Dialog::TraceBitmap { threshold: 100, min_area: 8, fit: 3, corners: 1, centerline: false, ink: 128, uniform: false };
             ui.close_menu();
         }
         if ui.add_enabled(has_sel, egui::Button::new("Group").shortcut_text("Ctrl+G")).clicked() { self.ed.group_selected(); ui.close_menu(); }
@@ -919,12 +929,27 @@ impl App {
                     });
                 });
             }
-            Dialog::TraceBitmap { threshold, min_area, fit, corners } => {
+            Dialog::TraceBitmap { threshold, min_area, fit, corners, centerline, ink, uniform } => {
                 win("Trace Bitmap").show(ctx, |ui| {
                     egui::Grid::new("tb").num_columns(2).spacing([10.0, 6.0]).show(ui, |ui| {
-                        ui.label("Color threshold");
-                        ui.add(egui::DragValue::new(threshold).range(0..=500));
+                        ui.label("Mode");
+                        ui.horizontal(|ui| {
+                            ui.selectable_value(centerline, false, "Outline").on_hover_text("Colour regions become fills");
+                            ui.selectable_value(centerline, true, "Centerline").on_hover_text("Line art becomes lines along the middle of the ink, with its thickness (OpenToonz)");
+                        });
                         ui.end_row();
+                        if *centerline {
+                            ui.label("Ink threshold");
+                            ui.add(egui::Slider::new(ink, 1..=254)).on_hover_text("Pixels darker than this are ink");
+                            ui.end_row();
+                            ui.label("Line width");
+                            ui.checkbox(uniform, "Uniform (ignore the ink's thickness)");
+                            ui.end_row();
+                        } else {
+                            ui.label("Color threshold");
+                            ui.add(egui::DragValue::new(threshold).range(0..=500));
+                            ui.end_row();
+                        }
                         ui.label("Minimum area");
                         ui.add(egui::DragValue::new(min_area).range(1..=1000).suffix(" pixels"));
                         ui.end_row();
@@ -945,7 +970,15 @@ impl App {
                     });
                     ui.horizontal(|ui| {
                         if ui.button("OK").clicked() || enter {
-                            trace_ok = Some(ac_core::trace::TraceOpts { color_threshold: *threshold, min_area: *min_area, curve_fit: ac_core::trace::CurveFit::ALL[*fit], corners: ac_core::trace::Corners::ALL[*corners] });
+                            trace_ok = Some(ac_core::trace::TraceOpts {
+                                color_threshold: *threshold,
+                                min_area: *min_area,
+                                curve_fit: ac_core::trace::CurveFit::ALL[*fit],
+                                corners: ac_core::trace::Corners::ALL[*corners],
+                                mode: if *centerline { ac_core::trace::TraceMode::Centerline } else { ac_core::trace::TraceMode::Outline },
+                                line_threshold: *ink,
+                                uniform_width: *uniform,
+                            });
                             close = true;
                         }
                         if ui.button("Cancel").clicked() || esc { close = true; }

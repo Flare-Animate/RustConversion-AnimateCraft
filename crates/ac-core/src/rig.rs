@@ -15,6 +15,19 @@ pub struct RigBone {
     /// Pose: rotation about the head relative to rest (radians).
     #[serde(default)]
     pub angle: f32,
+    /// Joint: Rotation ▸ Enable (off: the bone keeps its angle while posing).
+    #[serde(default = "yes", skip_serializing_if = "is_true")]
+    pub rotate: bool,
+    /// Joint: Rotation ▸ Constrain: allowed `angle` range in degrees (min ≤ 0 ≤ max).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit: Option<(f32, f32)>,
+}
+
+fn yes() -> bool {
+    true
+}
+fn is_true(b: &bool) -> bool {
+    *b
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -201,7 +214,7 @@ impl ShapeRig {
             }
             None => (head, tail),
         };
-        self.bones.push(RigBone { parent, head: h, tail: t, angle: 0.0 });
+        self.bones.push(RigBone { parent, head: h, tail: t, angle: 0.0, rotate: true, limit: None });
         self.bones.len() - 1
     }
 
@@ -229,7 +242,15 @@ impl ShapeRig {
                 while d < -std::f32::consts::PI {
                     d += 2.0 * std::f32::consts::PI;
                 }
-                self.bones[j].angle += d;
+                let b = &mut self.bones[j];
+                if !b.rotate {
+                    continue;
+                }
+                let mut a = b.angle + d;
+                if let Some((lo, hi)) = b.limit {
+                    a = a.clamp(lo.min(0.0).to_radians(), hi.max(0.0).to_radians());
+                }
+                b.angle = a;
             }
             if self.posed()[bone].1.dist(target) < 0.25 {
                 break;

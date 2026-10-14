@@ -232,6 +232,8 @@ enum Act {
     HandleDrag(Option<(Prop, u32, bool)>),
     Copy(Prop),
     Paste(Prop),
+    /// OpenToonz keyframe type of the segment starting at a key.
+    Interp(Prop, u32, ac_core::motion::Interp),
 }
 
 fn key_value(m: &mut Motion, prop: Prop, frame: u32, v: f32) {
@@ -414,8 +416,9 @@ fn body(app: &App, ui: &mut egui::Ui) -> Vec<Act> {
                 let value_px = (rect.height() - 8.0) / (hi - lo);
                 if let (Some((sp, sf)), Some(t)) = (app.motion.sel, m.track(prop)) {
                     if sp == prop {
-                        if let Some(ki) = t.keys.iter().position(|k| k.frame == sf) {
-                            let k = t.keys[ki];
+                        // (handles only shape Auto segments)
+                        if let Some(ki) = t.keys.iter().position(|k| k.frame == sf).filter(|&ki| t.keys[ki].interp.is_auto() || ki + 1 == t.keys.len()) {
+                            let k = t.keys[ki].clone();
                             let c = pos2(fx(k.frame as f32), fy(k.value * ds));
                             for out in [false, true] {
                                 if (!out && ki == 0) || (out && ki + 1 == t.keys.len()) {
@@ -492,14 +495,89 @@ fn body(app: &App, ui: &mut egui::Ui) -> Vec<Act> {
                                 acts.push(Act::Select(Some((prop, f))));
                                 ui.close_menu();
                             }
+                            let keys_t = m.track(prop).map(|t| t.keys.clone()).unwrap_or_default();
+                            if let Some(ki) = keys_t.iter().position(|k| k.frame == f).filter(|ki| ki + 1 < keys_t.len()) {
+                                let seg = (keys_t[ki + 1].frame - f) as f32;
+                                let cur = keys_t[ki].interp.index();
+                                ui.menu_button("Interpolation to next key", |ui| {
+                                    for (i, name) in ac_core::motion::Interp::NAMES.iter().enumerate() {
+                                        if ui.selectable_label(cur == i, *name).clicked() {
+                                            acts.push(Act::Interp(prop, f, ac_core::motion::Interp::of_index(i, seg)));
+                                            acts.push(Act::Select(Some((prop, f))));
+                                            ui.close_menu();
+                                        }
+                                    }
+                                });
+                            }
                         }
                     });
                 }
             });
+            // the selected key's segment type (OpenToonz keyframe types), under the graph
+            if let (Some((sp, sf)), Some(t)) = (app.motion.sel, m.track(prop)) {
+                if let Some(ki) = t.keys.iter().position(|k| k.frame == sf).filter(|ki| sp == prop && ki + 1 < t.keys.len()) {
+                    segment_ui(ui, &mut acts, prop, &t.keys[ki], (t.keys[ki + 1].frame - sf) as f32);
+                }
+            }
             ui.separator();
         }
     });
     acts
+}
+
+/// Type and parameters of the segment that starts at `key`.
+fn segment_ui(ui: &mut egui::Ui, acts: &mut Vec<Act>, prop: Prop, key: &ac_core::motion::PropKey, seg: f32) {
+    use ac_core::motion::Interp;
+    let f = key.frame;
+    ui.horizontal_wrapped(|ui| {
+        ui.label(RichText::new(format!("Key {} to next:", f + 1)).small());
+        let cur = key.interp.index();
+        let mut pick = cur;
+        egui::ComboBox::from_id_salt(("interp", prop, f)).width(150.0).selected_text(Interp::NAMES[cur]).show_ui(ui, |ui| {
+            for (i, n) in Interp::NAMES.iter().enumerate() {
+                ui.selectable_value(&mut pick, i, *n);
+            }
+        });
+        if pick != cur {
+            acts.push(Act::Interp(prop, f, Interp::of_index(pick, seg)));
+        }
+        match key.interp.clone() {
+            Interp::EaseInOut { mut ease_in, mut ease_out } | Interp::EaseInOutPct { mut ease_in, mut ease_out } => {
+                let pct = matches!(key.interp, Interp::EaseInOutPct { .. });
+                let max = if pct { 100.0 } else { seg };
+                let suffix = if pct { " %" } else { " fr" };
+                let a = ui.add(egui::DragValue::new(&mut ease_in).range(0.0..=max).speed(0.2).suffix(suffix)).on_hover_text("Ease in");
+                let b = ui.add(egui::DragValue::new(&mut ease_out).range(0.0..=max).speed(0.2).suffix(suffix)).on_hover_text("Ease out");
+                if a.changed() || b.changed() {
+                    acts.push(Act::Interp(prop, f, if pct { Interp::EaseInOutPct { ease_in, ease_out } } else { Interp::EaseInOut { ease_in, ease_out } }));
+                }
+            }
+            Interp::Expression { text } | Interp::SimilarShape { text, .. } => {
+                let offset = if let Interp::SimilarShape { offset, .. } = key.interp { Some(offset) } else { None };
+                let id = ui.id().with(("expr-buf", prop, f));
+                let mut buf: String = ui.data_mut(|d| d.get_temp::<String>(id)).unwrap_or_else(|| text.clone());
+                let props = ac_core::motion::expr_props();
+                let names: Vec<&str> = props.iter().map(|s| s.as_str()).collect();
+                let err = ac_core::expr::Expr::parse(&buf, &names).err();
+                let r = ui.add(egui::TextEdit::singleline(&mut buf).desired_width(220.0).font(egui::TextStyle::Monospace).text_color(if err.is_some() { Color32::from_rgb(0xFF, 0x80, 0x80) } else { Color32::from_gray(230) }))
+                    .on_hover_text("OpenToonz expression syntax. Variables: t (0–1 across the segment), frame, rframe, v0, v1, and other properties by name (rotation, alpha, x …, also rotation(frame − 3)). Functions: sin cos (degrees), wave, saw, pulse, random, smoothstep, clamp, cycle …");
+                ui.data_mut(|d| d.insert_temp(id, buf.clone()));
+                let mut off = offset.unwrap_or(0.0);
+                let ro = offset.map(|_| ui.add(egui::DragValue::new(&mut off).speed(0.2).prefix("offset ")));
+                let commit = r.lost_focus() && err.is_none() && buf != text;
+                if commit || ro.is_some_and(|r| r.changed()) {
+                    acts.push(Act::Interp(prop, f, match offset {
+                        Some(_) => Interp::SimilarShape { text: buf.clone(), offset: off },
+                        None => Interp::Expression { text: buf.clone() },
+                    }));
+                }
+                if let Some(e) = err {
+                    ui.label(RichText::new(e).small().color(Color32::from_rgb(0xFF, 0x80, 0x80)));
+                }
+            }
+            _ => {}
+        }
+    });
 }
 
 fn apply(app: &mut App, acts: Vec<Act>) {
@@ -571,6 +649,14 @@ fn apply(app: &mut App, acts: Vec<Act>) {
                 app.ed.key_all_properties(l, f);
             }
             Act::Select(s) => app.motion.sel = s,
+            Act::Interp(prop, f, interp) => {
+                let label = format!("Interpolation: {}", ac_core::motion::Interp::NAMES[interp.index()]);
+                app.ed.edit_motion(Some(&label), |m, _| {
+                    if let Some(k) = m.track_mut(prop).and_then(|t| t.keys.iter_mut().find(|k| k.frame == f)) {
+                        k.interp = interp;
+                    }
+                });
+            }
             Act::HandleDrag(h) => app.motion.handle_drag = h,
             Act::Handle { prop, frame, out, d, mirror } => {
                 app.ed.edit_motion(None, |m, _| {

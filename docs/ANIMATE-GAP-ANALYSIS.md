@@ -64,7 +64,7 @@ The two engine milestones that unlock most of the rest:
 | Color panel (solid / linear / radial / bitmap fills, HSB/RGB/hex, alpha, overflow modes) | Yes | Gradient stops in Properties only | 🟡 | P1 |
 | Swatches panel (palette, save/load .clr/.aco/.act, Web 216) | Yes | — | ❌ | P1 |
 | History panel (steps, replay, copy steps as JSFL) | Yes | Undo stack exists; no panel | ❌ | P1 |
-| Motion Editor | Yes | Per-property graphs, key drag/retime, smooth/corner, per-property eases | ✅ | |
+| Motion Editor | Yes | Per-property graphs, key drag/retime, smooth/corner, per-property eases; OpenToonz keyframe types and expressions | ✅ | |
 | Output, Actions, Code Snippets, Compiler Errors panels | Yes | Output + Actions | 🟡 | P2 |
 | Scene panel (multiple scenes) | Yes | Scene panel (Shift+F2), header switcher | ✅ | |
 | Movie Explorer | Yes | — | ❌ | P3 |
@@ -97,7 +97,7 @@ The two engine milestones that unlock most of the rest:
 | Rectangle / Oval **Primitives** (live corner radii, start/end angle, inner radius) | Yes | Yes (per-corner and inverted radii, close path) | ✅ | |
 | Stroke styles: solid, dashed, dotted, ragged, stipple, hatched; cap/join/miter; scale mode; hinting | Yes | Solid / dashed / dotted / ragged / stipple / hatched, cap, join | 🟡 | P3 (style parameters, scale mode, hinting) |
 | Variable-width profiles (presets, save width profile) | Yes | Width tool on drawing objects and merge-shape lines, delete width points, copy/paste profiles | 🟡 | P3 (named presets) |
-| Art / Pattern brushes (from Illustrator-style brush library), brush library panel | Yes | — | ❌ | P2 |
+| Art / Pattern brushes (from Illustrator-style brush library), brush library panel | Yes | No Illustrator brush library; 13 generated OpenToonz stroke styles (Rope, Chain, Plait, Herringbone…) with parameters; 25 MyPaint raster brushes | 🟡 | P2 (pattern brushes from artwork) |
 | Gradient fills (linear, radial, up to 15 stops, overflow: extend / reflect / repeat, linear RGB) | Yes | Linear/radial, any stops, extend / reflect / repeat | 🟡 | P3 (linear RGB) |
 | Bitmap fills (and Lock Fill) | Yes | Drawing objects and merge shapes; Gradient Transform edits them; Lock Fill for gradients | ✅ | |
 | Alpha per fill / stroke colour | Yes | Yes (colour alpha) | ✅ | |
@@ -194,7 +194,7 @@ The two engine milestones that unlock most of the rest:
 | Motion presets panel (bounce, fly-in…, save your own) | Yes | — | ❌ | P2 |
 | Copy / Paste Motion, Copy Motion as JS/XML | Yes | — | ❌ | P2 |
 | Convert to Frame-by-Frame Animation, Convert to Keyframes | Yes | Yes | ✅ | |
-| Bones: IK poses on keyframes, joint rotation/translation constraints, **springiness / damping**, bone ease, runtime vs authoring | Yes | Poses + IK | 🟡 | P2 |
+| Bones: IK poses on keyframes, joint rotation/translation constraints, **springiness / damping**, bone ease, runtime vs authoring | Yes | Poses + IK; joint rotation enable + min/max limits (object and shape bones) | 🟡 | P2 (translation constraints, springs) |
 | Asset Warp: pins, mesh density, tween warped poses, **Create Warped Asset / Reset** | Yes | Pins, rigid MLS | 🟡 | P2 |
 | Camera: tween, colour effects, attach layers, layer depth | Yes | Tweenable pan/zoom/rotate, brightness/tint/alpha/blur, VCam follow + shake (beyond Animate) | 🟡 | P2 (attach layers, depth) |
 | **Auto lip-sync** (map visemes from audio) | Yes | Properties ▸ Lip Syncing with a Mouth-shapes picker; Rhubarb Lip Sync (speech-based, external program) when installed, FFT-band heuristic otherwise; `lipsync.apply` | ✅ | |
@@ -219,7 +219,7 @@ The two engine milestones that unlock most of the rest:
 | Feature | Animate | AnimationCraft | Status | Pri |
 |---|---|---|---|---|
 | Import bitmaps (PNG, JPG, GIF, BMP, TIFF) to stage / library | Yes | PNG, JPG, GIF, BMP (library + stage, smoothing) | ✅ | |
-| Bitmap properties (smoothing, compression, quality), Trace Bitmap | Yes | Smoothing; Trace Bitmap (threshold, minimum area, curve fit, corners) | 🟡 | P2 (compression settings) |
+| Bitmap properties (smoothing, compression, quality), Trace Bitmap | Yes | Smoothing; Trace Bitmap (threshold, minimum area, curve fit, corners) + Centerline mode (OpenToonz) | 🟡 | P2 (compression settings) |
 | Import image sequences | Yes | Yes | ✅ | |
 | Import SVG, Illustrator (.ai), Photoshop (.psd) with layer options | Yes | SVG (shapes, gradients, text as outlines); PSD (bitmap per layer, visibility, opacity) | 🟡 | P2 (.ai; PSD editable text/vector options) |
 | Import audio (WAV, MP3, AIFF), sound properties, edit envelope | Yes | WAV, MP3, OGG Vorbis, FLAC, AIFF (Symphonia); library preview with waveform; no envelope editor | 🟡 | P3 |

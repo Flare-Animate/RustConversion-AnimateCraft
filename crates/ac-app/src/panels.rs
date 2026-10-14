@@ -601,6 +601,12 @@ fn object_properties(app: &mut App, ui: &mut egui::Ui) {
             if !kids.is_empty() {
                 hint(ui, &format!("Drives: {}", kids.iter().map(|k| name(*k)).collect::<Vec<_>>().join(", ")));
             }
+            // Joint: Rotation (enable / constrain), as in Animate's bone properties
+            if let Some(b) = bones.iter().find(|b| b.child == sel0.element).copied() {
+                if let Some((rotate, limit)) = joint_ui(ui, ("joint", sel0.layer, sel0.element), b.rotate, b.limit) {
+                    app.ed.set_joint(sel0.layer, sel0.element, rotate, limit);
+                }
+            }
             ui.horizontal(|ui| {
                 if ui.add_enabled(parent.is_some(), egui::Button::new("Remove bone")).on_hover_text("Detach this object from its parent").clicked() {
                     app.ed.remove_bone(sel0.layer, sel0.element);
@@ -1672,6 +1678,58 @@ fn tool_properties(app: &mut App, ui: &mut egui::Ui) {
             hint(ui, "Press on a shape's stroke and drag away from it (thicker) or towards it (thinner). Each drag adds a width point; Alt+click a point to delete it. Properties › Object › Reset width removes them all.");
             width_profile_buttons(app, ui);
         }
+        Tool::Magnet | Tool::Pinch | Tool::Pump | Tool::Bender | Tool::Iron => {
+            section(ui, app.tool.info().name);
+            if app.tool != Tool::Bender {
+                let label = if matches!(app.tool, Tool::Magnet | Tool::Iron) { "Size (radius)" } else { "Size (reach)" };
+                ui.add(egui::Slider::new(&mut app.topts.sculpt_size, 2.0..=400.0).logarithmic(true).text(label));
+            }
+            if app.tool == Tool::Pinch {
+                ui.checkbox(&mut app.topts.sculpt_sharp, "Corner").on_hover_text("Pull the grabbed point into a corner instead of a smooth bump");
+            }
+            if app.tool == Tool::Iron {
+                ui.add(egui::Slider::new(&mut app.topts.sculpt_strength, 0.05..=1.0).text("Strength"));
+            }
+            hint(ui, match app.tool {
+                Tool::Magnet => "Press near lines or shapes and drag: everything within the radius follows the pointer, more so near the centre.",
+                Tool::Pinch => "Press on a line or a shape's edge and drag: the line follows over Size units of its length on each side.",
+                Tool::Pump => "Press on a line and drag up to make it thicker there, down to make it thinner (adds width points, like the Width tool).",
+                Tool::Bender => "1. Drag a segment across the lines to bend. 2. Press on one side of it and drag around its start: that side of the lines turns, bending where they cross the segment.",
+                _ => "Brush back and forth over wobbly lines to smooth them; Strength sets how much each pass smooths.",
+            });
+            hint(ui, "Works on drawing objects and merge shapes (fills follow their lines). From OpenToonz.");
+        }
+        Tool::Assistant => assistant_properties(app, ui),
+        Tool::RasterBrush => {
+            use ac_core::paint::PRESETS;
+            section(ui, "Raster Brush (MyPaint)");
+            let cur = PRESETS.get(app.topts.raster_brush).map(|p| format!("{} · {}", p.name, p.group)).unwrap_or_default();
+            ui.horizontal(|ui| {
+                ui.label("Brush");
+                egui::ComboBox::from_id_salt("raster-brush").width(170.0).selected_text(cur).height(420.0).show_ui(ui, |ui| {
+                    let mut group = "";
+                    for (i, p) in PRESETS.iter().enumerate() {
+                        if p.group != group {
+                            group = p.group;
+                            ui.label(egui::RichText::new(group).small().color(Color32::from_gray(140)));
+                        }
+                        ui.selectable_value(&mut app.topts.raster_brush, i, p.name);
+                    }
+                });
+            });
+            let own = PRESETS.get(app.topts.raster_brush).map(|p| p.base_radius()).unwrap_or(2.0);
+            let mut size = if app.topts.raster_size > 0.0 { app.topts.raster_size } else { own };
+            if ui.add(egui::Slider::new(&mut size, 0.5..=200.0).logarithmic(true).max_decimals(1).text("Size (radius)")).changed() {
+                app.topts.raster_size = size;
+            }
+            if app.topts.raster_size > 0.0 && ui.small_button("Brush's own size").clicked() {
+                app.topts.raster_size = 0.0;
+            }
+            ui.add(egui::Slider::new(&mut app.topts.raster_opacity, 0.0..=1.0).text("Opacity"));
+            ui.add(egui::Slider::new(&mut app.topts.raster_pressure, 0.05..=1.0).text("Pressure")).on_hover_text("The pen pressure brushes respond to (a mouse reports none)");
+            ui.checkbox(&mut app.topts.raster_eraser, "Erase (paint transparency)");
+            hint(ui, "Paints with the fill colour into the bitmap under the pointer, or into a new stage-sized bitmap on this keyframe. For frame-by-frame animation press F6 (or F7) and paint the next drawing; a bitmap shared with other frames is copied first. Brushes: MyPaint pack (CC0), engine: hokusai.");
+        }
         Tool::AssetWarp => {
             section(ui, "Asset Warp");
             hint(ui, "Click inside a shape to add pins; drag a pin to bend the shape around the others. Alt+click removes a pin. Properties › Object › Remove warp restores it.");
@@ -2625,6 +2683,118 @@ fn color_effect(app: &mut App, ui: &mut egui::Ui, el: &Element) {
     }
 }
 
+/// Properties ▸ Tool for the Assistants tool: add, list, edit.
+fn assistant_properties(app: &mut App, ui: &mut egui::Ui) {
+    use ac_core::assist::{Assistant, AssistantKind as K};
+    section(ui, "Drawing assistants");
+    ui.checkbox(&mut app.topts.assist_on, "Use with Pencil, Brush and Fluid Brush");
+    ui.horizontal_wrapped(|ui| {
+        ui.label("Add");
+        for name in K::NAMES {
+            if ui.small_button(name).clicked() {
+                let r = app.stage_rect;
+                let c = app.to_doc(r, r.center());
+                if let Some(kind) = K::create(name, c, 100.0 / app.zoom.max(0.01)) {
+                    let i = app.ed.add_assistant(Assistant::new(kind));
+                    app.assist_sel = Some(i);
+                }
+            }
+        }
+    });
+    let n = app.ed.doc.assistants.len();
+    if n == 0 {
+        hint(ui, "Guides — Line, Vanishing point, Ellipse — pull freehand strokes onto them (the start of a stroke picks the guide that fits). Symmetry — Mirror, Star, Grid — repeats every stroke. Drag handles on the stage; Alt+click a handle deletes.");
+        return;
+    }
+    let mut remove = None;
+    for i in 0..n {
+        let a = app.ed.doc.assistants[i].clone();
+        ui.horizontal(|ui| {
+            let mut on = a.enabled;
+            if ui.checkbox(&mut on, "").on_hover_text("Enabled").changed() {
+                app.ed.set_assistant(i, Assistant { enabled: on, ..a.clone() }, true);
+            }
+            if ui.selectable_label(app.assist_sel == Some(i), format!("{}. {}", i + 1, a.name())).clicked() {
+                app.assist_sel = Some(i);
+            }
+            if ui.small_button("Delete").clicked() {
+                remove = Some(i);
+            }
+        });
+    }
+    if let Some(i) = remove {
+        app.ed.remove_assistant(i);
+        app.assist_sel = None;
+        return;
+    }
+    let Some(i) = app.assist_sel.filter(|i| *i < n) else { return };
+    let a = app.ed.doc.assistants[i].clone();
+    let mut b = a.clone();
+    if a.is_guide() {
+        ui.add(egui::Slider::new(&mut b.magnetism, 0.0..=1.0).text("Magnetism"));
+    }
+    match &mut b.kind {
+        K::Line { parallel, .. } => {
+            ui.checkbox(parallel, "Parallel (any line in this direction)");
+        }
+        K::Ellipse { concentric, .. } => {
+            ui.checkbox(concentric, "Concentric (any size)");
+        }
+        K::Star { count, mirror, .. } => {
+            ui.add(egui::Slider::new(count, 1..=32).text("Copies"));
+            ui.checkbox(mirror, "Mirror (kaleidoscope)");
+        }
+        K::Grid { count_a, count_a_inv, count_b, count_b_inv, .. } => {
+            ui.horizontal(|ui| {
+                ui.label("Across");
+                ui.add(egui::DragValue::new(count_a_inv).range(0..=20)).on_hover_text("Copies backward");
+                ui.add(egui::DragValue::new(count_a).range(1..=20)).on_hover_text("Copies forward (incl. the original)");
+                ui.label("Down");
+                ui.add(egui::DragValue::new(count_b_inv).range(0..=20));
+                ui.add(egui::DragValue::new(count_b).range(1..=20));
+            });
+        }
+        _ => {}
+    }
+    if b != a {
+        // sliders keep one undo step per drag
+        let first = !app.prop_dragging;
+        app.prop_dragging = ui.input(|inp| inp.pointer.any_down());
+        app.ed.set_assistant(i, b, first);
+    } else if !ui.input(|inp| inp.pointer.any_down()) {
+        app.prop_dragging = false;
+    }
+}
+
+/// Joint ▸ Rotation: Enable and Constrain (min/max degrees). Returns a change.
+fn joint_ui(ui: &mut egui::Ui, id: impl std::hash::Hash, rotate: bool, limit: Option<(f32, f32)>) -> Option<(bool, Option<(f32, f32)>)> {
+    let mut out = None;
+    ui.push_id(id, |ui| {
+        ui.horizontal(|ui| {
+            let mut rot = rotate;
+            if ui.checkbox(&mut rot, "Joint rotates").on_hover_text("Off: this joint stays as it is while you pose the chain").changed() {
+                out = Some((rot, limit));
+            }
+            let mut con = limit.is_some();
+            if ui.add_enabled(rotate, egui::Checkbox::new(&mut con, "Constrain")).on_hover_text("Limit how far the joint turns from the pose it had when the bone was made").changed() {
+                out = Some((rotate, if con { Some((-45.0, 45.0)) } else { None }));
+            }
+        });
+        if let (true, Some((mut lo, mut hi))) = (rotate, limit) {
+            ui.horizontal(|ui| {
+                ui.label("Min");
+                let a = ui.add(egui::DragValue::new(&mut lo).range(-180.0..=0.0).speed(1.0).suffix("°"));
+                ui.label("Max");
+                let b = ui.add(egui::DragValue::new(&mut hi).range(0.0..=180.0).speed(1.0).suffix("°"));
+                if a.changed() || b.changed() {
+                    out = Some((rotate, Some((lo, hi))));
+                }
+            });
+        }
+    });
+    out
+}
+
 /// Like `apply` for sliders (which report `changed` while dragging only).
 fn apply_slider(app: &mut App, resp: &egui::Response, label: &str, f: impl Fn(&mut Element)) {
     if resp.drag_stopped() {
@@ -2666,10 +2836,43 @@ fn shape_extras(app: &mut App, ui: &mut egui::Ui, s: &ac_core::Shape) {
                 ui.selectable_value(&mut v.join, Join::Round, "Round");
                 ui.selectable_value(&mut v.join, Join::Bevel, "Bevel");
             }).response.on_hover_text("Join");
+            if v.dash != st.dash {
+                v.art = Default::default(); // parameters belong to the old style
+            }
             if v != st {
                 app.ed.modify_selected("Stroke Style", move |e| if let ElementKind::Shape(sh) = &mut e.kind { sh.stroke_style = v });
             }
         });
+        // OpenToonz styles: their parameters and extra colours
+        let ps = ac_core::strokes::params(st.dash);
+        let cs = ac_core::strokes::color_params(st.dash);
+        if !ps.is_empty() || !cs.is_empty() {
+            egui::Grid::new("art_params").num_columns(2).spacing([6.0, 3.0]).show(ui, |ui| {
+                for (i, p) in ps.iter().enumerate() {
+                    ui.label(p.name);
+                    let mut x = ac_core::strokes::param(&st, i);
+                    let speed = ((p.max - p.min) / 200.0).max(0.005);
+                    let r = ui.add(egui::DragValue::new(&mut x).range(p.min..=p.max).speed(speed).max_decimals(2));
+                    apply(app, &r, p.name, move |e| if let ElementKind::Shape(sh) = &mut e.kind { sh.stroke_style.art.p[i] = Some(x) });
+                    ui.end_row();
+                }
+                for (i, name) in cs.iter().enumerate() {
+                    ui.label(*name);
+                    ui.horizontal(|ui| {
+                        let base = s.stroke.map(|k| k.color).unwrap_or(ac_core::Color::rgb(0, 0, 0));
+                        let mut col = c32(ac_core::strokes::color_param(&st, base, i));
+                        if ui.color_edit_button_srgba(&mut col).changed() {
+                            let c = from32(col);
+                            app.ed.modify_selected(name, move |e| if let ElementKind::Shape(sh) = &mut e.kind { sh.stroke_style.art.colors[i] = Some(c) });
+                        }
+                        if st.art.colors[i].is_some() && ui.small_button("Auto").on_hover_text("Derive from the stroke colour").clicked() {
+                            app.ed.modify_selected(name, move |e| if let ElementKind::Shape(sh) = &mut e.kind { sh.stroke_style.art.colors[i] = None });
+                        }
+                    });
+                    ui.end_row();
+                }
+            });
+        }
         if st.dash == Dash::Dashed {
             ui.horizontal(|ui| {
                 let (mut d, mut g) = (st.dash_len, st.gap);
@@ -2769,5 +2972,30 @@ fn shape_extras(app: &mut App, ui: &mut egui::Ui, s: &ac_core::Shape) {
                 }
             }
         });
+        // joint constraints of one bone
+        let id = ui.id().with("rig-joint-bone");
+        let mut bi: usize = ui.data_mut(|d| d.get_temp(id)).unwrap_or(0).min(r.bones.len().saturating_sub(1));
+        if !r.bones.is_empty() {
+            ui.horizontal(|ui| {
+                ui.label("Joint of");
+                egui::ComboBox::from_id_salt("rig-joint").width(70.0).selected_text(format!("bone {}", bi + 1)).show_ui(ui, |ui| {
+                    for i in 0..r.bones.len() {
+                        ui.selectable_value(&mut bi, i, format!("bone {}", i + 1));
+                    }
+                });
+            });
+            ui.data_mut(|d| d.insert_temp(id, bi));
+            let b = r.bones[bi];
+            if let Some((rotate, limit)) = joint_ui(ui, ("rig-joint", bi), b.rotate, b.limit) {
+                app.ed.modify_selected("Joint", move |e| {
+                    if let ElementKind::Shape(ac_core::Shape { rig: Some(r), .. }) = &mut e.kind {
+                        if let Some(b) = r.bones.get_mut(bi) {
+                            b.rotate = rotate;
+                            b.limit = limit;
+                        }
+                    }
+                });
+            }
+        }
     }
 }

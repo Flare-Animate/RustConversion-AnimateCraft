@@ -48,6 +48,14 @@ pub enum Drag {
     RigIk { sel: Selection, bone: usize, started: bool },
     /// Editing a motion tween's path on the stage.
     MotionPath { grab: crate::motion_ui::PathGrab, started: bool },
+    /// Magnet / Pinch / Pump / Bender / Iron (OpenToonz deformation tools).
+    Sculpt(Box<ac_core::editor::Sculpt>),
+    /// Bender: drawing the segment across the lines.
+    BenderLine { a: Pt, cur: Pt },
+    /// Raster Brush stroke (time of the last event, for the brush's speed).
+    Paint(Box<ac_core::editor::PaintSession>, f64),
+    /// Assistants tool: dragging handle `k` of assistant `i` (`k = None`: the whole assistant).
+    AssistPt { i: usize, k: Option<usize>, last: Pt, started: bool },
 }
 
 #[derive(Clone, Copy)]
@@ -800,7 +808,7 @@ pub fn stage(app: &mut App, ctx: &egui::Context) {
                     None => CursorIcon::Default,
                 },
                 Tool::Rotate3D | Tool::Translate3D | Tool::GradientTransform | Tool::RotateView => CursorIcon::Default,
-                Tool::Bone | Tool::AssetWarp | Tool::Width => CursorIcon::PointingHand,
+                Tool::Bone | Tool::AssetWarp | Tool::Width | Tool::Pinch | Tool::Pump => CursorIcon::PointingHand,
                 t if !t.usable() => CursorIcon::NotAllowed,
                 _ => CursorIcon::Crosshair,
             };
@@ -1172,6 +1180,7 @@ fn press(app: &mut App, rect: Rect, tool: Tool, origin: Pos2, p0: Pt, shift: boo
         }
         Tool::Pencil | Tool::Brush => app.drag = Drag::Freehand { pts: vec![p0] },
         Tool::FluidBrush => app.drag = Drag::Fluid { pts: vec![(p0, app.ctx.input(|i| i.time))] },
+        Tool::RasterBrush => raster_press(app, p0),
         Tool::Eraser => {
             let mark = app.ed.undo_depth();
             if app.ed.canvas_at(app.ed.layer).is_some() {
@@ -1334,6 +1343,8 @@ fn press(app: &mut App, rect: Rect, tool: Tool, origin: Pos2, p0: Pt, shift: boo
             }
         }
         Tool::AssetWarp => warp_press(app, p0, alt),
+        Tool::Magnet | Tool::Pinch | Tool::Pump | Tool::Iron | Tool::Bender => sculpt_press(app, tool, p0),
+        Tool::Assistant => assist_press(app, rect, origin, p0, alt),
         Tool::Camera => {
             if app.ed.editing.is_some() {
                 app.status = "The camera belongs to the scene: leave symbol editing first (Esc).".into();
@@ -1509,6 +1520,224 @@ fn stroked_shape_at(app: &App, p: Pt) -> Option<(Selection, f32)> {
     None
 }
 
+impl App {
+    /// Are the drawing assistants shaping the current freehand stroke?
+    pub(crate) fn assisting(&self) -> bool {
+        self.topts.assist_on && !self.assist_bypass && self.ed.doc.assistants.iter().any(|a| a.enabled)
+    }
+}
+
+fn raster_opts(app: &App) -> ac_core::paint::PaintOpts {
+    ac_core::paint::PaintOpts {
+        color: from32(app.fill),
+        radius: (app.topts.raster_size > 0.0).then_some(app.topts.raster_size),
+        opacity: app.topts.raster_opacity,
+        pressure: app.topts.raster_pressure,
+        eraser: app.topts.raster_eraser,
+    }
+}
+
+/// Raster Brush press: start painting into the bitmap under the pointer (or a new one).
+fn raster_press(app: &mut App, p0: Pt) {
+    let Some(preset) = ac_core::paint::PRESETS.get(app.topts.raster_brush) else { return };
+    match app.ed.paint_begin(p0, preset, &raster_opts(app)) {
+        Ok(mut s) => {
+            app.ed.paint_to(&mut s, p0, None, 0.01);
+            app.drag = Drag::Paint(Box::new(s), app.ctx.input(|i| i.time));
+        }
+        Err(e) => app.status = format!("Raster Brush: {e}."),
+    }
+}
+
+/// Assistants tool: grab a handle or an assistant's line; Alt+click deletes it.
+fn assist_press(app: &mut App, rect: Rect, origin: Pos2, p0: Pt, alt: bool) {
+    let mut hit: Option<(usize, Option<usize>)> = None;
+    for (i, a) in app.ed.doc.assistants.iter().enumerate().rev() {
+        if let Some(k) = a.points().iter().position(|q| app.to_screen(rect, *q).distance(origin) < 9.0) {
+            hit = Some((i, Some(k)));
+            break;
+        }
+    }
+    if hit.is_none() {
+        // near an assistant's line: move the whole assistant
+        for (i, a) in app.ed.doc.assistants.iter().enumerate().rev() {
+            let pts = a.points();
+            let near = pts.windows(2).any(|w| {
+                let (x, y) = (app.to_screen(rect, w[0]), app.to_screen(rect, w[1]));
+                seg_dist(origin, x, y) < 6.0
+            });
+            if near {
+                hit = Some((i, None));
+                break;
+            }
+        }
+    }
+    match hit {
+        Some((i, _)) if alt => {
+            app.ed.remove_assistant(i);
+            app.assist_sel = None;
+            app.status = "Assistant deleted".into();
+        }
+        Some((i, k)) => {
+            app.assist_sel = Some(i);
+            app.drag = Drag::AssistPt { i, k, last: p0, started: false };
+        }
+        None => {
+            app.assist_sel = None;
+            app.status = "Assistants: add one in Properties ▸ Tool, then drag its handles. Alt+click a handle deletes the assistant.".into();
+        }
+    }
+}
+
+/// Guides as thin lines across the view, replicators as their axes; handles
+/// when the Assistants tool is active.
+fn draw_assistants(app: &App, painter: &egui::Painter, rect: Rect, handles: bool) {
+    use ac_core::assist::AssistantKind as K;
+    let view_lo = app.to_doc(rect, rect.left_top());
+    let view_hi = app.to_doc(rect, rect.right_bottom());
+    let far = view_lo.dist(view_hi).max(100.0) * 2.0;
+    let guide_col = Color32::from_rgba_unmultiplied(0x40, 0xC0, 0xFF, 150);
+    let rep_col = Color32::from_rgba_unmultiplied(0xFF, 0x70, 0xD0, 170);
+    for (i, a) in app.ed.doc.assistants.iter().enumerate() {
+        let k = if a.enabled { 1.0 } else { 0.35 };
+        let sel = handles && app.assist_sel == Some(i);
+        let g = EStroke::new(if sel { 1.6_f32 } else { 1.0 }, guide_col.gamma_multiply(k));
+        let r = EStroke::new(if sel { 1.8_f32 } else { 1.2 }, rep_col.gamma_multiply(k));
+        let line = |a: Pt, b: Pt, st: EStroke| {
+            let (dx, dy) = (b.x - a.x, b.y - a.y);
+            let l = (dx * dx + dy * dy).sqrt().max(1e-6);
+            let (ux, uy) = (dx / l * far, dy / l * far);
+            painter.line_segment([app.to_screen(rect, pt(a.x - ux, a.y - uy)), app.to_screen(rect, pt(a.x + ux, a.y + uy))], st);
+        };
+        let ellipse = |m: ac_core::Matrix, st: EStroke| {
+            let pts: Vec<Pos2> = (0..=64).map(|j| {
+                let t = std::f32::consts::TAU * j as f32 / 64.0;
+                app.to_screen(rect, m.apply(pt(t.cos(), t.sin())))
+            }).collect();
+            painter.add(egui::Shape::line(pts, st));
+        };
+        match &a.kind {
+            K::Line { a: p, b: q, parallel } => {
+                line(*p, *q, g);
+                if *parallel {
+                    // a few parallels to show the direction
+                    let (dx, dy) = (q.x - p.x, q.y - p.y);
+                    let l = (dx * dx + dy * dy).sqrt().max(1e-6);
+                    let n = pt(-dy / l * 40.0, dx / l * 40.0);
+                    for j in [-2.0, -1.0, 1.0, 2.0] {
+                        line(pt(p.x + n.x * j, p.y + n.y * j), pt(q.x + n.x * j, q.y + n.y * j), EStroke::new(0.6_f32, guide_col.gamma_multiply(k * 0.5)));
+                    }
+                }
+            }
+            K::VanishingPoint { c } => {
+                for j in 0..16 {
+                    let t = std::f32::consts::TAU * j as f32 / 16.0;
+                    let e = pt(c.x + t.cos() * far, c.y + t.sin() * far);
+                    painter.line_segment([app.to_screen(rect, *c), app.to_screen(rect, e)], EStroke::new(0.7_f32, guide_col.gamma_multiply(k * 0.6)));
+                }
+                painter.circle_stroke(app.to_screen(rect, *c), 5.0, g);
+            }
+            K::Ellipse { c, a: ax, b, concentric } => {
+                if let Some(m) = ac_core::assist::ellipse_matrix(*c, *ax, *b) {
+                    ellipse(m, g);
+                    if *concentric {
+                        for s in [0.5f32, 1.5, 2.0] {
+                            ellipse(ac_core::Matrix { a: m.a * s, b: m.b * s, c: m.c * s, d: m.d * s, ..m }, EStroke::new(0.6_f32, guide_col.gamma_multiply(k * 0.5)));
+                        }
+                    }
+                }
+            }
+            K::Mirror { a: p, b: q } => line(*p, *q, r),
+            K::Star { c, a: p, count, mirror } => {
+                let n = (*count).max(1);
+                let (dx, dy) = (p.x - c.x, p.y - c.y);
+                for j in 0..n {
+                    let t = std::f32::consts::TAU * j as f32 / n as f32;
+                    let (s_, c_) = t.sin_cos();
+                    let e = pt(c.x + (dx * c_ - dy * s_) * 3.0, c.y + (dx * s_ + dy * c_) * 3.0);
+                    painter.line_segment([app.to_screen(rect, *c), app.to_screen(rect, e)], if j == 0 { r } else { EStroke::new(0.8_f32, rep_col.gamma_multiply(k * 0.6)) });
+                    if *mirror {
+                        let t2 = t + std::f32::consts::PI / n as f32;
+                        let (s2, c2) = t2.sin_cos();
+                        let e2 = pt(c.x + (dx * c2 - dy * s2) * 3.0, c.y + (dx * s2 + dy * c2) * 3.0);
+                        painter.line_segment([app.to_screen(rect, *c), app.to_screen(rect, e2)], EStroke::new(0.5_f32, rep_col.gamma_multiply(k * 0.4)));
+                    }
+                }
+            }
+            K::Grid { c, a: p, b: q, count_a, count_a_inv, count_b, count_b_inv } => {
+                let (da, db) = (pt(p.x - c.x, p.y - c.y), pt(q.x - c.x, q.y - c.y));
+                let (a0, a1, b0, b1) = (-(*count_a_inv as i32), (*count_a).max(1) as i32, -(*count_b_inv as i32), (*count_b).max(1) as i32);
+                for ib in b0..b1 {
+                    for ia in a0..a1 {
+                        let o = pt(c.x + da.x * ia as f32 + db.x * ib as f32, c.y + da.y * ia as f32 + db.y * ib as f32);
+                        let quad = [o, pt(o.x + da.x, o.y + da.y), pt(o.x + da.x + db.x, o.y + da.y + db.y), pt(o.x + db.x, o.y + db.y)];
+                        let st = if ia == 0 && ib == 0 { r } else { EStroke::new(0.7_f32, rep_col.gamma_multiply(k * 0.55)) };
+                        painter.add(egui::Shape::closed_line(quad.iter().map(|x| app.to_screen(rect, *x)).collect(), st));
+                    }
+                }
+            }
+        }
+        if handles {
+            for (j, q) in a.points().iter().enumerate() {
+                let s = app.to_screen(rect, *q);
+                let col = if a.is_guide() { guide_col } else { rep_col };
+                if j == 0 {
+                    painter.circle_filled(s, 5.0, if sel { Color32::WHITE } else { col });
+                    painter.circle_stroke(s, 5.0, EStroke::new(1.0_f32, Color32::BLACK));
+                } else {
+                    painter.circle_filled(s, 4.0, Color32::WHITE);
+                    painter.circle_stroke(s, 4.0, EStroke::new(1.5_f32, col));
+                }
+            }
+        }
+    }
+}
+
+/// Magnet / Pinch / Pump / Iron / Bender press.
+fn sculpt_press(app: &mut App, tool: Tool, p0: Pt) {
+    use ac_core::sculpt::Kind;
+    let kind = match tool {
+        Tool::Magnet => Kind::Magnet,
+        Tool::Pinch => Kind::Pinch,
+        Tool::Pump => Kind::Pump,
+        Tool::Iron => Kind::Iron,
+        _ => Kind::Bender,
+    };
+    let opts = ac_core::sculpt::Opts { size: app.topts.sculpt_size, sharp: app.topts.sculpt_sharp, strength: app.topts.sculpt_strength };
+    let tol = 8.0 / app.zoom;
+    if kind == Kind::Bender {
+        // near the segment: start a new one; elsewhere: bend with the current one
+        let near_seg = app.bender_seg.map(|(a, b)| {
+            let (dx, dy) = (b.x - a.x, b.y - a.y);
+            let t = (((p0.x - a.x) * dx + (p0.y - a.y) * dy) / (dx * dx + dy * dy).max(1e-6)).clamp(0.0, 1.0);
+            p0.dist(a.lerp(b, t)) < tol
+        });
+        if let (Some(seg), Some(false)) = (app.bender_seg, near_seg) {
+            match app.ed.sculpt_begin(kind, p0, opts, tol, Some(seg)) {
+                Some(sc) => app.drag = Drag::Sculpt(Box::new(sc)),
+                None => app.status = "Bender: the segment doesn't cross any line on an unlocked layer. Draw it again across the lines.".into(),
+            }
+            return;
+        }
+        app.bender_seg = None;
+        app.drag = Drag::BenderLine { a: p0, cur: p0 };
+        return;
+    }
+    match app.ed.sculpt_begin(kind, p0, opts, tol, None) {
+        Some(sc) => {
+            app.ed.selection.clear();
+            app.drag = Drag::Sculpt(Box::new(sc));
+        }
+        None => {
+            app.status = match kind {
+                Kind::Magnet | Kind::Iron => format!("{}: no lines or shapes within the Size radius on an unlocked layer.", kind.name()),
+                Kind::Pump => "Pump: press on a line (or a drawing object's stroke) and drag up or down.".into(),
+                _ => "Pinch: press on a line or a shape's edge and drag.".into(),
+            }
+        }
+    }
+}
+
 fn warp_press(app: &mut App, p0: Pt, alt: bool) {
     let Some((s, inv, _)) = app.shape_for_points(p0, true) else {
         if app.ed.hit_test(p0).is_none() {
@@ -1638,6 +1867,36 @@ fn drag(app: &mut App, ui: &egui::Ui, rect: Rect, pos: Pos2, p: Pt, shift: bool,
             }
         }
         let _ = part;
+        return;
+    }
+    if matches!(app.drag, Drag::Paint(..)) {
+        if let Drag::Paint(mut s, t0) = std::mem::replace(&mut app.drag, Drag::None) {
+            let now = ui.input(|i| i.time);
+            app.ed.paint_to(&mut s, p, None, (now - t0).max(0.001));
+            app.drag = Drag::Paint(s, now);
+        }
+        return;
+    }
+    if matches!(app.drag, Drag::Sculpt(_)) {
+        if let Drag::Sculpt(mut sc) = std::mem::replace(&mut app.drag, Drag::None) {
+            app.ed.sculpt_drag(&mut sc, p);
+            app.drag = Drag::Sculpt(sc);
+        }
+        return;
+    }
+    if let Drag::BenderLine { cur, .. } = &mut app.drag {
+        *cur = p;
+        return;
+    }
+    if let Drag::AssistPt { i, k, last, started } = app.drag {
+        if let Some(mut a) = app.ed.doc.assistants.get(i).cloned() {
+            match k {
+                Some(k) => a.set_point(k, p),
+                None => a.translate(pt(p.x - last.x, p.y - last.y)),
+            }
+            app.ed.set_assistant(i, a, !started);
+        }
+        app.drag = Drag::AssistPt { i, k, last: p, started: true };
         return;
     }
     if let Drag::Hint { key, index, mut started } = app.drag {
@@ -2076,7 +2335,7 @@ fn drag(app: &mut App, ui: &egui::Ui, rect: Rect, pos: Pos2, p: Pt, shift: bool,
                 *last = p;
             }
         }
-        Drag::None | Drag::MotionPath { .. } | Drag::Hint { .. } | Drag::Bend { .. } | Drag::RigIk { .. } => {}
+        Drag::None | Drag::MotionPath { .. } | Drag::Hint { .. } | Drag::Bend { .. } | Drag::RigIk { .. } | Drag::Sculpt(_) | Drag::BenderLine { .. } | Drag::AssistPt { .. } | Drag::Paint(..) => {}
     }
 }
 
@@ -2099,6 +2358,25 @@ fn release(app: &mut App, rect: Rect, p: Pt, shift: bool, alt: bool) {
                 if let Some(hit) = app.ed.hit_test(p) {
                     app.ed.select(Some(hit), false);
                 }
+            }
+        }
+        Drag::Paint(s, _) => {
+            let id = s.bitmap;
+            app.ed.paint_end(*s);
+            if app.ed.doc.bitmap(id).is_some() {
+                app.status = "Raster Brush: painted into a bitmap on this keyframe (F6 then paint again for the next drawing)".into();
+            }
+        }
+        Drag::Sculpt(sc) => {
+            app.ed.sculpt_end(&sc);
+            if sc.started {
+                app.status = format!("{}: {} object(s) changed", sc.kind.name(), sc.targets.len());
+            }
+        }
+        Drag::BenderLine { a, cur } => {
+            if a.dist(cur) * app.zoom > 4.0 {
+                app.bender_seg = Some((a, cur));
+                app.status = "Bender: now drag on one side of the segment to bend the lines it crosses (press away from it to draw a new one).".into();
             }
         }
         Drag::Bend { layer, key, ei, started, part, .. } => {
@@ -2168,6 +2446,18 @@ fn release(app: &mut App, rect: Rect, p: Pt, shift: bool, alt: bool) {
                     lasso_select(app, &pts, shift);
                 }
             }
+            Tool::Pencil | Tool::Brush if app.assisting() && pts.len() > 1 => {
+                // drawing assistants: snapped and replicated strokes, one undo step
+                let mark = app.ed.undo_depth();
+                let tool = app.tool;
+                for poly in ac_core::assist::apply(&app.ed.doc.assistants, &pts, 1.0 / app.zoom) {
+                    app.drag = Drag::Freehand { pts: poly };
+                    app.assist_bypass = true;
+                    release(app, rect, p, shift, alt);
+                    app.assist_bypass = false;
+                }
+                app.ed.squash_undo(mark, if tool == Tool::Pencil { "Pencil" } else { "Brush" });
+            }
             Tool::Pencil if pts.len() > 1 => {
                 let path = match app.topts.pencil_mode {
                     PencilMode::Straighten => {
@@ -2201,6 +2491,17 @@ fn release(app: &mut App, rect: Rect, p: Pt, shift: bool, alt: bool) {
             }
             _ => {}
         },
+        Drag::Fluid { pts } if app.assisting() && pts.len() > 1 => {
+            let mark = app.ed.undo_depth();
+            let raw: Vec<Pt> = pts.iter().map(|x| x.0).collect();
+            for poly in ac_core::assist::apply(&app.ed.doc.assistants, &raw, 1.0 / app.zoom) {
+                app.drag = Drag::Fluid { pts: poly.into_iter().zip(pts.iter().map(|x| x.1)).collect() };
+                app.assist_bypass = true;
+                release(app, rect, p, shift, alt);
+                app.assist_bypass = false;
+            }
+            app.ed.squash_undo(mark, "Fluid Brush");
+        }
         Drag::Fluid { pts } => {
             let widths = fluid_widths(&pts, app.topts.fluid_size, app.topts.fluid_sensitivity, app.zoom);
             let centre: Vec<Pt> = pts.iter().map(|x| x.0).collect();
@@ -2849,18 +3150,25 @@ fn overlays(app: &App, ui: &egui::Ui, rect: Rect) {
             }
         }
         Drag::Freehand { pts } => {
-            let s: Vec<Pos2> = pts.iter().map(|p| app.to_screen(rect, *p)).collect();
             let st = match app.tool {
                 Tool::Brush => EStroke::new(app.topts.brush_size * app.zoom, app.fill),
                 Tool::Lasso => EStroke::new(1.0_f32, ACCENT),
                 _ => EStroke::new(app.stroke_w * app.zoom, app.stroke),
             };
-            painter.add(egui::Shape::line(s, st));
+            let polys = if app.tool != Tool::Lasso && app.assisting() && pts.len() > 1 { ac_core::assist::apply(&app.ed.doc.assistants, pts, 1.0 / app.zoom) } else { vec![pts.clone()] };
+            for poly in polys {
+                let s: Vec<Pos2> = poly.iter().map(|p| app.to_screen(rect, *p)).collect();
+                painter.add(egui::Shape::line(s, st));
+            }
         }
         Drag::Fluid { pts } => {
             let w = fluid_widths(pts, app.topts.fluid_size, app.topts.fluid_sensitivity, app.zoom);
-            for i in 1..pts.len() {
-                painter.line_segment([app.to_screen(rect, pts[i - 1].0), app.to_screen(rect, pts[i].0)], EStroke::new(w[i] * app.zoom, app.fill));
+            let raw: Vec<Pt> = pts.iter().map(|x| x.0).collect();
+            let polys = if app.assisting() && raw.len() > 1 { ac_core::assist::apply(&app.ed.doc.assistants, &raw, 1.0 / app.zoom) } else { vec![raw] };
+            for poly in polys {
+                for i in 1..poly.len() {
+                    painter.line_segment([app.to_screen(rect, poly[i - 1]), app.to_screen(rect, poly[i])], EStroke::new(w[i] * app.zoom, app.fill));
+                }
             }
             if let Some(f) = pts.first() {
                 painter.circle_filled(app.to_screen(rect, f.0), w.first().copied().unwrap_or(1.0) * app.zoom / 2.0, app.fill);
@@ -2919,11 +3227,41 @@ fn overlays(app: &App, ui: &egui::Ui, rect: Rect) {
         }
         painter.add(egui::Shape::line(pts, EStroke::new(1.0_f32, ACCENT)));
     }
+    // Drawing assistants
+    if !app.ed.doc.assistants.is_empty() && (app.tool == Tool::Assistant || (app.topts.assist_on && matches!(app.tool, Tool::Pencil | Tool::Brush | Tool::FluidBrush))) {
+        draw_assistants(app, &painter, rect, app.tool == Tool::Assistant);
+    }
+    // Bender segment
+    if app.tool == Tool::Bender {
+        let seg = match &app.drag {
+            Drag::BenderLine { a, cur } => Some((*a, *cur)),
+            _ => app.bender_seg,
+        };
+        if let Some((a, b)) = seg {
+            let orange = Color32::from_rgb(0xFF, 0xA0, 0x30);
+            let (sa, sb) = (app.to_screen(rect, a), app.to_screen(rect, b));
+            painter.line_segment([sa, sb], EStroke::new(1.5_f32, orange));
+            painter.circle_filled(sa, 4.0, orange);
+            painter.circle_stroke(sb, 3.5, EStroke::new(1.5_f32, orange));
+        }
+    }
     // Eraser / brush cursors
     if let Some(h) = hover.filter(|h| rect.contains(*h)) {
         match app.tool {
             Tool::Eraser => {
                 painter.circle_stroke(h, app.topts.eraser_size / 2.0 * app.zoom, EStroke::new(1.0_f32, Color32::WHITE));
+            }
+            Tool::RasterBrush => {
+                let r = if app.topts.raster_size > 0.0 { app.topts.raster_size } else { ac_core::paint::PRESETS.get(app.topts.raster_brush).map(|p| p.base_radius()).unwrap_or(2.0) };
+                painter.circle_stroke(h, (r * app.zoom).max(1.5), EStroke::new(1.0_f32, Color32::from_gray(200)));
+            }
+            Tool::Magnet | Tool::Iron => {
+                let c = match &app.drag {
+                    Drag::Sculpt(sc) if app.tool == Tool::Magnet => app.to_screen(rect, sc.from),
+                    _ => h,
+                };
+                painter.circle_stroke(c, app.topts.sculpt_size * app.zoom, EStroke::new(1.0_f32, Color32::from_rgb(0xFF, 0xA0, 0x30)));
+                painter.circle_filled(h, 2.0, Color32::from_rgb(0xFF, 0xA0, 0x30));
             }
             Tool::Brush | Tool::FluidBrush if matches!(app.drag, Drag::None) => {
                 let size = if app.tool == Tool::Brush { app.topts.brush_size } else { app.topts.fluid_size };
