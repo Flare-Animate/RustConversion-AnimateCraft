@@ -85,7 +85,8 @@ Status: ✅ in the demo · 🟡 partial · ⬜ planned
 - ✅ Layer folders (collapse, drag in/out), mask layers, guide + classic motion guide (orient to path), Layer Properties, duplicate layer
 - ✅ Layer parenting (layer menu ▸ Parent Layer), onion markers (drag, anchor, Onion 2/5/All, outlines),
   Edit Multiple Frames, Reverse Frames, Convert to Frame-by-Frame, Ctrl+drag a layer's end
-- ⬜ Layer depth (2.5D), parent-view link column, audio layers with waveform + lip-sync
+- ✅ Frame label types (Name/Comment/Anchor), Show Parenting View, drag any span's end
+- ⬜ Layer depth (2.5D)
 
 **Symbols**
 - ✅ Graphic (synced to parent timeline: Loop / Play Once / Single Frame,
@@ -103,8 +104,9 @@ Status: ✅ in the demo · 🟡 partial · ⬜ planned
 - ✅ Motion tweens: object spans, property keyframes (position on an editable Bezier motion
   path, rotation, skew, scale, alpha, brightness), Orient to path, rotate N times; F6/Shift+F6
   add/clear property keys; keys survive splitting, reversing and span stretching
-- ⬜ 3D/filter/colour properties in motion tweens, tween presets, rig mapping,
-  bone springiness / joint constraints, armature layers
+- ✅ 3D/tint/filter properties in motion tweens, Motion Editor Bezier handles + copy/paste
+  curves, classic per-property eases, Sync, Snap; Play Reverse Once / Loop Reverse
+- ⬜ Tween presets, rig mapping, bone springiness / joint constraints, armature layers
 - ✅ Bones (FK at evaluation, CCD inverse kinematics), Asset Warp pins, 3D
   properties and gradients all tween with Classic tweens
 

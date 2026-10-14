@@ -468,6 +468,15 @@ impl Editor {
         frames::set_last_span_end(&mut self.timeline_mut().layers[layer], end);
     }
 
+    /// Drag the end of any span (later keyframes move with it).
+    pub fn set_span_end(&mut self, layer: usize, start: u32, end: u32) {
+        if self.timeline().layers.get(layer).is_none() {
+            return;
+        }
+        self.checkpoint("Span Length");
+        frames::set_span_end(&mut self.timeline_mut().layers[layer], start, end);
+    }
+
     // ------------------------------------------------------------ shape hints
     /// The shape tween around the playhead on the current layer: (start, end) keyframes.
     pub fn shape_tween_keys(&self) -> Option<(u32, u32)> {
@@ -661,6 +670,22 @@ impl Editor {
         let li = self.layer;
         let l = &mut self.timeline_mut().layers[li];
         l.keyframes.get_mut(&start).unwrap().label = if label.is_empty() { None } else { Some(label.into()) };
+    }
+
+    /// Frame label type (Name / Comment / Anchor) of the current keyframe.
+    pub fn set_frame_label_kind(&mut self, kind: crate::model::LabelKind) {
+        let Some((start, _)) = self.current_keyframe() else { return };
+        self.checkpoint("Label Type");
+        let li = self.layer;
+        self.timeline_mut().layers[li].keyframes.get_mut(&start).unwrap().label_kind = kind;
+    }
+
+    /// Change the current keyframe's classic-tween options (one undo step).
+    pub fn edit_keyframe(&mut self, label: &str, f: impl FnOnce(&mut Keyframe)) {
+        let Some((start, _)) = self.current_keyframe() else { return };
+        self.checkpoint(label);
+        let li = self.layer;
+        f(self.timeline_mut().layers[li].keyframes.get_mut(&start).unwrap());
     }
 
     pub fn set_frame_script(&mut self, script: &str) {
@@ -1019,13 +1044,25 @@ impl Editor {
         } else {
             new_base.matrix = base_el.matrix;
             new_base.alpha = base_el.alpha;
-            new_base.tint = if after.tint != now.tint && crate::motion::brightness_of(after.tint) == 0.0 && after.tint.is_some() { after.tint } else { base_el.tint };
+            new_base.tint = if after.tint != now.tint && crate::motion::brightness_of(after.tint) == 0.0 && after.tint.is_some() && !now.tint.is_some_and(|(c, _)| after.tint.is_some_and(|(c2, _)| c == c2)) { after.tint } else { base_el.tint };
+            // keyed 3D / tint / filter values belong to the tween, not the object
+            new_base.three_d = base_el.three_d;
+            if new_base.filters.len() == base_el.filters.len() {
+                for p in crate::motion::Prop::all_for(&after).into_iter().filter(|p| matches!(p, crate::motion::Prop::Filter(..))) {
+                    if let Some(v) = p.read(&base_el) {
+                        p.write(&mut new_base, v);
+                    }
+                }
+            }
         }
         let l = &mut self.timeline_mut().layers[li];
         let k = l.keyframes.get_mut(&st).unwrap();
         k.elements[0] = new_base;
         if let Some(m) = k.motion.as_deref_mut() {
             m.record(local, &base, &before, &after_p);
+            if local > 0 || m.extra.iter().any(|(_, t)| !t.keys.is_empty()) {
+                m.record_extra(local, &base_el, &now, &after);
+            }
         }
     }
 
@@ -1081,8 +1118,10 @@ impl Editor {
         let (Some(now), Some(base), Some(m)) = (els.first(), kf.elements.first(), kf.motion.as_deref()) else { return };
         let (b, n) = (Pose::of(base, m.pivot), Pose::of(now, m.pivot));
         self.checkpoint("Insert Property Keyframes");
+        let now_el = now.clone();
         if let Some(m) = self.motion_mut(li, st) {
             m.key_all(frame - st, &b, &n);
+            m.key_all_extra(frame - st, &now_el);
         }
     }
 
@@ -1114,12 +1153,21 @@ impl Editor {
         let (Some((els, _)), Some(kf)) = (layer_elements_at(layer, frame), layer.keyframes.get(&st)) else { return };
         let (Some(now), Some(base), Some(m)) = (els.first(), kf.elements.first(), kf.motion.as_deref()) else { return };
         let (b, n) = (Pose::of(base, m.pivot), Pose::of(now, m.pivot));
+        let base_extra = prop.read(base);
         match label {
             Some(l) => self.checkpoint(l),
             None => self.revision += 1,
         }
         if let Some(m) = self.motion_mut(li, st) {
-            m.set_value(prop, frame - st, value, &b, &n);
+            if prop.is_extra() {
+                let t = m.track_mut(prop).unwrap();
+                if t.keys.is_empty() && frame != st {
+                    t.set(0, base_extra.unwrap_or(value));
+                }
+                t.set(frame - st, value);
+            } else {
+                m.set_value(prop, frame - st, value, &b, &n);
+            }
         }
     }
 

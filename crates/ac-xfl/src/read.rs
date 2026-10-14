@@ -447,7 +447,9 @@ impl Reader<'_> {
                         continue;
                     };
                     let loop_mode = match n.attribute("loop") {
-                        Some("play once") | Some("play once reverse") => LoopMode::PlayOnce,
+                        Some("play once") => LoopMode::PlayOnce,
+                        Some("play once reverse") => LoopMode::PlayReverseOnce,
+                        Some("loop reverse") => LoopMode::LoopReverse,
                         Some("single frame") => LoopMode::SingleFrame,
                         _ => LoopMode::Loop,
                     };
@@ -489,7 +491,26 @@ impl Reader<'_> {
     }
 
     fn custom_ease(n: Node) -> Option<Ease> {
-        let ce = child(n, "tweens").and_then(|t| kids(t, "CustomEase").next())?;
+        let ce = child(n, "tweens").and_then(|t| kids(t, "CustomEase").find(|c| matches!(c.attribute("target"), None | Some("all"))))?;
+        Self::ease_of(ce)
+    }
+
+    /// Per-property eases (`CustomEase target="position"` etc.).
+    fn prop_eases(n: Node) -> Option<ac_core::motion::PropEases> {
+        let t = child(n, "tweens")?;
+        let mut pe = ac_core::motion::PropEases::default();
+        let mut any = false;
+        for ce in kids(t, "CustomEase") {
+            let Some(g) = ce.attribute("target").and_then(ac_core::motion::PropGroup::from_id) else { continue };
+            if let Some(e) = Self::ease_of(ce) {
+                *pe.get_mut(g) = Some(e);
+                any = true;
+            }
+        }
+        any.then_some(pe)
+    }
+
+    fn ease_of(ce: Node) -> Option<Ease> {
         let p: Vec<Pt> = kids(ce, "Point").map(|q| pt(f(q, "x", 0.0), f(q, "y", 0.0))).collect();
         // anchor, out-handle, in-handle, anchor, …
         if p.len() < 4 || !(p.len() - 1).is_multiple_of(3) {
@@ -562,8 +583,23 @@ impl Reader<'_> {
             kf.orient_to_path = flag(fr, "motionTweenOrientToPath");
             if flag(fr, "hasCustomEase") || child(fr, "tweens").is_some() {
                 kf.ease_curve = Self::custom_ease(fr);
+                if matches!(kf.tween, Tween::Classic { .. }) {
+                    kf.prop_eases = Self::prop_eases(fr).map(Box::new);
+                }
             }
             kf.label = fr.attribute("name").filter(|s| !s.is_empty()).map(|s| s.to_string());
+            kf.label_kind = match fr.attribute("labelType") {
+                Some("comment") => LabelKind::Comment,
+                Some("anchor") => LabelKind::Anchor,
+                _ => LabelKind::Name,
+            };
+            if fr.attribute("motionTweenSync") == Some("true") {
+                kf.sync = true;
+            }
+            if matches!(kf.tween, Tween::Classic { .. }) {
+                // Animate writes motionTweenSnap="true" when Snap is on and omits it when off
+                kf.snap = flag(fr, "motionTweenSnap");
+            }
             if let Some(sc) = child(fr, "Actionscript").and_then(|a| child(a, "script")) {
                 let code: String = sc.children().filter_map(|t| t.text()).collect();
                 if !code.trim().is_empty() {

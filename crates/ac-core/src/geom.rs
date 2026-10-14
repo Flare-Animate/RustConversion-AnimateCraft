@@ -127,15 +127,20 @@ impl Matrix {
     /// Classic-tween interpolation: decompose both ends, interpolate scale,
     /// skew (shortest way round, plus `extra_turns` full CW rotations) and translation.
     pub fn interpolate(&self, o: &Matrix, t: f32, extra_turns: i32) -> Matrix {
+        self.interpolate_split(o, t, t, t, extra_turns)
+    }
+    /// Like `interpolate`, with separate progress for position, rotation/skew
+    /// and scale (classic tweens with per-property eases).
+    pub fn interpolate_split(&self, o: &Matrix, pos: f32, rot: f32, scale: f32, extra_turns: i32) -> Matrix {
         let a = self.decompose();
         let b = o.decompose();
         let turn = extra_turns as f32 * 2.0 * PI;
-        let ang = |x: f32, y: f32| x + (shortest(x, y) + turn) * t;
+        let ang = |x: f32, y: f32| x + (shortest(x, y) + turn) * rot;
         Matrix::compose(&Decomposed {
-            tx: a.tx + (b.tx - a.tx) * t,
-            ty: a.ty + (b.ty - a.ty) * t,
-            scale_x: a.scale_x + (b.scale_x - a.scale_x) * t,
-            scale_y: a.scale_y + (b.scale_y - a.scale_y) * t,
+            tx: a.tx + (b.tx - a.tx) * pos,
+            ty: a.ty + (b.ty - a.ty) * pos,
+            scale_x: a.scale_x + (b.scale_x - a.scale_x) * scale,
+            scale_y: a.scale_y + (b.scale_y - a.scale_y) * scale,
             skew_x: ang(a.skew_x, b.skew_x),
             skew_y: ang(a.skew_y, b.skew_y),
         })

@@ -392,6 +392,8 @@ impl W<'_> {
                                 LoopMode::Loop => "loop",
                                 LoopMode::PlayOnce => "play once",
                                 LoopMode::SingleFrame => "single frame",
+                                LoopMode::PlayReverseOnce => "play once reverse",
+                                LoopMode::LoopReverse => "loop reverse",
                             };
                             let _ = write!(a, r#" symbolType="graphic" loop="{lp}""#);
                             if i.first_frame > 0 {
@@ -448,9 +450,28 @@ impl W<'_> {
         s
     }
 
-    fn ease_xml(e: &Ease, ind: &str) -> String {
+    /// `<tweens>` with the span's ease ("all") and per-property eases.
+    fn eases_xml(kf: &Keyframe, ind: &str) -> String {
+        let mut inner = String::new();
+        if let Some(e) = &kf.ease_curve {
+            inner.push_str(&Self::ease_xml("all", e, ind));
+        }
+        if let Some(pe) = &kf.prop_eases {
+            for g in ac_core::motion::PropGroup::ALL {
+                if let Some(e) = pe.get(g) {
+                    inner.push_str(&Self::ease_xml(g.id(), e, ind));
+                }
+            }
+        }
+        if inner.is_empty() {
+            return inner;
+        }
+        format!("{ind}<tweens>\n{inner}{ind}</tweens>\n")
+    }
+
+    fn ease_xml(target: &str, e: &Ease, ind: &str) -> String {
         let Ease::Custom { points } = e.to_custom() else { return String::new() };
-        let mut s = format!("{ind}<tweens>\n{ind}  <CustomEase target=\"all\">\n");
+        let mut s = format!("{ind}  <CustomEase target=\"{target}\">\n");
         for (i, p) in points.iter().enumerate() {
             if i > 0 {
                 let _ = writeln!(s, "{ind}    <Point x=\"{}\" y=\"{}\"/>", n(p.x + p.h_in.x), n(p.y + p.h_in.y));
@@ -460,7 +481,7 @@ impl W<'_> {
                 let _ = writeln!(s, "{ind}    <Point x=\"{}\" y=\"{}\"/>", n(p.x + p.h_out.x), n(p.y + p.h_out.y));
             }
         }
-        let _ = writeln!(s, "{ind}  </CustomEase>\n{ind}</tweens>");
+        let _ = writeln!(s, "{ind}  </CustomEase>");
         s
     }
 
@@ -516,7 +537,13 @@ impl W<'_> {
             }
             match kf.tween {
                 Tween::Classic { ease, rotate_turns } => {
-                    fa.push_str(r#" tweenType="motion" motionTweenSnap="true""#);
+                    fa.push_str(r#" tweenType="motion""#);
+                    if kf.snap {
+                        fa.push_str(r#" motionTweenSnap="true""#);
+                    }
+                    if kf.sync {
+                        fa.push_str(r#" motionTweenSync="true""#);
+                    }
                     if rotate_turns != 0 {
                         let _ = write!(fa, r#" motionTweenRotate="{}" motionTweenRotateTimes="{}""#, if rotate_turns > 0 { "cw" } else { "ccw" }, rotate_turns.abs());
                     }
@@ -535,8 +562,11 @@ impl W<'_> {
                 }
                 _ => {}
             }
-            if kf.ease_curve.is_some() && !matches!(kf.tween, Tween::None) {
+            if (kf.ease_curve.is_some() || kf.prop_eases.is_some()) && !matches!(kf.tween, Tween::None) {
                 fa.push_str(r#" hasCustomEase="true""#);
+                if kf.prop_eases.is_some() {
+                    fa.push_str(r#" useSingleEaseCurve="false""#);
+                }
             }
             if let Some(fs) = &kf.sound {
                 if let Some(snd) = self.doc.sound(fs.sound) {
@@ -555,7 +585,7 @@ impl W<'_> {
                 }
             }
             if let Some(lb) = &kf.label {
-                let _ = write!(fa, r#" name="{}" labelType="name""#, esc(lb));
+                let _ = write!(fa, r#" name="{}" labelType="{}""#, esc(lb), kf.label_kind.id());
             }
             if !kf.shape_hints.is_empty() {
                 self.warn.push("shape hints not exported".into());
@@ -565,8 +595,8 @@ impl W<'_> {
             if let Some(code) = &kf.script {
                 let _ = writeln!(s, "{i4}<Actionscript>\n{i4}  <script><![CDATA[{}]]></script>\n{i4}</Actionscript>", code.replace("]]>", "]]]]><![CDATA[>"));
             }
-            if let (Some(e), false) = (&kf.ease_curve, matches!(kf.tween, Tween::None)) {
-                s.push_str(&Self::ease_xml(e, &i4));
+            if !matches!(kf.tween, Tween::None) {
+                s.push_str(&Self::eases_xml(kf, &i4));
             }
             let els = if l.kind == LayerKind::Camera { String::new() } else { self.elements(&kf.elements, &Matrix::IDENTITY, &format!("{i4}  ")) };
             if els.is_empty() {

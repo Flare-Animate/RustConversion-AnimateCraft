@@ -37,6 +37,10 @@ pub struct TimelineState {
     gesture: Gesture,
     /// Layer being dragged in the layer column.
     layer_drag: Option<usize>,
+    /// Show Parenting View: a link column where you drag a layer onto its parent.
+    pub parent_view: bool,
+    /// Parent link being dragged from this layer.
+    link_drag: Option<usize>,
 }
 
 #[derive(Default, Clone, Copy, PartialEq, Debug)]
@@ -47,7 +51,7 @@ enum Gesture {
     /// Dragging selected frames; value = current frame offset.
     Move(i64),
     /// Dragging the end of a layer's last span (Ctrl+drag, or any motion tween).
-    SpanEnd { layer: usize, end: u32 },
+    SpanEnd { layer: usize, start: u32, end: u32 },
 }
 
 const LW: f32 = 230.0; // layer column width
@@ -91,12 +95,23 @@ pub fn frame_menu(app: &mut App, ui: &mut egui::Ui) {
 
 /// Does a drag starting at (layer, frame) grab the end of the layer's last
 /// span? Ctrl+drag on any last frame, plain drag on a motion tween's end.
-fn span_end_at(app: &App, layer: usize, frame: u32, ctrl: bool) -> bool {
-    let Some(l) = app.ed.timeline().layers.get(layer) else { return false };
-    if l.end == 0 || frame + 1 != l.end || l.kind == LayerKind::Folder {
-        return false;
+/// Is `frame` the last frame of a span that can be dragged (Ctrl, or any
+/// motion tween)? Returns the span's start.
+fn span_end_at(app: &App, layer: usize, frame: u32, ctrl: bool) -> Option<u32> {
+    let l = app.ed.timeline().layers.get(layer)?;
+    if l.end == 0 || l.kind == LayerKind::Folder || frame >= l.end {
+        return None;
     }
-    ctrl || l.keyframes.values().next_back().map(|k| k.tween.is_motion()).unwrap_or(false)
+    let (start, kf, next) = l.span_at(frame)?;
+    if frame + 1 != next.unwrap_or(l.end).min(l.end) {
+        return None;
+    }
+    (ctrl || kf.tween.is_motion()).then_some(start)
+}
+
+/// Centre of a row's parent-link dot (Show Parenting View).
+fn link_dot(rect: Rect, y: f32) -> egui::Pos2 {
+    pos2(rect.left() + LW - 90.0, y + RH / 2.0)
 }
 
 /// Layer commands (right-click a layer name, Insert › Timeline).
@@ -158,6 +173,7 @@ fn toolbar(app: &mut App, ui: &mut egui::Ui) {
         ui.separator();
         ui.toggle_value(&mut app.onion, "Onion skin").on_hover_text("Show previous (blue) and next (green) frames; drag the markers above the frames to change the range");
         ui.toggle_value(&mut app.onion_opts.outline, "Outlines").on_hover_text("Onion Skin Outlines");
+        ui.toggle_value(&mut app.tl.parent_view, "Parenting").on_hover_text("Show Parenting View: drag from a layer's link dot onto another layer to parent it (Alt+click a dot to unparent)");
         ui.toggle_value(&mut app.onion_opts.multi, "Edit Multiple").on_hover_text("Edit Multiple Frames: show every keyframe between the markers and move them together");
         if app.onion || app.onion_opts.multi {
             ui.menu_button("Markers", |ui| {
@@ -363,8 +379,8 @@ fn grid(app: &mut App, ui: &mut egui::Ui) {
                 let a = app.tl.anchor.unwrap_or((app.ed.layer, app.ed.frame));
                 app.ed.select_frames(FrameSel::between(a, (l, f)));
                 app.ed.frame = f;
-            } else if cresp.drag_started() && span_end_at(app, l, f, ui.input(|i| i.modifiers.command)) {
-                app.tl.gesture = Gesture::SpanEnd { layer: l, end: f + 1 };
+            } else if let Some(start) = cresp.drag_started().then(|| span_end_at(app, l, f, ui.input(|i| i.modifiers.command))).flatten() {
+                app.tl.gesture = Gesture::SpanEnd { layer: l, start, end: f + 1 };
             } else if inside && cresp.drag_started() {
                 app.tl.anchor = Some((l, f));
                 app.tl.gesture = Gesture::Move(0);
@@ -389,8 +405,8 @@ fn grid(app: &mut App, ui: &mut egui::Ui) {
                         app.tl.gesture = Gesture::Move(f as i64 - a.1 as i64);
                     }
                 }
-                Gesture::SpanEnd { layer, .. } => {
-                    app.tl.gesture = Gesture::SpanEnd { layer, end: f + 1 };
+                Gesture::SpanEnd { layer, start, .. } => {
+                    app.tl.gesture = Gesture::SpanEnd { layer, start, end: (f + 1).max(start + 1) };
                     app.status = format!("Span ends at frame {}", f + 1);
                 }
                 Gesture::None => {}
@@ -398,9 +414,10 @@ fn grid(app: &mut App, ui: &mut egui::Ui) {
         }
     }
     if cresp.drag_stopped() {
-        if let Gesture::SpanEnd { layer, end } = app.tl.gesture {
-            if app.ed.timeline().layers.get(layer).map(|l| l.end != end).unwrap_or(false) {
-                app.ed.set_layer_end(layer, end, Some("Span Length"));
+        if let Gesture::SpanEnd { layer, start, end } = app.tl.gesture {
+            let old = app.ed.timeline().layers.get(layer).and_then(|l| l.span_at(start).map(|(_, _, n)| n.unwrap_or(l.end).min(l.end)));
+            if old.is_some_and(|o| o != end) {
+                app.ed.set_span_end(layer, start, end);
             }
         }
         if let Gesture::Move(delta) = app.tl.gesture {
@@ -413,6 +430,8 @@ fn grid(app: &mut App, ui: &mut egui::Ui) {
     }
     cresp.context_menu(|ui| frame_menu(app, ui));
 
+    // --- parenting view: links from each child's dot to its parent's dot
+    let link_lines: Vec<(usize, usize)> = if app.tl.parent_view { rows.iter().filter_map(|&i| layers[i].anim_parent.map(|p| (i, p))).collect() } else { vec![] };
     // --- rows
     let move_delta = if let Gesture::Move(d) = app.tl.gesture { d } else { 0 };
     let sel = app.ed.frame_sel;
@@ -466,7 +485,37 @@ fn grid(app: &mut App, ui: &mut egui::Ui) {
                 }
             }
         }
-        let name_rect = Rect::from_min_size(pos2(rect.left() + 22.0 + indent, y), vec2(LW - 104.0 - indent, RH));
+        let link_w = if app.tl.parent_view { 18.0 } else { 0.0 };
+        let name_rect = Rect::from_min_size(pos2(rect.left() + 22.0 + indent, y), vec2(LW - 104.0 - indent - link_w, RH));
+        if app.tl.parent_view && layer.kind == LayerKind::Normal {
+            let dot = link_dot(rect, y);
+            let col = if layer.anim_parent.is_some() { c32(layer.color) } else { Color32::from_gray(120) };
+            p.circle_stroke(dot, 4.0, Stroke::new(1.3_f32, col));
+            if layer.anim_parent.is_some() {
+                p.circle_filled(dot, 2.2, col);
+            }
+            let r = ui.interact(Rect::from_center_size(dot, vec2(16.0, 18.0)), ui.id().with(("link", i)), Sense::click_and_drag()).on_hover_text("Drag onto the parent layer · Alt+click: no parent");
+            if r.clicked() && ui.input(|inp| inp.modifiers.alt) {
+                app.ed.set_anim_parent(i, None);
+            }
+            if r.drag_started() {
+                app.tl.link_drag = Some(i);
+            }
+            if r.drag_stopped() {
+                if let (Some(from), Some(pos)) = (app.tl.link_drag.take(), ui.input(|inp| inp.pointer.latest_pos())) {
+                    let to_row = (((pos.y - rows_top) / RH).floor().max(0.0) as usize + vscroll).min(nr - 1);
+                    let to = rows[to_row];
+                    if to == from {
+                        app.ed.set_anim_parent(from, None);
+                    } else if app.ed.parent_candidates(from).contains(&to) {
+                        app.ed.set_anim_parent(from, Some(to));
+                        app.status = format!("{} follows {}", app.ed.timeline().layers[from].name, app.ed.timeline().layers[to].name);
+                    } else {
+                        app.status = "That layer can't be the parent (it would make a loop, or isn't a normal layer)".into();
+                    }
+                }
+            }
+        }
         let renaming = matches!(&app.tl.renaming, Some((ri, _)) if *ri == i);
         if renaming {
             let (_, buf) = app.tl.renaming.as_mut().unwrap();
@@ -613,12 +662,17 @@ fn grid(app: &mut App, ui: &mut egui::Ui) {
                 rp.circle_filled(c, 3.3, Color32::from_gray(20));
             }
             if let Some(label) = &kf.label {
-                rp.text(pos2(x0 + 2.0, y + 2.0), Align2::LEFT_TOP, format!("⚑{label}"), FontId::proportional(10.0), Color32::from_rgb(0xFF, 0x60, 0x60));
+                // Animate's markers: red flag = name, green "//" = comment, gold anchor = anchor
+                let (mark, col) = match kf.label_kind {
+                    ac_core::LabelKind::Name => ("⚑", Color32::from_rgb(0xFF, 0x60, 0x60)),
+                    ac_core::LabelKind::Comment => ("//", Color32::from_rgb(0x60, 0xD0, 0x70)),
+                    ac_core::LabelKind::Anchor => ("⚓", Color32::from_rgb(0xF0, 0xC0, 0x40)),
+                };
+                rp.text(pos2(x0 + 2.0, y + 2.0), Align2::LEFT_TOP, format!("{mark}{label}"), FontId::proportional(10.0), col);
             }
         }
-        if let Gesture::SpanEnd { layer: gl, end } = app.tl.gesture {
+        if let Gesture::SpanEnd { layer: gl, start, end } = app.tl.gesture {
             if gl == i {
-                let start = layer.keyframes.keys().next_back().copied().unwrap_or(0);
                 let r = Rect::from_min_max(pos2(x_of(start), y + 1.0), pos2(x_of(end.max(start + 1)), y + RH - 1.0));
                 rp.rect_stroke(r, 0.0, Stroke::new(2.0_f32, Color32::WHITE));
             }
@@ -634,6 +688,24 @@ fn grid(app: &mut App, ui: &mut egui::Ui) {
                     rp.rect_stroke(g, 0.0, Stroke::new(2.0_f32, Color32::WHITE));
                 }
             }
+        }
+    }
+    // Parenting links: a bracket from the child's dot to its parent's dot
+    let row_of = |l: usize| rows.iter().position(|&r| r == l);
+    for (k, &(c, par)) in link_lines.iter().enumerate() {
+        let (Some(rc), Some(rpar)) = (row_of(c), row_of(par)) else { continue };
+        let (yc, yp) = (row_y(rc) + RH / 2.0, row_y(rpar) + RH / 2.0);
+        let x = link_dot(rect, 0.0).x;
+        let bend = x - 8.0 - (k % 3) as f32 * 3.0;
+        let col = c32(layers[c].color);
+        let st = Stroke::new(1.3_f32, col);
+        let lp = ui.painter_at(Rect::from_min_max(pos2(rect.left(), rows_top), pos2(grid_x0, rect.bottom())));
+        lp.add(egui::Shape::line(vec![pos2(x - 4.0, yc), pos2(bend, yc), pos2(bend, yp), pos2(x - 4.0, yp)], st));
+        lp.circle_filled(pos2(x - 4.0, yp), 2.0, col);
+    }
+    if let (Some(from), Some(pos)) = (app.tl.link_drag, ui.input(|i| i.pointer.latest_pos())) {
+        if let Some(r) = row_of(from) {
+            p.line_segment([link_dot(rect, row_y(r)), pos], Stroke::new(1.5_f32, ACCENT));
         }
     }
     // Layer reorder indicator

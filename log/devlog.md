@@ -117,3 +117,14 @@
 - Fix: dropping a lifted fill back (deselect) no longer erases the lines on its own boundary — stroke cutting now keeps segments that lie on the cut area's edge.
 - Tests: 120 (phase3_gaps.rs: break apart text/bitmap + wand, bitmap fills merging, brush shapes, Ctrl-drag corner, lift keeps outline; artistic strokes render). Xvfb: Magic Wand on a broken-apart two-colour bitmap + Delete, slanted brush stroke, Ctrl-drag corner, width point delete, profile copy/paste.
 - Still open: the Width tool on merge-shape lines (drawing objects only), library "Uses" doesn't count bitmap fills.
+
+## 2026-10-14 — Closing Phase 1–4 gaps, batch C (Phase 2 timeline + tweens)
+- Classic tweens: "Ease each property separately" (position, rotation, scale, colour, filters; `motion::PropEases`, `timeline.set_property_ease`), Sync (graphic instances keep counting across the following keyframes; resolved at evaluation, so it survives retiming) and Snap (motion guide; off keeps the object's offset from the path). `.fla`: `CustomEase target="position"…`, `motionTweenSync`, `motionTweenSnap`.
+- Motion tweens animate 3D rotation X/Y, depth, tint amount and every numeric filter parameter (`Prop::RotationX/RotationY/Depth/Tint/Filter(i, param)`, stored in `Motion::extra`): changing them at a later frame keys them, "+ Property" in the Motion Editor adds a track, `motion.set_key prop: "filter1.blur_x"`, F6 keys them, split/stretch/reverse carry them.
+- Motion Editor: Bezier handles on property keys (click a key; drag handles, Alt breaks them; `PropKey::handles`), Copy/Paste curve (right-click a property name).
+- Graphic looping: Play Reverse Once and Loop Reverse (combo in Properties, `selection.set_looping`, `.fla` "play once reverse"/"loop reverse").
+- Frame label types Name / Comment / Anchor (timeline markers ⚑ / // / ⚓; comments are not jump targets in frame scripts or HTML5; `.fla` labelType).
+- Drag the end of any span (Ctrl, or any motion tween), not only the last; later keyframes move with it (`timeline.set_span_end`).
+- Show Parenting View (timeline toolbar "Parenting"): drag a layer's link dot onto its parent; links drawn as brackets; Alt+click unparents.
+- Fixes: Ctrl+Alt+B (Enable Simple Buttons) was caught by Ctrl+B and broke the selection apart; "▸" in UI strings drew as a box (font has no glyph) → "›".
+- Tests: 130 (phase2_gaps.rs ×10, XFL round trip extended). Xvfb: label markers + type combo, Motion Editor (+ Property → Filter 1 · Blur X, value edit, Bezier handle drag), Parenting view link, classic per-property eases, Ctrl+Alt+B.

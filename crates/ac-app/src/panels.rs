@@ -367,7 +367,7 @@ fn object_properties(app: &mut App, ui: &mut egui::Ui) {
                     hint(ui, "Click a fill or line with the Selection tool to select it; drag an edge to bend it.");
                 }
                 ui.horizontal_wrapped(|ui| {
-                    if ui.add_enabled(f.is_some(), egui::Button::new("Make Drawing Object")).on_hover_text("Modify ▸ Combine Objects ▸ Union").clicked() {
+                    if ui.add_enabled(f.is_some(), egui::Button::new("Make Drawing Object")).on_hover_text("Modify › Combine Objects › Union").clicked() {
                         app.ed.merge_to_object();
                     }
                     if ui.add_enabled(f.is_some(), egui::Button::new("Smooth")).clicked() {
@@ -508,11 +508,14 @@ fn object_properties(app: &mut App, ui: &mut egui::Ui) {
                     section(ui, "Looping");
                     let mut mode = inst.loop_mode;
                     ui.horizontal(|ui| {
-                        for (m, label) in [(LoopMode::Loop, "Loop"), (LoopMode::PlayOnce, "Play Once"), (LoopMode::SingleFrame, "Single Frame")] {
-                            if ui.selectable_value(&mut mode, m, label).changed() {
-                                app.ed.modify_selected("Looping", move |e| if let ElementKind::Instance(i) = &mut e.kind { i.loop_mode = mode });
+                        ui.label("Options");
+                        egui::ComboBox::from_id_salt("loop-mode").selected_text(mode.name()).show_ui(ui, |ui| {
+                            for m in LoopMode::ALL {
+                                if ui.selectable_value(&mut mode, m, m.name()).changed() {
+                                    app.ed.modify_selected("Looping", move |e| if let ElementKind::Instance(i) = &mut e.kind { i.loop_mode = mode });
+                                }
                             }
-                        }
+                        });
                     });
                     let mut ff = inst.first_frame + 1;
                     ui.horizontal(|ui| {
@@ -526,7 +529,7 @@ fn object_properties(app: &mut App, ui: &mut egui::Ui) {
                     lip_sync_section(app, ui, id);
                 }
                 if kind == Some(SymbolKind::Button) {
-                    ui.label(RichText::new("Button: Up / Over / Down / Hit frames. Control ▸ Enable Simple Buttons to try it on the stage.").small().color(Color32::from_gray(150)));
+                    ui.label(RichText::new("Button: Up / Over / Down / Hit frames. Control › Enable Simple Buttons to try it on the stage.").small().color(Color32::from_gray(150)));
                 }
                 ui.horizontal(|ui| {
                     ui.label("Symbol");
@@ -720,6 +723,24 @@ fn frame_properties(app: &mut App, ui: &mut egui::Ui) {
                 app.ed.set_frame_label(&label);
             }
         });
+        if kf.label.is_some() {
+            let mut lk = kf.label_kind;
+            ui.horizontal(|ui| {
+                ui.label("Type");
+                egui::ComboBox::from_id_salt("label-kind").selected_text(lk.name()).show_ui(ui, |ui| {
+                    for k in ac_core::LabelKind::ALL {
+                        ui.selectable_value(&mut lk, k, k.name()).on_hover_text(match k {
+                            ac_core::LabelKind::Name => "A frame name scripts can jump to (gotoAndPlay)",
+                            ac_core::LabelKind::Comment => "A note for authors; not published",
+                            ac_core::LabelKind::Anchor => "A named anchor; published like a name",
+                        });
+                    }
+                });
+            });
+            if lk != kf.label_kind {
+                app.ed.set_frame_label_kind(lk);
+            }
+        }
     }
     // Tween
     let cur = match kf.tween { Tween::None => 0, Tween::Classic { .. } => 1, Tween::Shape { .. } => 2, Tween::Motion { .. } => 3 };
@@ -764,6 +785,9 @@ fn frame_properties(app: &mut App, ui: &mut egui::Ui) {
                 app.ed.set_orient_to_path(orient);
             }
         }
+        if kind == 1 {
+            classic_options(app, ui, &kf, guided);
+        }
         if kind == 1 || kind == 3 {
             ui.horizontal(|ui| {
                 ui.label("Rotate");
@@ -791,6 +815,39 @@ fn frame_properties(app: &mut App, ui: &mut egui::Ui) {
         if ui.button("Edit in Actions panel (F9)").clicked() {
             app.scripting.actions_open = true;
         }
+    }
+}
+
+/// Classic tween: Sync, Snap and "Edit each property separately" eases.
+fn classic_options(app: &mut App, ui: &mut egui::Ui, kf: &ac_core::Keyframe, guided: bool) {
+    use ac_core::motion::{PropEases, PropGroup};
+    ui.horizontal(|ui| {
+        let mut sync = kf.sync;
+        if ui.checkbox(&mut sync, "Sync").on_hover_text("Graphic symbols keep playing across the following keyframes instead of restarting").changed() {
+            app.ed.edit_keyframe("Sync", |k| k.sync = sync);
+        }
+        if guided {
+            let mut snap = kf.snap;
+            if ui.checkbox(&mut snap, "Snap").on_hover_text("Snap the transformation point to the motion guide").changed() {
+                app.ed.edit_keyframe("Snap", |k| k.snap = snap);
+            }
+        }
+    });
+    let mut separate = kf.prop_eases.is_some();
+    if ui.checkbox(&mut separate, "Ease each property separately").changed() {
+        app.ed.edit_keyframe("Property Eases", |k| k.prop_eases = separate.then(Default::default));
+    }
+    let Some(pe) = kf.prop_eases.as_deref() else { return };
+    for g in PropGroup::ALL {
+        ui.horizontal(|ui| {
+            ui.add_sized([62.0, 18.0], egui::Label::new(g.name()));
+            if let Some(choice) = crate::motion_ui::ease_combo(ui, ("prop-ease", g.id()), pe.get(g), "Same as tween", 0.0, 140.0) {
+                app.ed.edit_keyframe("Property Ease", |k| {
+                    let p = k.prop_eases.get_or_insert_with(|| Box::new(PropEases::default()));
+                    *p.get_mut(g) = choice;
+                });
+            }
+        });
     }
 }
 
@@ -824,7 +881,7 @@ fn sound_section(app: &mut App, ui: &mut egui::Ui, kf: &ac_core::Keyframe) {
     }
     let Some(fs) = cur else {
         if app.ed.doc.sounds.is_empty() {
-            hint(ui, "File ▸ Import ▸ Import Sound… (WAV, MP3, OGG, FLAC), then pick it here or drag it from the Library onto the stage.");
+            hint(ui, "File › Import › Import Sound… (WAV, MP3, OGG, FLAC), then pick it here or drag it from the Library onto the stage.");
         }
         return;
     };

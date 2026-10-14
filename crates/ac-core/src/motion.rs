@@ -296,6 +296,102 @@ fn cubic(a: f32, b: f32, c: f32, d: f32, s: f32) -> f32 {
 
 /// Eased progress for a classic/shape tween span: the custom ease when set,
 /// otherwise Animate's −100…100 simple ease.
+/// Classic tween "Edit each property separately": an ease per property group
+/// (None = the span's ease).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct PropEases {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub position: Option<Ease>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rotation: Option<Ease>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scale: Option<Ease>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub color: Option<Ease>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub filters: Option<Ease>,
+}
+
+/// The property groups of `PropEases`, in UI order.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PropGroup {
+    Position,
+    Rotation,
+    Scale,
+    Color,
+    Filters,
+}
+
+impl PropGroup {
+    pub const ALL: [PropGroup; 5] = [PropGroup::Position, PropGroup::Rotation, PropGroup::Scale, PropGroup::Color, PropGroup::Filters];
+    pub fn name(self) -> &'static str {
+        match self {
+            PropGroup::Position => "Position",
+            PropGroup::Rotation => "Rotation",
+            PropGroup::Scale => "Scale",
+            PropGroup::Color => "Color",
+            PropGroup::Filters => "Filters",
+        }
+    }
+    pub fn id(self) -> &'static str {
+        match self {
+            PropGroup::Position => "position",
+            PropGroup::Rotation => "rotation",
+            PropGroup::Scale => "scale",
+            PropGroup::Color => "color",
+            PropGroup::Filters => "filters",
+        }
+    }
+    pub fn from_id(s: &str) -> Option<PropGroup> {
+        PropGroup::ALL.into_iter().find(|g| g.id() == s.to_ascii_lowercase())
+    }
+}
+
+impl PropEases {
+    pub fn get(&self, g: PropGroup) -> Option<&Ease> {
+        match g {
+            PropGroup::Position => self.position.as_ref(),
+            PropGroup::Rotation => self.rotation.as_ref(),
+            PropGroup::Scale => self.scale.as_ref(),
+            PropGroup::Color => self.color.as_ref(),
+            PropGroup::Filters => self.filters.as_ref(),
+        }
+    }
+    pub fn get_mut(&mut self, g: PropGroup) -> &mut Option<Ease> {
+        match g {
+            PropGroup::Position => &mut self.position,
+            PropGroup::Rotation => &mut self.rotation,
+            PropGroup::Scale => &mut self.scale,
+            PropGroup::Color => &mut self.color,
+            PropGroup::Filters => &mut self.filters,
+        }
+    }
+}
+
+/// Tween progress per property group.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PropT {
+    pub pos: f32,
+    pub rot: f32,
+    pub scale: f32,
+    pub color: f32,
+    pub filters: f32,
+}
+
+impl PropT {
+    pub fn all(t: f32) -> PropT {
+        PropT { pos: t, rot: t, scale: t, color: t, filters: t }
+    }
+    /// Progress at raw time `t` (0..1) for a span with simple ease `simple`,
+    /// curve `curve` and optional per-property eases.
+    pub fn at(t: f32, simple: f32, curve: Option<&Ease>, props: Option<&PropEases>) -> PropT {
+        let base = tween_progress(t, simple, curve);
+        let Some(p) = props else { return PropT::all(base) };
+        let g = |g: PropGroup| p.get(g).map(|e| e.apply(t)).unwrap_or(base);
+        PropT { pos: g(PropGroup::Position), rot: g(PropGroup::Rotation), scale: g(PropGroup::Scale), color: g(PropGroup::Color), filters: g(PropGroup::Filters) }
+    }
+}
+
 pub fn tween_progress(t: f32, simple: f32, ease: Option<&Ease>) -> f32 {
     match ease {
         Some(e) => e.apply(t),
@@ -316,12 +412,178 @@ pub enum Prop {
     ScaleY,
     Alpha,
     Brightness,
+    /// 3D rotation around X / Y (degrees) and depth (Z, px).
+    RotationX,
+    RotationY,
+    Depth,
+    /// Tint amount (0…1) of a colour tint.
+    Tint,
+    /// A numeric parameter of the element's filter at index n.
+    Filter(u8, FilterParam),
+}
+
+/// Numeric filter parameters a motion tween can animate.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+pub enum FilterParam {
+    BlurX,
+    BlurY,
+    Strength,
+    Angle,
+    Distance,
+    Brightness,
+    Contrast,
+    Saturation,
+    Hue,
+}
+
+impl FilterParam {
+    pub const ALL: [FilterParam; 9] = [FilterParam::BlurX, FilterParam::BlurY, FilterParam::Strength, FilterParam::Angle, FilterParam::Distance, FilterParam::Brightness, FilterParam::Contrast, FilterParam::Saturation, FilterParam::Hue];
+    pub fn name(self) -> &'static str {
+        match self {
+            FilterParam::BlurX => "Blur X",
+            FilterParam::BlurY => "Blur Y",
+            FilterParam::Strength => "Strength",
+            FilterParam::Angle => "Angle",
+            FilterParam::Distance => "Distance",
+            FilterParam::Brightness => "Brightness",
+            FilterParam::Contrast => "Contrast",
+            FilterParam::Saturation => "Saturation",
+            FilterParam::Hue => "Hue",
+        }
+    }
+    pub fn id(self) -> &'static str {
+        match self {
+            FilterParam::BlurX => "blur_x",
+            FilterParam::BlurY => "blur_y",
+            FilterParam::Strength => "strength",
+            FilterParam::Angle => "angle",
+            FilterParam::Distance => "distance",
+            FilterParam::Brightness => "brightness",
+            FilterParam::Contrast => "contrast",
+            FilterParam::Saturation => "saturation",
+            FilterParam::Hue => "hue",
+        }
+    }
+    /// The parameter's slot in a filter, if it has one.
+    fn slot(self, f: &mut crate::fx::Filter) -> Option<&mut f32> {
+        use crate::fx::Filter as F;
+        use FilterParam as P;
+        Some(match (f, self) {
+            (F::DropShadow { blur_x, .. } | F::Blur { blur_x, .. } | F::Glow { blur_x, .. } | F::Bevel { blur_x, .. }, P::BlurX) => blur_x,
+            (F::DropShadow { blur_y, .. } | F::Blur { blur_y, .. } | F::Glow { blur_y, .. } | F::Bevel { blur_y, .. }, P::BlurY) => blur_y,
+            (F::DropShadow { strength, .. } | F::Glow { strength, .. } | F::Bevel { strength, .. }, P::Strength) => strength,
+            (F::DropShadow { angle, .. } | F::Bevel { angle, .. }, P::Angle) => angle,
+            (F::DropShadow { distance, .. } | F::Bevel { distance, .. }, P::Distance) => distance,
+            (F::AdjustColor { brightness, .. }, P::Brightness) => brightness,
+            (F::AdjustColor { contrast, .. }, P::Contrast) => contrast,
+            (F::AdjustColor { saturation, .. }, P::Saturation) => saturation,
+            (F::AdjustColor { hue, .. }, P::Hue) => hue,
+            _ => return None,
+        })
+    }
+    /// The parameters a filter has.
+    pub fn of(f: &crate::fx::Filter) -> Vec<FilterParam> {
+        let mut c = f.clone();
+        FilterParam::ALL.into_iter().filter(|p| p.slot(&mut c).is_some()).collect()
+    }
 }
 
 impl Prop {
+    /// The basic properties every motion tween has (position, transform, alpha, brightness).
     pub const ALL: [Prop; 8] = [Prop::X, Prop::Y, Prop::Rotation, Prop::Skew, Prop::ScaleX, Prop::ScaleY, Prop::Alpha, Prop::Brightness];
+    /// 3D and colour properties (filters come from the object).
+    pub const EXTRA: [Prop; 4] = [Prop::RotationX, Prop::RotationY, Prop::Depth, Prop::Tint];
+    /// Every property the object `el` can animate: the basics, 3D, tint
+    /// (with a colour tint) and its filters' parameters.
+    pub fn all_for(el: &crate::model::Element) -> Vec<Prop> {
+        let mut v: Vec<Prop> = Prop::ALL.to_vec();
+        v.extend(Prop::EXTRA);
+        for (i, f) in el.filters.iter().enumerate().take(255) {
+            v.extend(FilterParam::of(f).into_iter().map(|p| Prop::Filter(i as u8, p)));
+        }
+        v
+    }
+    /// Kept in `Motion::extra` (not one of the built-in tracks).
+    pub fn is_extra(self) -> bool {
+        matches!(self, Prop::RotationX | Prop::RotationY | Prop::Depth | Prop::Tint | Prop::Filter(..))
+    }
+    /// Display label ("Rotation X", "Filter 1 · Blur X").
+    pub fn label(self) -> String {
+        match self {
+            Prop::Filter(i, p) => format!("Filter {} · {}", i + 1, p.name()),
+            p => p.name().to_string(),
+        }
+    }
+    /// Script id: "x", "scale_x", "rotation_x", "filter1.blur_x".
+    pub fn id(self) -> String {
+        match self {
+            Prop::Filter(i, p) => format!("filter{}.{}", i + 1, p.id()),
+            p => p.name().to_ascii_lowercase().replace(' ', "_"),
+        }
+    }
+    pub fn from_id(s: &str) -> Option<Prop> {
+        let k = s.to_ascii_lowercase().replace(' ', "_");
+        if let Some(rest) = k.strip_prefix("filter") {
+            let (n, p) = rest.split_once('.')?;
+            let i: u8 = n.parse::<u8>().ok()?.checked_sub(1)?;
+            return FilterParam::ALL.into_iter().find(|x| x.id() == p).map(|p| Prop::Filter(i, p));
+        }
+        Prop::ALL.into_iter().chain(Prop::EXTRA).find(|p| p.id() == k || p.name().eq_ignore_ascii_case(s))
+    }
+    /// Read an extra property from an element (None if it doesn't have it).
+    pub fn read(self, el: &crate::model::Element) -> Option<f32> {
+        let t3 = el.three_d.unwrap_or_default();
+        match self {
+            Prop::RotationX => Some(t3.rx),
+            Prop::RotationY => Some(t3.ry),
+            Prop::Depth => Some(t3.z),
+            Prop::Tint => Some(match el.tint {
+                Some((c, a)) if !is_bw(c) => a,
+                _ => 0.0,
+            }),
+            Prop::Filter(i, p) => {
+                let mut f = el.filters.get(i as usize)?.clone();
+                p.slot(&mut f).map(|v| *v)
+            }
+            _ => None,
+        }
+    }
+    /// Write an extra property onto an element.
+    pub fn write(self, el: &mut crate::model::Element, v: f32) {
+        match self {
+            Prop::RotationX | Prop::RotationY | Prop::Depth => {
+                let t = el.three_d.get_or_insert_with(Default::default);
+                match self {
+                    Prop::RotationX => t.rx = v,
+                    Prop::RotationY => t.ry = v,
+                    _ => t.z = v,
+                }
+                if t.is_identity() {
+                    el.three_d = None;
+                }
+            }
+            Prop::Tint => {
+                if let Some((c, a)) = &mut el.tint {
+                    if !is_bw(*c) {
+                        *a = v.clamp(0.0, 1.0);
+                    }
+                }
+            }
+            Prop::Filter(i, p) => {
+                if let Some(slot) = el.filters.get_mut(i as usize).and_then(|f| p.slot(f)) {
+                    *slot = v;
+                }
+            }
+            _ => {}
+        }
+    }
     pub fn name(self) -> &'static str {
         match self {
+            Prop::RotationX => "Rotation X",
+            Prop::RotationY => "Rotation Y",
+            Prop::Depth => "Depth",
+            Prop::Tint => "Tint",
+            Prop::Filter(_, p) => p.name(),
             Prop::X => "X",
             Prop::Y => "Y",
             Prop::Rotation => "Rotation",
@@ -334,19 +596,22 @@ impl Prop {
     }
     pub fn unit(self) -> &'static str {
         match self {
-            Prop::X | Prop::Y => "px",
-            Prop::Rotation | Prop::Skew => "°",
+            Prop::X | Prop::Y | Prop::Depth => "px",
+            Prop::Rotation | Prop::Skew | Prop::RotationX | Prop::RotationY => "°",
+            Prop::Filter(_, FilterParam::Angle | FilterParam::Hue) => "°",
+            Prop::Filter(_, FilterParam::Strength) => "%",
+            Prop::Filter(..) => "",
             _ => "%",
         }
     }
     pub fn from_name(s: &str) -> Option<Prop> {
-        let s = s.to_ascii_lowercase().replace([' ', '_'], "");
-        Prop::ALL.into_iter().find(|p| p.name().to_ascii_lowercase().replace(' ', "") == s)
+        let k = s.to_ascii_lowercase().replace([' ', '_'], "");
+        Prop::ALL.into_iter().chain(Prop::EXTRA).find(|p| p.name().to_ascii_lowercase().replace(' ', "") == k).or_else(|| Prop::from_id(s))
     }
-    /// Shown in the UI as percent for scale/alpha/brightness.
+    /// Shown in the UI as percent for scale/alpha/brightness/tint.
     pub fn display_scale(self) -> f32 {
         match self {
-            Prop::ScaleX | Prop::ScaleY | Prop::Alpha | Prop::Brightness => 100.0,
+            Prop::ScaleX | Prop::ScaleY | Prop::Alpha | Prop::Brightness | Prop::Tint => 100.0,
             _ => 1.0,
         }
     }
@@ -360,6 +625,16 @@ pub struct PropKey {
     /// Smooth point (curved through, Catmull-Rom) vs corner point (linear).
     #[serde(default)]
     pub smooth: bool,
+    /// Bezier handles set in the Motion Editor, in (frames, value) relative to
+    /// the key: `[in_df, in_dv, out_df, out_dv]`. Overrides `smooth`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub handles: Option<[f32; 4]>,
+}
+
+impl PropKey {
+    pub fn new(frame: u32, value: f32, smooth: bool) -> PropKey {
+        PropKey { frame, value, smooth, handles: None }
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -384,6 +659,28 @@ impl Track {
         let (a, b) = (k[i], k[i + 1]);
         let span = (b.frame - a.frame).max(1) as f32;
         let u = (f - a.frame as f32) / span;
+        if a.handles.is_some() || b.handles.is_some() {
+            // a cubic Bezier in (frame, value); solve frame → curve parameter
+            let (o, n) = (self.handle(i, true), self.handle(i + 1, false));
+            let (x0, x3) = (a.frame as f32, b.frame as f32);
+            let x1 = (x0 + o.0).clamp(x0, x3);
+            let x2 = (x3 + n.0).clamp(x0, x3);
+            let (y0, y1, y2, y3) = (a.value, a.value + o.1, b.value + n.1, b.value);
+            let bez = |p0: f32, p1: f32, p2: f32, p3: f32, s: f32| {
+                let r = 1.0 - s;
+                r * r * r * p0 + 3.0 * r * r * s * p1 + 3.0 * r * s * s * p2 + s * s * s * p3
+            };
+            let (mut lo, mut hi) = (0.0f32, 1.0f32);
+            for _ in 0..40 {
+                let mid = (lo + hi) / 2.0;
+                if bez(x0, x1, x2, x3, mid) < f {
+                    lo = mid;
+                } else {
+                    hi = mid;
+                }
+            }
+            return Some(bez(y0, y1, y2, y3, (lo + hi) / 2.0));
+        }
         if !a.smooth && !b.smooth {
             return Some(a.value + (b.value - a.value) * u);
         }
@@ -402,13 +699,43 @@ impl Track {
         let (u2, u3) = (u * u, u * u * u);
         Some((2.0 * u3 - 3.0 * u2 + 1.0) * a.value + (u3 - 2.0 * u2 + u) * m0 + (-2.0 * u3 + 3.0 * u2) * b.value + (u3 - u2) * m1)
     }
+    /// The handle of key `j` (out = towards the next key) in (frames, value):
+    /// its own, or the one a smooth/corner key implies.
+    pub fn handle(&self, j: usize, out: bool) -> (f32, f32) {
+        let k = &self.keys;
+        let key = k[j];
+        if let Some(h) = key.handles {
+            return if out { (h[2], h[3]) } else { (h[0], h[1]) };
+        }
+        let nb = if out { k.get(j + 1) } else { j.checked_sub(1).and_then(|p| k.get(p)) };
+        let Some(nb) = nb else { return (0.0, 0.0) };
+        let df = (nb.frame as f32 - key.frame as f32) / 3.0;
+        let slope = if key.smooth {
+            let p = if j > 0 { k[j - 1] } else { key };
+            let n = if j + 1 < k.len() { k[j + 1] } else { key };
+            (n.value - p.value) / (n.frame as f32 - p.frame as f32).max(1.0)
+        } else {
+            (nb.value - key.value) / (nb.frame as f32 - key.frame as f32)
+        };
+        (df, slope * df)
+    }
+    /// Set Bezier handles on the key at `frame` (None = back to smooth/corner).
+    pub fn set_handles(&mut self, frame: u32, h: Option<[f32; 4]>) {
+        if let Some(k) = self.keys.iter_mut().find(|k| k.frame == frame) {
+            k.handles = h;
+            if h.is_some() {
+                k.smooth = true;
+            }
+        }
+    }
+
     /// Insert or replace the key at `frame`.
     pub fn set(&mut self, frame: u32, value: f32) {
         match self.keys.binary_search_by_key(&frame, |k| k.frame) {
             Ok(i) => self.keys[i].value = value,
             Err(i) => {
                 let smooth = self.keys.get(i.saturating_sub(1)).map(|k| k.smooth).unwrap_or(false);
-                self.keys.insert(i, PropKey { frame, value, smooth });
+                self.keys.insert(i, PropKey::new(frame, value, smooth));
             }
         }
     }
@@ -451,6 +778,13 @@ pub struct Motion {
     /// Extra full turns added across the span (Properties ▸ Rotate).
     #[serde(default)]
     pub rotate_turns: i32,
+    /// 3D, tint and filter tracks (see `Prop::is_extra`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub extra: Vec<(Prop, Track)>,
+}
+
+fn is_bw(c: crate::model::Color) -> bool {
+    (c.r, c.g, c.b) == (255, 255, 255) || (c.r, c.g, c.b) == (0, 0, 0)
 }
 
 /// The values a motion tween animates, as seen on one frame.
@@ -479,6 +813,7 @@ impl Pose {
             Prop::ScaleY => self.scale_y,
             Prop::Alpha => self.alpha,
             Prop::Brightness => self.brightness,
+            _ => 0.0,
         }
     }
     pub fn set(&mut self, p: Prop, v: f32) {
@@ -491,6 +826,7 @@ impl Pose {
             Prop::ScaleY => self.scale_y = v,
             Prop::Alpha => self.alpha = v,
             Prop::Brightness => self.brightness = v,
+            _ => {}
         }
     }
     /// Read the pose of an element (matrix about `pivot`, alpha, tint).
@@ -556,23 +892,36 @@ impl Motion {
     pub fn track(&self, p: Prop) -> Option<&Track> {
         Some(match p {
             Prop::X | Prop::Y => return None,
+            p if p.is_extra() => return self.extra.iter().find(|(q, _)| *q == p).map(|(_, t)| t),
             Prop::Rotation => &self.rotation,
             Prop::Skew => &self.skew,
             Prop::ScaleX => &self.scale_x,
             Prop::ScaleY => &self.scale_y,
             Prop::Alpha => &self.alpha,
             Prop::Brightness => &self.brightness,
+            _ => return None,
         })
     }
     pub fn track_mut(&mut self, p: Prop) -> Option<&mut Track> {
         Some(match p {
             Prop::X | Prop::Y => return None,
+            p if p.is_extra() => {
+                let i = match self.extra.iter().position(|(q, _)| *q == p) {
+                    Some(i) => i,
+                    None => {
+                        self.extra.push((p, Track::default()));
+                        self.extra.len() - 1
+                    }
+                };
+                &mut self.extra[i].1
+            }
             Prop::Rotation => &mut self.rotation,
             Prop::Skew => &mut self.skew,
             Prop::ScaleX => &mut self.scale_x,
             Prop::ScaleY => &mut self.scale_y,
             Prop::Alpha => &mut self.alpha,
             Prop::Brightness => &mut self.brightness,
+            _ => return None,
         })
     }
     /// The ease that applies to a property (its own, else the span's).
@@ -589,6 +938,9 @@ impl Motion {
             if let Some(t) = self.track(p) {
                 v.extend(t.keys.iter().map(|k| k.frame));
             }
+        }
+        for (_, t) in &self.extra {
+            v.extend(t.keys.iter().map(|k| k.frame));
         }
         v.sort();
         v.dedup();
@@ -630,6 +982,44 @@ impl Motion {
             p.rotation += 360.0 * self.rotate_turns as f32 * (f / (len - 1) as f32).clamp(0.0, 1.0);
         }
         p
+    }
+
+    /// Write the 3D / tint / filter tracks onto the posed element.
+    pub fn apply_extra(&self, el: &mut crate::model::Element, local: f32, len: u32, simple: f32, span_ease: Option<&Ease>) {
+        for (p, t) in &self.extra {
+            let f = self.eased_frame(local, len, t.ease.as_ref().or(span_ease), simple);
+            if let Some(v) = t.value_at(f) {
+                p.write(el, v);
+            }
+        }
+    }
+
+    /// Record changes to 3D / tint / filter values made at `frame` (the
+    /// object at that frame went from `before` to `after`; `base` is the span's object).
+    pub fn record_extra(&mut self, frame: u32, base: &crate::model::Element, before: &crate::model::Element, after: &crate::model::Element) {
+        for p in Prop::all_for(after).into_iter().filter(|p| p.is_extra()) {
+            let (Some(b), Some(a)) = (p.read(before), p.read(after)) else { continue };
+            if (b - a).abs() <= 1e-4 {
+                continue;
+            }
+            let base_v = p.read(base).unwrap_or(b);
+            let t = self.track_mut(p).unwrap();
+            if t.keys.is_empty() {
+                if frame == 0 {
+                    continue; // changes the object itself
+                }
+                t.set(0, base_v);
+            }
+            t.set(frame, a);
+        }
+    }
+
+    /// Every track including the extra ones (for retiming).
+    fn all_tracks_mut(&mut self) -> Vec<&mut Track> {
+        let Motion { rotation, skew, scale_x, scale_y, alpha, brightness, extra, .. } = self;
+        let mut v = vec![rotation, skew, scale_x, scale_y, alpha, brightness];
+        v.extend(extra.iter_mut().map(|(_, t)| t));
+        v
     }
 
     /// Point on the motion path at (eased) frame `f`; None without position keys.
@@ -749,7 +1139,11 @@ impl Motion {
                 self.path.retain(|k| k.frame != frame);
                 n != self.path.len()
             }
-            _ => self.track_mut(prop).unwrap().remove(frame),
+            _ => {
+                let r = self.track_mut(prop).unwrap().remove(frame);
+                self.extra.retain(|(_, t)| !t.keys.is_empty() || t.ease.is_some());
+                r
+            }
         }
     }
     /// Move a key in time; refused (returns `from`) when `to` already has one.
@@ -783,7 +1177,28 @@ impl Motion {
     pub fn set_smooth(&mut self, prop: Prop, frame: u32, smooth: bool) {
         if let Some(k) = self.track_mut(prop).and_then(|t| t.keys.iter_mut().find(|k| k.frame == frame)) {
             k.smooth = smooth;
+            k.handles = None;
         }
+    }
+
+    /// A property's curve as a track (Motion Editor ▸ Copy curve). Position
+    /// curves come out as linear keys with the path ease.
+    pub fn curve(&self, prop: Prop) -> Track {
+        match prop {
+            Prop::X | Prop::Y => Track { keys: self.keys_of(prop).into_iter().map(|(f, v)| PropKey::new(f, v, false)).collect(), ease: self.path_ease.clone() },
+            p => self.track(p).cloned().unwrap_or_default(),
+        }
+    }
+    /// Replace a property's curve (Paste curve); keys beyond the span are
+    /// dropped. Position (X/Y) can't take a pasted curve: false.
+    pub fn paste_curve(&mut self, prop: Prop, mut t: Track, len: u32) -> bool {
+        if matches!(prop, Prop::X | Prop::Y) {
+            return false;
+        }
+        t.keys.retain(|k| k.frame < len.max(1));
+        *self.track_mut(prop).unwrap() = t;
+        self.extra.retain(|(_, t)| !t.keys.is_empty() || t.ease.is_some());
+        true
     }
 
     pub fn set_ease(&mut self, prop: Prop, ease: Option<Ease>) {
@@ -808,6 +1223,15 @@ impl Motion {
         }
     }
 
+    /// F6 for the extra (3D / tint / filter) tracks the object already has.
+    pub fn key_all_extra(&mut self, frame: u32, now: &crate::model::Element) {
+        for (p, t) in &mut self.extra {
+            if let Some(v) = p.read(now) {
+                t.set(frame, v);
+            }
+        }
+    }
+
     /// Split at `at` (relative): `self` keeps the keys before it (plus `pose`
     /// as the closing value); the returned motion holds the rest, rebased.
     pub fn split(&mut self, at: u32, pose: &Pose) -> Motion {
@@ -823,11 +1247,21 @@ impl Motion {
             let mut nt = Track { keys: vec![], ease: t.ease.clone() };
             if !t.keys.is_empty() {
                 nt.keys = t.keys.iter().filter(|k| k.frame > at).map(|k| PropKey { frame: k.frame - at, ..*k }).collect();
-                nt.keys.insert(0, PropKey { frame: 0, value: pose.get(prop), smooth: false });
+                nt.keys.insert(0, PropKey::new(0, pose.get(prop), false));
                 t.keys.retain(|k| k.frame < at);
                 t.set(at, pose.get(prop));
             }
             *tail.track_mut(prop).unwrap() = nt;
+        }
+        for (p, t) in &mut self.extra {
+            let mut nt = Track { keys: vec![], ease: t.ease.clone() };
+            if let Some(v) = t.value_at(at as f32) {
+                nt.keys = t.keys.iter().filter(|k| k.frame > at).map(|k| PropKey { frame: k.frame - at, ..*k }).collect();
+                nt.keys.insert(0, PropKey::new(0, v, false));
+                t.keys.retain(|k| k.frame < at);
+                t.set(at, v);
+            }
+            tail.extra.push((*p, nt));
         }
         tail
     }
@@ -838,8 +1272,8 @@ impl Motion {
         let n = self.path.len();
         self.path.retain(|k| k.frame != frame);
         any |= n != self.path.len();
-        for prop in [Prop::Rotation, Prop::Skew, Prop::ScaleX, Prop::ScaleY, Prop::Alpha, Prop::Brightness] {
-            any |= self.track_mut(prop).unwrap().remove(frame);
+        for t in self.all_tracks_mut() {
+            any |= t.remove(frame);
         }
         any
     }
@@ -857,8 +1291,7 @@ impl Motion {
             k.frame = map(k.frame);
         }
         self.path.dedup_by_key(|k| k.frame);
-        for prop in [Prop::Rotation, Prop::Skew, Prop::ScaleX, Prop::ScaleY, Prop::Alpha, Prop::Brightness] {
-            let t = self.track_mut(prop).unwrap();
+        for t in self.all_tracks_mut() {
             for k in &mut t.keys {
                 k.frame = map(k.frame);
             }
@@ -874,8 +1307,7 @@ impl Motion {
             std::mem::swap(&mut k.h_in, &mut k.h_out);
         }
         self.path.reverse();
-        for prop in [Prop::Rotation, Prop::Skew, Prop::ScaleX, Prop::ScaleY, Prop::Alpha, Prop::Brightness] {
-            let t = self.track_mut(prop).unwrap();
+        for t in self.all_tracks_mut() {
             for k in &mut t.keys {
                 k.frame = last.saturating_sub(k.frame);
             }

@@ -452,7 +452,7 @@ pub fn publish(doc: &Document, o: &Html5Opts) -> Files {
         scenes.push(format!("{{\"name\":{},\"start\":{st},\"count\":{}}}", js_str(&sc.name), sc.frame_count()));
         for l in &sc.layers {
             for (fr, k) in &l.keyframes {
-                if let Some(lb) = &k.label {
+                if let Some(lb) = k.target_label() {
                     labels.push(format!("[{},{},{}]", js_str(lb), i, fr));
                 }
             }

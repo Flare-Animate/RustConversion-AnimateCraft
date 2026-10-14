@@ -261,6 +261,7 @@ pub fn convert_to_frame_by_frame(layer: &mut Layer, f0: u32, f1: u32) {
                 if f == s {
                     let src = &layer.keyframes[&s];
                     kf.label = src.label.clone();
+                    kf.label_kind = src.label_kind;
                     kf.script = src.script.clone();
                 }
                 out.push((f, kf));
@@ -350,6 +351,31 @@ pub fn reverse_frames(layer: &mut Layer, f0: u32, f1: u32) {
 
 /// Drag the end of a layer's last span: lengthen/shorten the layer. Motion
 /// tween keys stretch with the span (as in Animate).
+/// Drag the end of the span starting at `start` to `new_end` (exclusive):
+/// later keyframes move with it (Animate's Ctrl-drag of a span's last
+/// frame); a motion tween's property keys stretch to the new length.
+pub fn set_span_end(layer: &mut Layer, start: u32, new_end: u32) {
+    if !layer.keyframes.contains_key(&start) {
+        return;
+    }
+    let next = layer.keyframes.range(start + 1..).next().map(|(&k, _)| k);
+    let Some(old_end) = next else { return set_last_span_end(layer, new_end) };
+    let new_end = new_end.max(start + 1);
+    let delta = new_end as i64 - old_end as i64;
+    if delta == 0 {
+        return;
+    }
+    if let Some(m) = layer.keyframes.get_mut(&start).and_then(|k| k.motion.as_mut()) {
+        m.fit(old_end - start, new_end - start, true);
+    }
+    let later: Vec<u32> = layer.keyframes.range(old_end..).map(|(&k, _)| k).collect();
+    let moved: Vec<(u32, Keyframe)> = later.iter().map(|k| (*k, layer.keyframes.remove(k).unwrap())).collect();
+    for (k, kf) in moved {
+        layer.keyframes.insert((k as i64 + delta) as u32, kf);
+    }
+    layer.end = (layer.end as i64 + delta).max(1) as u32;
+}
+
 pub fn set_last_span_end(layer: &mut Layer, new_end: u32) {
     let Some((&start, _)) = layer.keyframes.iter().next_back() else { return };
     let new_end = new_end.max(start + 1);

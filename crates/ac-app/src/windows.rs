@@ -228,7 +228,7 @@ pub fn scene_window(app: &mut App, ctx: &egui::Context) {
         }
         ui.separator();
         ui.horizontal(|ui| {
-            if ui.button("Add").on_hover_text("Insert ▸ Scene").clicked() {
+            if ui.button("Add").on_hover_text("Insert › Scene").clicked() {
                 action = Some(Box::new(|app: &mut App| {
                     app.ed.add_scene();
                     app.fit_pending = true;

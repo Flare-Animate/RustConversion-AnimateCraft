@@ -125,6 +125,11 @@ fn round_trips_editor_features() {
     let mut k0 = Keyframe::with(vec![inst.clone(), Element::bitmap("", 7, Matrix::translate(100.0, 0.0))]);
     k0.tween = Tween::Classic { ease: 0.0, rotate_turns: 2 };
     k0.ease_curve = Some(ac_core::motion::Ease::linear_custom());
+    k0.prop_eases = Some(Box::new(ac_core::motion::PropEases { scale: Some(ac_core::motion::Ease::preset(ac_core::motion::EaseFamily::Quad, ac_core::motion::EaseDir::In)), ..Default::default() }));
+    k0.sync = true;
+    k0.snap = false;
+    k0.label = Some("why".into());
+    k0.label_kind = LabelKind::Comment;
     body.keyframes.insert(0, k0);
     inst.matrix = Matrix::translate(200.0, 20.0);
     body.keyframes.insert(12, Keyframe::with(vec![inst]));
@@ -164,6 +169,10 @@ fn round_trips_editor_features() {
     assert_eq!(k0.tween, Tween::Classic { ease: 0.0, rotate_turns: 2 });
     let ease = k0.ease_curve.as_ref().unwrap();
     assert!((ease.apply(0.5) - 0.5).abs() < 0.02);
+    let sc = k0.prop_eases.as_ref().and_then(|p| p.scale.as_ref()).expect("per-property ease");
+    assert!((sc.apply(0.5) - 0.25).abs() < 0.03, "{}", sc.apply(0.5));
+    assert!(k0.sync && !k0.snap);
+    assert_eq!((k0.label.as_deref(), k0.label_kind), (Some("why"), LabelKind::Comment));
     let e = &k0.elements[0];
     assert_eq!(e.tint, Some((Color::rgb(255, 0, 0), 0.25)));
     assert_eq!(e.blend, ac_core::fx::BlendMode::Multiply);

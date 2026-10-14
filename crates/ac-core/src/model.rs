@@ -264,6 +264,37 @@ pub enum LoopMode {
     Loop,
     PlayOnce,
     SingleFrame,
+    /// Play backwards from the first frame, then hold frame 1.
+    PlayReverseOnce,
+    /// Play backwards from the first frame, wrapping to the last.
+    LoopReverse,
+}
+
+impl LoopMode {
+    pub const ALL: [LoopMode; 5] = [LoopMode::Loop, LoopMode::PlayOnce, LoopMode::SingleFrame, LoopMode::PlayReverseOnce, LoopMode::LoopReverse];
+    pub fn name(self) -> &'static str {
+        match self {
+            LoopMode::Loop => "Loop",
+            LoopMode::PlayOnce => "Play Once",
+            LoopMode::SingleFrame => "Single Frame",
+            LoopMode::PlayReverseOnce => "Play Reverse Once",
+            LoopMode::LoopReverse => "Loop Reverse",
+        }
+    }
+    /// Lower-case script name ("loop", "play_once", "single_frame", "play_reverse_once", "loop_reverse").
+    pub fn id(self) -> &'static str {
+        match self {
+            LoopMode::Loop => "loop",
+            LoopMode::PlayOnce => "play_once",
+            LoopMode::SingleFrame => "single_frame",
+            LoopMode::PlayReverseOnce => "play_reverse_once",
+            LoopMode::LoopReverse => "loop_reverse",
+        }
+    }
+    pub fn from_id(s: &str) -> Option<LoopMode> {
+        let k = s.to_ascii_lowercase().replace([' ', '-'], "_");
+        LoopMode::ALL.into_iter().find(|m| m.id() == k)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -287,6 +318,8 @@ impl Instance {
                     LoopMode::Loop => raw % dur,
                     LoopMode::PlayOnce => raw.min(dur - 1),
                     LoopMode::SingleFrame => self.first_frame.min(dur - 1),
+                    LoopMode::PlayReverseOnce => self.first_frame.min(dur - 1).saturating_sub(local),
+                    LoopMode::LoopReverse => (self.first_frame.min(dur - 1) as i64 - local as i64).rem_euclid(dur as i64) as u32,
                 }
             }
         }
@@ -496,6 +529,60 @@ pub struct Keyframe {
     /// Properties ▸ Sound: the sound this keyframe starts (or stops).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sound: Option<crate::sound::FrameSound>,
+    /// Frame label type: Name (gotoAndPlay target), Comment (author note,
+    /// not published) or Anchor (a named anchor; published like Name).
+    #[serde(default, skip_serializing_if = "LabelKind::is_name")]
+    pub label_kind: LabelKind,
+    /// Classic tween: separate eases for position, rotation, scale, colour, filters.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prop_eases: Option<Box<crate::motion::PropEases>>,
+    /// Classic tween "Sync": graphic instances keep counting frames across
+    /// the following keyframes of the tween instead of restarting.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub sync: bool,
+    /// Classic tween "Snap": on a motion guide the transformation point snaps
+    /// to the path (on by default); off keeps the object's offset from it.
+    #[serde(default = "yes", skip_serializing_if = "is_true")]
+    pub snap: bool,
+}
+
+fn yes() -> bool {
+    true
+}
+fn is_true(b: &bool) -> bool {
+    *b
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum LabelKind {
+    #[default]
+    Name,
+    Comment,
+    Anchor,
+}
+
+impl LabelKind {
+    pub const ALL: [LabelKind; 3] = [LabelKind::Name, LabelKind::Comment, LabelKind::Anchor];
+    pub fn is_name(&self) -> bool {
+        *self == LabelKind::Name
+    }
+    pub fn name(self) -> &'static str {
+        match self {
+            LabelKind::Name => "Name",
+            LabelKind::Comment => "Comment",
+            LabelKind::Anchor => "Anchor",
+        }
+    }
+    pub fn id(self) -> &'static str {
+        match self {
+            LabelKind::Name => "name",
+            LabelKind::Comment => "comment",
+            LabelKind::Anchor => "anchor",
+        }
+    }
+    pub fn from_id(s: &str) -> Option<LabelKind> {
+        LabelKind::ALL.into_iter().find(|k| k.id() == s.to_ascii_lowercase())
+    }
 }
 
 impl Keyframe {
@@ -503,7 +590,11 @@ impl Keyframe {
         Keyframe::with(vec![])
     }
     pub fn with(elements: Vec<Element>) -> Self {
-        Keyframe { elements, tween: Tween::None, label: None, script: None, orient_to_path: false, ease_curve: None, shape_hints: vec![], motion: None, sound: None }
+        Keyframe { elements, tween: Tween::None, label: None, script: None, orient_to_path: false, ease_curve: None, shape_hints: vec![], motion: None, sound: None, label_kind: LabelKind::Name, prop_eases: None, sync: false, snap: true }
+    }
+    /// The label as a script/publish target (comments are author notes only).
+    pub fn target_label(&self) -> Option<&str> {
+        self.label.as_deref().filter(|_| self.label_kind != LabelKind::Comment)
     }
 }
 
@@ -905,7 +996,8 @@ pub fn layer_elements_at(layer: &Layer, frame: u32) -> Option<(Vec<Element>, u32
         (Tween::None, _) | (_, None) => None,
         (tween, Some(next_start)) if frame > start => {
             let to = &layer.keyframes[&next_start];
-            let t = crate::motion::tween_progress(local as f32 / (next_start - start) as f32, tween.ease(), kf.ease_curve.as_ref());
+            let props = if matches!(tween, Tween::Classic { .. }) { kf.prop_eases.as_deref() } else { None };
+            let t = crate::motion::PropT::at(local as f32 / (next_start - start) as f32, tween.ease(), kf.ease_curve.as_ref(), props);
             let n = kf.shape_hints.len().min(to.shape_hints.len());
             let hints = (n > 0).then(|| (&kf.shape_hints[..n], &to.shape_hints[..n]));
             Some(interpolate_elements(&kf.elements, &to.elements, t, tween, hints))
@@ -913,10 +1005,54 @@ pub fn layer_elements_at(layer: &Layer, frame: u32) -> Option<(Vec<Element>, u32
         _ => None,
     };
     let mut els = tweened.unwrap_or_else(|| kf.elements.clone());
+    sync_first_frames(layer, start, &mut els);
     if !layer.bones.is_empty() {
         apply_bones(&layer.bones, &mut els);
     }
     Some((els, local))
+}
+
+/// Classic tween Sync: an instance in a keyframe reached by a chain of synced
+/// classic tweens continues counting from where the previous keyframe's
+/// instance of the same symbol was, instead of restarting at its first frame.
+fn sync_first_frames(layer: &Layer, start: u32, els: &mut [Element]) {
+    let mut chain = vec![start];
+    let mut s = start;
+    while let Some((&ps, pk)) = layer.keyframes.range(..s).next_back() {
+        if !(pk.sync && matches!(pk.tween, Tween::Classic { .. })) {
+            break;
+        }
+        chain.push(ps);
+        s = ps;
+    }
+    if chain.len() < 2 {
+        return;
+    }
+    chain.reverse();
+    let first = |e: &Element| match &e.kind {
+        ElementKind::Instance(i) => Some((i.symbol, i.first_frame)),
+        _ => None,
+    };
+    let mut ff: Vec<Option<(SymbolId, u32)>> = layer.keyframes[&chain[0]].elements.iter().map(first).collect();
+    for w in chain.windows(2) {
+        let step = w[1] - w[0];
+        let next: Vec<Option<(SymbolId, u32)>> = layer.keyframes[&w[1]].elements.iter().map(first).collect();
+        ff = next
+            .iter()
+            .enumerate()
+            .map(|(i, n)| match (n, ff.get(i).copied().flatten()) {
+                (Some((sym, _)), Some((psym, pf))) if *sym == psym => Some((psym, pf + step)),
+                (n, _) => *n,
+            })
+            .collect();
+    }
+    for (e, f) in els.iter_mut().zip(ff) {
+        if let (ElementKind::Instance(i), Some((sym, frame))) = (&mut e.kind, f) {
+            if i.symbol == sym {
+                i.first_frame = frame;
+            }
+        }
+    }
 }
 
 /// The motion tween's target (the first element) posed at `local` frame.
@@ -931,6 +1067,7 @@ pub fn motion_elements(kf: &Keyframe, local: f32, len: u32, simple: f32) -> Vec<
         }
     }
     pose.apply(el, m.pivot);
+    m.apply_extra(el, local, len, simple, kf.ease_curve.as_ref());
     els
 }
 
@@ -962,24 +1099,26 @@ pub fn apply_bones(bones: &[Bone], els: &mut [Element]) {
     }
 }
 
-fn interpolate_elements(from: &[Element], to: &[Element], t: f32, tween: Tween, hints: Option<(&[Pt], &[Pt])>) -> Vec<Element> {
+fn interpolate_elements(from: &[Element], to: &[Element], pt_: crate::motion::PropT, tween: Tween, hints: Option<(&[Pt], &[Pt])>) -> Vec<Element> {
+    let t = pt_.pos;
     from.iter()
         .enumerate()
         .map(|(i, a)| {
             let Some(b) = to.get(i) else { return a.clone() };
             let turns = if let Tween::Classic { rotate_turns, .. } = tween { rotate_turns } else { 0 };
             let mut out = a.clone();
-            out.matrix = a.matrix.interpolate(&b.matrix, t, turns);
-            out.alpha = a.alpha + (b.alpha - a.alpha) * t;
+            out.matrix = a.matrix.interpolate_split(&b.matrix, pt_.pos, pt_.rot, pt_.scale, turns);
+            let tc = pt_.color;
+            out.alpha = a.alpha + (b.alpha - a.alpha) * tc;
             out.tint = match (a.tint, b.tint) {
-                (Some((ca, ta)), Some((cb, tb))) => Some((ca.lerp(cb, t), ta + (tb - ta) * t)),
-                (Some((c, ta)), None) => Some((c, ta * (1.0 - t))),
-                (None, Some((c, tb))) => Some((c, tb * t)),
+                (Some((ca, ta)), Some((cb, tb))) => Some((ca.lerp(cb, tc), ta + (tb - ta) * tc)),
+                (Some((c, ta)), None) => Some((c, ta * (1.0 - tc))),
+                (None, Some((c, tb))) => Some((c, tb * tc)),
                 (None, None) => None,
             };
-            out.three_d = Transform3D::lerp(a.three_d, b.three_d, t);
-            out.color_fx = ColorXform::lerp(a.color_fx, b.color_fx, t);
-            out.filters = Filter::lerp_list(&a.filters, &b.filters, t);
+            out.three_d = Transform3D::lerp(a.three_d, b.three_d, pt_.rot);
+            out.color_fx = ColorXform::lerp(a.color_fx, b.color_fx, tc);
+            out.filters = Filter::lerp_list(&a.filters, &b.filters, pt_.filters);
             // shape armatures: poses tween with classic and shape tweens
             if let (ElementKind::Shape(sa), ElementKind::Shape(sb)) = (&a.kind, &b.kind) {
                 if let (Some(ra), Some(rb), ElementKind::Shape(so)) = (&sa.rig, &sb.rig, &mut out.kind) {
@@ -1294,6 +1433,7 @@ fn apply_motion_guide(ctx: &EvalCtx, tl: &Timeline, li: usize, g: usize, frame: 
     let layer = &tl.layers[li];
     let Some((start, kf, Some(next))) = layer.span_at(frame) else { return };
     let Tween::Classic { ease, .. } = kf.tween else { return };
+    let snap = kf.snap;
     let Some((gels, _)) = layer_elements_at(&tl.layers[g], frame) else { return };
     let Some(guide) = gels.iter().find_map(|e| match &e.kind {
         ElementKind::Shape(s) => Some(s.path.transformed(&e.matrix)),
@@ -1302,14 +1442,21 @@ fn apply_motion_guide(ctx: &EvalCtx, tl: &Timeline, li: usize, g: usize, frame: 
         return;
     };
     let to = &layer.keyframes[&next];
-    let t = if frame >= next { 1.0 } else { apply_ease((frame - start) as f32 / (next - start) as f32, ease) };
+    let t = if frame >= next { 1.0 } else { crate::motion::PropT::at((frame - start) as f32 / (next - start) as f32, ease, kf.ease_curve.as_ref(), kf.prop_eases.as_deref()).pos };
     for (i, el) in els.iter_mut().enumerate() {
         let (Some(a), Some(b)) = (kf.elements.get(i), to.elements.get(i)) else { continue };
         let c = element_local_center(ctx, a);
         let (pa, pb) = (a.matrix.apply(c), b.matrix.apply(c));
         let (Some((ta, _)), Some((tb, _))) = (crate::deform::nearest_t(&guide, pa), crate::deform::nearest_t(&guide, pb)) else { continue };
         let tt = ta + (tb - ta) * t;
-        let Some(p) = crate::deform::point_at(&guide, tt) else { continue };
+        let Some(mut p) = crate::deform::point_at(&guide, tt) else { continue };
+        if !snap {
+            // keep each keyframe's offset from the path, blended along the tween
+            if let (Some(qa), Some(qb)) = (crate::deform::point_at(&guide, ta), crate::deform::point_at(&guide, tb)) {
+                p.x += (pa.x - qa.x) + ((pb.x - qb.x) - (pa.x - qa.x)) * t;
+                p.y += (pa.y - qa.y) + ((pb.y - qb.y) - (pa.y - qa.y)) * t;
+            }
+        }
         if kf.orient_to_path {
             let dir = |u: f32| {
                 let (p0, p1) = (crate::deform::point_at(&guide, (u - 0.002).max(0.0)), crate::deform::point_at(&guide, (u + 0.002).min(1.0)));

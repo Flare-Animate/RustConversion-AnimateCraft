@@ -16,6 +16,12 @@ pub struct MotionUi {
     range_lock: Option<(Prop, f32, f32)>,
     /// Properties folded away in the Motion Editor.
     folded: Vec<Prop>,
+    /// Key whose Bezier handles are shown: (property, frame).
+    sel: Option<(Prop, u32)>,
+    /// Handle being dragged: (property, frame, out handle).
+    handle_drag: Option<(Prop, u32, bool)>,
+    /// Copied curve (Motion Editor ▸ Copy curve).
+    clip: Option<ac_core::motion::Track>,
 }
 
 // ------------------------------------------------------------------ eases
@@ -220,6 +226,12 @@ enum Act {
     Fold(Prop),
     /// Freeze this property's graph range for the drag that starts now.
     LockRange(Prop, f32, f32),
+    Select(Option<(Prop, u32)>),
+    /// Move a Bezier handle of a key: (frames, value) relative to the key; `mirror` keeps the other side opposite.
+    Handle { prop: Prop, frame: u32, out: bool, d: (f32, f32), mirror: bool },
+    HandleDrag(Option<(Prop, u32, bool)>),
+    Copy(Prop),
+    Paste(Prop),
 }
 
 fn key_value(m: &mut Motion, prop: Prop, frame: u32, v: f32) {
@@ -262,7 +274,7 @@ pub fn motion_editor(app: &mut App, ctx: &egui::Context) {
 fn body(app: &App, ui: &mut egui::Ui) -> Vec<Act> {
     let mut acts = vec![];
     let Some((st, len, m, kf)) = app.ed.current_motion() else {
-        ui.label(RichText::new("Put the playhead inside a motion tween (blue span) to edit its property curves.\nCreate one with Insert ▸ Motion Tween or right-click a frame ▸ Create Motion Tween.").color(Color32::from_gray(160)));
+        ui.label(RichText::new("Put the playhead inside a motion tween (blue span) to edit its property curves.\nCreate one with Insert › Motion Tween or right-click a frame › Create Motion Tween.").color(Color32::from_gray(160)));
         return acts;
     };
     let (m, el) = (m.clone(), kf.elements.first().cloned());
@@ -280,9 +292,33 @@ fn body(app: &App, ui: &mut egui::Ui) -> Vec<Act> {
     ui.label(RichText::new("Drag keys up/down to change values, left/right to retime · click a graph to move the playhead · right-click a key for options").small().color(Color32::from_gray(140)));
     ui.separator();
     let poses: Vec<Pose> = (0..len).map(|f| m.pose_at(&base, f as f32, len, simple, span_ease.as_ref())).collect();
-    let now = poses.get(local as usize).copied().unwrap_or(base);
+    // 3D / tint / filter values come from the evaluated object
+    let shown: Vec<Prop> = Prop::ALL.into_iter().chain(m.extra.iter().map(|(p, _)| *p)).collect();
+    let els: Vec<ac_core::Element> = if m.extra.is_empty() { vec![] } else { (0..len).filter_map(|f| ac_core::motion_elements(kf, f as f32, len, simple).into_iter().next()).collect() };
+    let val = |f: usize, prop: Prop| -> f32 {
+        if prop.is_extra() {
+            els.get(f).and_then(|e| prop.read(e)).unwrap_or(0.0)
+        } else {
+            poses.get(f).copied().unwrap_or(base).get(prop)
+        }
+    };
+    let addable: Vec<Prop> = Prop::all_for(&el).into_iter().filter(|p| p.is_extra() && !shown.contains(p)).collect();
+    if !addable.is_empty() {
+        ui.horizontal(|ui| {
+            ui.menu_button("+ Property", |ui| {
+                ui.label(RichText::new("Animate 3D, colour and filters").small().color(Color32::from_gray(150)));
+                for p in &addable {
+                    if ui.button(p.label()).clicked() {
+                        acts.push(Act::AddKey(*p));
+                        ui.close_menu();
+                    }
+                }
+            });
+            ui.label(RichText::new("Tint needs a Tint colour effect; filters come from Properties › Filters").small().color(Color32::from_gray(140)));
+        });
+    }
     egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-        for prop in Prop::ALL {
+        for prop in shown {
             let folded = app.motion.folded.contains(&prop);
             let ds = prop.display_scale();
             let keys = m.keys_of(prop);
@@ -297,14 +333,25 @@ fn body(app: &App, ui: &mut egui::Ui) -> Vec<Act> {
                         if ui.small_button(arrow).clicked() {
                             acts.push(Act::Fold(prop));
                         }
-                        ui.label(RichText::new(prop.name()).strong());
+                        let name = ui.add(egui::Label::new(RichText::new(prop.label()).strong()).sense(Sense::click()));
+                        name.on_hover_text("Right-click: copy / paste the curve").context_menu(|ui| {
+                            if ui.button("Copy curve").clicked() {
+                                acts.push(Act::Copy(prop));
+                                ui.close_menu();
+                            }
+                            let can = app.motion.clip.is_some() && !matches!(prop, Prop::X | Prop::Y);
+                            if ui.add_enabled(can, egui::Button::new("Paste curve")).on_disabled_hover_text("Copy a curve first (position curves can't be pasted onto)").clicked() {
+                                acts.push(Act::Paste(prop));
+                                ui.close_menu();
+                            }
+                        });
                         // key toggle (diamond)
                         let (r, resp) = ui.allocate_exact_size(vec2(16.0, 16.0), Sense::click());
                         diamond(ui.painter(), r.center(), 5.0, has_key.then_some(Color32::from_rgb(0xF0, 0xC0, 0x40)), Color32::from_gray(200));
                         if resp.on_hover_text(if has_key { "Remove the keyframe at the playhead" } else { "Add a keyframe at the playhead" }).clicked() {
                             acts.push(if has_key { Act::Remove(prop, local) } else { Act::AddKey(prop) });
                         }
-                        let mut v = now.get(prop) * ds + 0.0;
+                        let mut v = val(local as usize, prop) * ds + 0.0;
                         let r = ui.add(egui::DragValue::new(&mut v).speed(0.5).max_decimals(1).suffix(prop.unit()));
                         if crate::panels::edited(&r) {
                             if r.drag_started() || (!r.dragged()) {
@@ -321,7 +368,7 @@ fn body(app: &App, ui: &mut egui::Ui) -> Vec<Act> {
                         let label = if matches!(prop, Prop::X | Prop::Y) { "Position ease" } else { "Ease" };
                         ui.horizontal(|ui| {
                             ui.label(RichText::new(label).small());
-                            if let Some(c) = ease_combo(ui, ("me-ease", prop as u32), cur, "Span ease", 0.0, 110.0) {
+                            if let Some(c) = ease_combo(ui, ("me-ease", prop), cur, "Span ease", 0.0, 110.0) {
                                 acts.push(Act::Ease(prop, c));
                             }
                         });
@@ -335,7 +382,7 @@ fn body(app: &App, ui: &mut egui::Ui) -> Vec<Act> {
                 let (rect, bg) = ui.allocate_exact_size(vec2(w, 70.0), Sense::click_and_drag());
                 let p = ui.painter_at(rect);
                 p.rect_filled(rect, 2.0, Color32::from_gray(0x1E));
-                let vals: Vec<f32> = poses.iter().map(|q| q.get(prop) * ds).collect();
+                let vals: Vec<f32> = (0..len as usize).map(|f| val(f, prop) * ds).collect();
                 let (mut lo, mut hi) = vals.iter().chain(keys.iter().map(|(_, v)| v).map(|v| v * ds).collect::<Vec<_>>().iter()).fold((f32::MAX, f32::MIN), |(a, b), &v| (a.min(v), b.max(v)));
                 if let Some((p0, l, h)) = app.motion.range_lock {
                     if p0 == prop {
@@ -362,11 +409,50 @@ fn body(app: &App, ui: &mut egui::Ui) -> Vec<Act> {
                         acts.push(Act::Frame(st + f));
                     }
                 }
+                // Bezier handles of the selected key
+                let frame_px = (rect.width() - 12.0) / (len.max(2) - 1) as f32;
+                let value_px = (rect.height() - 8.0) / (hi - lo);
+                if let (Some((sp, sf)), Some(t)) = (app.motion.sel, m.track(prop)) {
+                    if sp == prop {
+                        if let Some(ki) = t.keys.iter().position(|k| k.frame == sf) {
+                            let k = t.keys[ki];
+                            let c = pos2(fx(k.frame as f32), fy(k.value * ds));
+                            for out in [false, true] {
+                                if (!out && ki == 0) || (out && ki + 1 == t.keys.len()) {
+                                    continue;
+                                }
+                                let (df, dv) = t.handle(ki, out);
+                                let hp = c + vec2(df * frame_px, -dv * ds * value_px);
+                                p.line_segment([c, hp], Stroke::new(1.0_f32, Color32::from_gray(170)));
+                                p.circle_filled(hp, 3.5, Color32::WHITE);
+                                let r = ui.interact(Rect::from_center_size(hp, vec2(10.0, 10.0)), ui.id().with(("me-h", prop, ki, out)), Sense::drag());
+                                if r.drag_started() {
+                                    acts.push(Act::Begin("Edit Curve Handle"));
+                                    acts.push(Act::LockRange(prop, lo + pad, hi - pad));
+                                    acts.push(Act::HandleDrag(Some((prop, k.frame, out))));
+                                }
+                                if r.dragged() {
+                                    if let Some(pp) = r.interact_pointer_pos() {
+                                        let df = (pp.x - c.x) / frame_px;
+                                        let dv = -(pp.y - c.y) / value_px / ds;
+                                        let df = if out { df.max(0.0) } else { df.min(0.0) };
+                                        let mirror = !ui.input(|i| i.modifiers.alt);
+                                        acts.push(Act::Handle { prop, frame: k.frame, out, d: (df, dv), mirror });
+                                    }
+                                }
+                                if r.drag_stopped() {
+                                    acts.push(Act::HandleDrag(None));
+                                    acts.push(Act::EndDrag);
+                                }
+                            }
+                        }
+                    }
+                }
                 for (ki, (f, v)) in keys.iter().enumerate() {
                     let c = pos2(fx(*f as f32), fy(v * ds));
                     let dragging = app.motion.drag == Some((prop, *f));
                     diamond(&p, c, 5.0, Some(if dragging { Color32::WHITE } else { Color32::from_rgb(0xF0, 0xC0, 0x40) }), Color32::from_gray(30));
-                    let r = ui.interact(Rect::from_center_size(c, vec2(12.0, 12.0)), ui.id().with(("me-key", prop as u32, ki)), Sense::click_and_drag());
+                    let r = ui.interact(Rect::from_center_size(c, vec2(12.0, 12.0)), ui.id().with(("me-key", prop, ki)), Sense::click_and_drag());
                     if r.drag_started() {
                         acts.push(Act::Begin("Edit Property Keyframe"));
                         acts.push(Act::LockRange(prop, lo + pad, hi - pad));
@@ -383,6 +469,9 @@ fn body(app: &App, ui: &mut egui::Ui) -> Vec<Act> {
                     if r.drag_stopped() {
                         acts.push(Act::EndDrag);
                     }
+                    if r.clicked() && !matches!(prop, Prop::X | Prop::Y) {
+                        acts.push(Act::Select(if app.motion.sel == Some((prop, *f)) { None } else { Some((prop, *f)) }));
+                    }
                     let f = *f;
                     r.on_hover_text(format!("frame {} · {:.1}{}", st + f + 1, v * ds, prop.unit())).context_menu(|ui| {
                         if f != 0 && ui.button("Delete keyframe").clicked() {
@@ -397,6 +486,10 @@ fn body(app: &App, ui: &mut egui::Ui) -> Vec<Act> {
                             }
                             if ui.selectable_label(!smooth, "Corner point").clicked() {
                                 acts.push(Act::Smooth(prop, f, false));
+                                ui.close_menu();
+                            }
+                            if ui.button("Bezier handles").on_hover_text("Show this key's handles (or click the key); drag them to shape the curve, Alt breaks them").clicked() {
+                                acts.push(Act::Select(Some((prop, f))));
                                 ui.close_menu();
                             }
                         }
@@ -453,7 +546,12 @@ fn apply(app: &mut App, acts: Vec<Act>) {
             Act::AddKey(prop) => {
                 if let Some((st, len, m, kf)) = app.ed.current_motion() {
                     let base = Pose::of(&kf.elements[0], m.pivot);
-                    let v = m.pose_at(&base, (app.ed.frame - st) as f32, len, kf.tween.ease(), kf.ease_curve.as_ref()).get(prop);
+                    let local = (app.ed.frame - st) as f32;
+                    let v = if prop.is_extra() {
+                        ac_core::motion_elements(kf, local, len, kf.tween.ease()).first().and_then(|e| prop.read(e)).unwrap_or(0.0)
+                    } else {
+                        m.pose_at(&base, local, len, kf.tween.ease(), kf.ease_curve.as_ref()).get(prop)
+                    };
                     let f = app.ed.frame;
                     app.ed.set_motion_value(prop, f, v, Some("Add Property Keyframe"));
                 }
@@ -471,6 +569,45 @@ fn apply(app: &mut App, acts: Vec<Act>) {
             Act::KeyAll => {
                 let (l, f) = (app.ed.layer, app.ed.frame);
                 app.ed.key_all_properties(l, f);
+            }
+            Act::Select(s) => app.motion.sel = s,
+            Act::HandleDrag(h) => app.motion.handle_drag = h,
+            Act::Handle { prop, frame, out, d, mirror } => {
+                app.ed.edit_motion(None, |m, _| {
+                    let Some(t) = m.track_mut(prop) else { return };
+                    let Some(ki) = t.keys.iter().position(|k| k.frame == frame) else { return };
+                    let (mut hin, mut hout) = (t.handle(ki, false), t.handle(ki, true));
+                    if out {
+                        hout = d;
+                        if mirror {
+                            // keep the in-handle opposite, with its own length in frames
+                            let len_in = hin.0.abs().max(0.01);
+                            let k = len_in / d.0.abs().max(0.01);
+                            hin = (-d.0.abs() * k, -d.1 * k);
+                        }
+                    } else {
+                        hin = d;
+                        if mirror {
+                            let len_out = hout.0.abs().max(0.01);
+                            let k = len_out / d.0.abs().max(0.01);
+                            hout = (d.0.abs() * k, -d.1 * k);
+                        }
+                    }
+                    t.set_handles(frame, Some([hin.0, hin.1, hout.0, hout.1]));
+                });
+            }
+            Act::Copy(prop) => {
+                if let Some((_, _, m, _)) = app.ed.current_motion() {
+                    app.motion.clip = Some(m.curve(prop));
+                    app.status = format!("Copied the {} curve", prop.label());
+                }
+            }
+            Act::Paste(prop) => {
+                if let (Some(t), Some((_, len, ..))) = (app.motion.clip.clone(), app.ed.current_motion()) {
+                    app.ed.edit_motion(Some("Paste Curve"), |m, _| {
+                        m.paste_curve(prop, t, len);
+                    });
+                }
             }
         }
     }

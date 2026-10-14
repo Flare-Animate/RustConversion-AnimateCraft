@@ -427,6 +427,8 @@ impl App {
         if k(cmd, Key::V) { self.paste(false); }
         if k(cmd, Key::D) { self.ed.duplicate(); }
         if k(cmd, Key::A) { self.ed.select_all(); }
+        // Ctrl+Alt+B before Ctrl+B: a Ctrl+B match would also take Ctrl+Alt+B
+        if k(cmd | Modifiers::ALT, Key::B) { self.simple_buttons = !self.simple_buttons; self.status = format!("Simple buttons {}", if self.simple_buttons { "on" } else { "off" }); }
         if k(cmd, Key::B) { self.ed.break_apart(); }
         if k(cmd, Key::T) { self.transform_open = !self.transform_open; }
         if k(cmd, Key::K) { self.align_open = !self.align_open; }
@@ -438,7 +440,6 @@ impl App {
         if k(cmd, Key::Semicolon) { self.view.guides = !self.view.guides; }
         if k(cmd, Key::I) { self.info_open = !self.info_open; }
         if k(cmd | sh, Key::H) { self.add_shape_hint(); }
-        if k(cmd | Modifiers::ALT, Key::B) { self.simple_buttons = !self.simple_buttons; self.status = format!("Simple buttons {}", if self.simple_buttons { "on" } else { "off" }); }
         if k(cmd | sh, Key::G) { let n = self.ed.ungroup_selected(); if n > 0 { self.status = format!("Ungrouped {n} group(s)"); } }
         if k(cmd, Key::G) { let n = self.ed.group_selected(); if n > 0 { self.status = "Grouped".into(); } }
         if k(cmd, Key::L) { self.lib.open = !self.lib.open; }

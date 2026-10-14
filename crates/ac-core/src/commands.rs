@@ -40,13 +40,16 @@ cmds! {
     "timeline.reverse_frames", "layer?, frame?, to_layer?, to_frame?", "Reverse the selected frames (tweens play backwards)";
     "timeline.to_frame_by_frame", "layer?, frame?, to_frame?", "Convert tweens in the range to one keyframe per frame";
     "timeline.set_layer_end", "end (last frame), layer?", "Lengthen/shorten a layer's last span (motion tween keys stretch)";
+    "timeline.set_span_end", "end (new last frame of the span), layer?, frame? (any frame in the span)", "Lengthen/shorten any span; later keyframes move with it";
     "shape_hint.add", "x?, y? (start keyframe), to_x?, to_y? (end keyframe)", "Add a shape hint to the shape tween at the playhead; returns its letter";
     "shape_hint.clear", "", "Remove all shape hints from the shape tween at the playhead";
     "motion.info", "layer?, frame?", "The motion tween at the target: span, pivot and property keyframes";
-    "motion.set_key", "prop ('x'|'y'|'rotation'|'skew'|'scale_x'|'scale_y'|'alpha'|'brightness'), frame, value, layer?", "Property keyframe in the motion tween containing frame (scale/alpha in 0..1, angles in degrees)";
+    "motion.set_key", "prop ('x'|'y'|'rotation'|'skew'|'scale_x'|'scale_y'|'alpha'|'brightness'|'rotation_x'|'rotation_y'|'depth'|'tint'|'filterN.blur_x|blur_y|strength|angle|distance|brightness|contrast|saturation|hue'), frame, value, layer?", "Property keyframe in the motion tween containing frame (scale/alpha in 0..1, angles in degrees)";
     "motion.remove_key", "frame, prop? (all), layer?", "Remove property keyframe(s)";
     "motion.set_ease", "prop ('position' or a property), ease (preset name, 'custom', or 'none'), layer?, frame?", "Ease one property of the motion tween (Motion Editor)";
-    "timeline.set_label", "label, layer?, frame?", "Frame label on the keyframe at the target";
+    "timeline.set_label", "label, type? ('name'|'comment'|'anchor'), layer?, frame?", "Frame label on the keyframe at the target";
+    "timeline.set_tween_options", "sync?, snap?, layer?, frame?", "Classic tween Sync (graphics keep counting across keyframes) and Snap (to the motion guide)";
+    "timeline.set_property_ease", "property ('position'|'rotation'|'scale'|'color'|'filters'), ease? (preset name; omit = use the span's ease), layer?, frame?", "Classic tween: ease one property group separately";
     "timeline.set_script", "script, layer?, frame?", "Frame script (JavaScript) on the keyframe at the target";
     "timeline.move_frames", "by, layer?, frame?, to_frame?", "Drag frames left/right";
     "timeline.copy_frames", "layer?, frame?, to_layer?, to_frame?", "Copy Frames (Ctrl+Alt+C)";
@@ -117,6 +120,7 @@ cmds! {
     "draw.oval_primitive", "x, y, w, h, start?, end?, inner? (%), fill?, stroke?", "Oval Primitive (angles and inner radius stay editable)";
     "shape_bone.add", "x1, y1, x2, y2", "Bone inside the drawing object at (x1,y1), from (x1,y1) to (x2,y2); chains onto a bone ending at (x1,y1)";
     "shape_bone.pose", "x, y, to_x, to_y", "Drag the shape bone whose tail is at (x,y) to (to_x,to_y) (IK)";
+    "selection.set_looping", "mode? ('loop'|'play_once'|'single_frame'|'play_reverse_once'|'loop_reverse'), first_frame? (1-based)", "Graphic instance looping options";
     "selection.swap_symbol", "symbol (name or id)", "Swap Symbol: selected instances show another symbol, keeping transform and effects";
     "selection.color_effect", "style ('none'|'brightness'|'tint'|'advanced'|'alpha'), amount? (-100..100 or 0..100), color?, mul? [r,g,b,a %], add? [r,g,b,a]", "Color effect of the selected objects";
     "selection.group", "", "Ctrl+G: group the selection (per layer)";
@@ -474,6 +478,14 @@ pub fn execute(ed: &mut Editor, id: &str, a: &Value) -> Result<Value, String> {
             ed.set_layer_end(l, e + 1, Some("Span Length"));
             Ok(Value::Null)
         }
+        "timeline.set_span_end" => {
+            let l = layer_arg(ed, a, "layer")?.unwrap_or(ed.layer);
+            let f = frame_arg(a, "frame")?.unwrap_or(ed.frame);
+            let e = frame_arg(a, "end")?.ok_or("end is required")?;
+            let start = ed.timeline().layers.get(l).and_then(|x| x.span_at(f)).map(|(s, _, _)| s).ok_or("no span there")?;
+            ed.set_span_end(l, start, e + 1);
+            Ok(Value::Null)
+        }
         "shape_hint.add" => {
             let (s0, s1) = ed.shape_tween_keys().ok_or("no shape tween at the playhead")?;
             let i = ed.add_shape_hint().ok_or("at most 26 shape hints")?;
@@ -493,10 +505,10 @@ pub fn execute(ed: &mut Editor, id: &str, a: &Value) -> Result<Value, String> {
             target(ed, a)?;
             let Some((st, len, m, _)) = ed.current_motion() else { return Err("no motion tween at the target".into()) };
             let mut props = serde_json::Map::new();
-            for p in crate::motion::Prop::ALL {
+            for p in crate::motion::Prop::ALL.into_iter().chain(m.extra.iter().map(|(p, _)| *p)) {
                 let keys: Vec<Value> = m.keys_of(p).into_iter().map(|(f, v)| json!([st + f + 1, v])).collect();
                 if !keys.is_empty() {
-                    props.insert(prop_id(p).into(), Value::Array(keys));
+                    props.insert(p.id(), Value::Array(keys));
                 }
             }
             Ok(json!({ "start": st + 1, "frames": len, "pivot": [m.pivot.x, m.pivot.y], "keys": props, "rotate": m.rotate_turns }))
@@ -568,6 +580,37 @@ pub fn execute(ed: &mut Editor, id: &str, a: &Value) -> Result<Value, String> {
         "timeline.set_label" => {
             target(ed, a)?;
             ed.set_frame_label(string(a, "label").unwrap_or(""));
+            if let Some(k) = string(a, "type") {
+                let kind = crate::model::LabelKind::from_id(k).ok_or_else(|| format!("unknown label type '{k}'"))?;
+                ed.set_frame_label_kind(kind);
+            }
+            Ok(Value::Null)
+        }
+        "timeline.set_tween_options" => {
+            target(ed, a)?;
+            let (sync, snap) = (boolean(a, "sync"), boolean(a, "snap"));
+            ed.edit_keyframe("Tween Options", |k| {
+                if let Some(v) = sync {
+                    k.sync = v;
+                }
+                if let Some(v) = snap {
+                    k.snap = v;
+                }
+            });
+            Ok(Value::Null)
+        }
+        "timeline.set_property_ease" => {
+            target(ed, a)?;
+            let p = string(a, "property").ok_or("missing 'property'")?;
+            let g = crate::motion::PropGroup::from_id(p).ok_or_else(|| format!("unknown property '{p}'"))?;
+            let ease = parse_ease(a.get("ease"))?;
+            ed.edit_keyframe("Property Ease", |k| {
+                let pe = k.prop_eases.get_or_insert_with(Default::default);
+                *pe.get_mut(g) = ease;
+                if **pe == crate::motion::PropEases::default() {
+                    k.prop_eases = None;
+                }
+            });
             Ok(Value::Null)
         }
         "timeline.set_script" => {
@@ -853,7 +896,7 @@ pub fn execute(ed: &mut Editor, id: &str, a: &Value) -> Result<Value, String> {
             let l = &ed.timeline().layers[li];
             let kf = &l.keyframes[&start];
             Ok(json!({
-                "start": start + 1, "duration": l.span_end(start) - start, "label": kf.label, "tween": tween, "ease": kf.tween.ease(),
+                "start": start + 1, "duration": l.span_end(start) - start, "label": kf.label, "label_type": kf.label_kind.id(), "sync": kf.sync, "snap": kf.snap, "tween": tween, "ease": kf.tween.ease(),
                 "script": kf.script, "sound": kf.sound.as_ref().and_then(|s| ed.doc.sound(s.sound)).map(|s| s.name.clone()),
                 "elements": els,
             }))
@@ -1111,6 +1154,25 @@ pub fn execute(ed: &mut Editor, id: &str, a: &Value) -> Result<Value, String> {
             let m = Editor::camera_from(pt(num(a, "x").unwrap_or(c.x), num(a, "y").unwrap_or(c.y)), num(a, "rotation").unwrap_or(rot), num(a, "zoom").unwrap_or(zoom));
             ed.begin_edit("Camera");
             ed.set_camera(m);
+            Ok(Value::Null)
+        }
+        "selection.set_looping" => {
+            need_selection(ed)?;
+            let mode = match string(a, "mode") {
+                Some(m) => Some(crate::model::LoopMode::from_id(m).ok_or_else(|| format!("unknown looping mode '{m}'"))?),
+                None => None,
+            };
+            let first = num(a, "first_frame").map(|f| (f.max(1.0) as u32) - 1);
+            ed.modify_selected("Looping", |e| {
+                if let ElementKind::Instance(i) = &mut e.kind {
+                    if let Some(m) = mode {
+                        i.loop_mode = m;
+                    }
+                    if let Some(f) = first {
+                        i.first_frame = f;
+                    }
+                }
+            });
             Ok(Value::Null)
         }
         "selection.swap_symbol" => {
@@ -1405,26 +1467,9 @@ pub fn reference() -> String {
     s
 }
 
-fn prop_id(p: crate::motion::Prop) -> &'static str {
-    use crate::motion::Prop::*;
-    match p {
-        X => "x",
-        Y => "y",
-        Rotation => "rotation",
-        Skew => "skew",
-        ScaleX => "scale_x",
-        ScaleY => "scale_y",
-        Alpha => "alpha",
-        Brightness => "brightness",
-    }
-}
-
 fn prop_arg(a: &Value) -> Result<crate::motion::Prop, String> {
     let s = string(a, "prop").ok_or("prop is required")?;
-    crate::motion::Prop::ALL
-        .into_iter()
-        .find(|p| prop_id(*p) == s.to_ascii_lowercase() || p.name().eq_ignore_ascii_case(s))
-        .ok_or_else(|| format!("unknown property '{s}' (x, y, rotation, skew, scale_x, scale_y, alpha, brightness)"))
+    crate::motion::Prop::from_id(s).ok_or_else(|| format!("unknown property '{s}' (x, y, rotation, skew, scale_x, scale_y, alpha, brightness, rotation_x, rotation_y, depth, tint, filter1.blur_x …)"))
 }
 
 /// `"Quad In"`, `"none"`/null, `"custom"` or `[[x,y,in_dx,in_dy,out_dx,out_dy]...]`.

@@ -834,9 +834,9 @@ pub fn labels(tl: &ac_core::Timeline) -> Vec<(String, u32)> {
     let mut v: Vec<(String, u32)> = Vec::new();
     for l in &tl.layers {
         for (f, k) in &l.keyframes {
-            if let Some(name) = &k.label {
+            if let Some(name) = k.target_label() {
                 if !v.iter().any(|(n, _)| n == name) {
-                    v.push((name.clone(), *f));
+                    v.push((name.to_string(), *f));
                 }
             }
         }
