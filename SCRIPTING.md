@@ -118,7 +118,15 @@ ac.selection.set_gradient({ kind: "radial", colors: ["#FFFFFF", "#2D8CEB"] }); /
 ac.bone.add({ x1: 100, y1: 100, x2: 180, y2: 100 });   // from the object at (x1,y1) to the one at (x2,y2)
 ac.bone.drag({ x: 260, y: 100, to_x: 220, to_y: 180 }); // pose with inverse kinematics
 ac.camera.set({ x: 275, y: 200, zoom: 1.5, rotation: 10, frame: 24 });
+ac.camera.mode({ mode: "free" });                        // "stage" (Animate's camera) or "free" (VCam)
+ac.camera.options({ follow: "hero", follow_lag: 4, offset_x: 40, shake: 6, shake_speed: 10, frame: 1 });
+ac.camera.effect({ brightness: 0.3, tint: "#FF8800", tint_amount: 0.2, alpha: 1, blur: 4, frame: 24 });
 ```
+
+Camera options belong to the camera span they're set on (a new camera keyframe
+inside the span inherits them). `follow` names a top-level instance; the camera
+centres on it, averaged over `follow_lag` frames (≤24) and shifted by the
+offset. Shake is deterministic, so every export shows the same motion.
 
 ### Layers, groups, alignment, filters, import
 

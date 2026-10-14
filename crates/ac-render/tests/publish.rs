@@ -141,3 +141,23 @@ fn lottie_masks_become_track_mattes() {
     let matte = layers.iter().position(|x| x["td"] == 1).expect("a matte layer");
     assert_eq!(layers[matte + 1]["tt"], 1, "the masked content follows its matte");
 }
+
+#[test]
+fn gradient_filters_publish_as_pixel_stages() {
+    let mut d = doc();
+    let el = &mut d.scene.layers[0].keyframes.get_mut(&0).unwrap().elements[0];
+    el.filters = vec![Filter::default_of("blur").unwrap(), Filter::default_of("gradient glow").unwrap(), Filter::default_of("adjust color").unwrap()];
+    let files = publish(&d, &Html5Opts::default());
+    let movie = String::from_utf8(files[1].1.clone()).unwrap();
+    let json = movie.trim_start_matches("var AC_MOVIE=").trim_end().trim_end_matches(';');
+    let m: serde_json::Value = serde_json::from_str(json).unwrap();
+    let fx = m["fx"].as_array().unwrap().iter().find(|f| f.get("s").is_some()).expect("a staged effect");
+    let s = fx["s"].as_array().unwrap();
+    assert_eq!(s.len(), 3, "css blur, the ramp glow, css adjust colour: {s:?}");
+    assert!(s[0]["c"].as_str().unwrap().starts_with("blur("));
+    assert_eq!(s[1]["g"]["k"], "glow");
+    assert_eq!(s[1]["g"]["r"].as_array().unwrap().len(), 2);
+    assert!(s[2]["c"].is_string());
+    let rt = String::from_utf8(files[2].1.clone()).unwrap();
+    assert!(rt.contains("function rampFilter"));
+}

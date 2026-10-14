@@ -652,6 +652,11 @@ fn cubic_at(p0: Pt, p1: Pt, p2: Pt, p3: Pt, t: f32) -> Pt {
     )
 }
 
+/// Is `p` inside the polygon `poly` (even-odd)?
+pub fn point_in_polygon(p: Pt, poly: &[Pt]) -> bool {
+    point_in_poly(poly, p)
+}
+
 fn point_in_poly(poly: &[Pt], p: Pt) -> bool {
     let mut inside = false;
     let n = poly.len();

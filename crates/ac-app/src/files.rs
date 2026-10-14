@@ -268,7 +268,7 @@ impl App {
                 if n == 0 { format!("Opened {path}") } else { format!("Opened {path} ({n} notes, see Output)") }
             }),
             FileAction::Save | FileAction::ExportXfl if is_xfl(p) => {
-                let doc = self.ed.doc.with_floats_committed();
+                let doc = self.ed.saved_doc();
                 ac_xfl::save(&doc, p).map(|w| {
                     self.report_warnings("Export", path, &w);
                     if action == FileAction::Save {
@@ -291,8 +291,9 @@ impl App {
                 if n == 0 { format!("Opened {path}") } else { format!("Opened {path} ({n} notes, see Output)") }
             }),
             FileAction::Save if is_package(p) => {
-                let thumb = thumbnail(&self.ed.doc);
-                ac_package::save(&self.ed.doc, p, thumb.as_deref()).map(|_| {
+                let doc = self.ed.saved_doc();
+                let thumb = thumbnail(&doc);
+                ac_package::save(&doc, p, thumb.as_deref()).map(|_| {
                     self.file_path = Some(path.into());
                     self.saved_rev = self.ed.revision;
                     self.settings.add_recent(path);
@@ -307,7 +308,7 @@ impl App {
                     format!("Opened {path}")
                 })
             }),
-            FileAction::Save => std::fs::write(p, self.ed.doc.with_floats_committed().to_json()).map_err(|e| e.to_string()).map(|_| {
+            FileAction::Save => std::fs::write(p, self.ed.saved_doc().to_json()).map_err(|e| e.to_string()).map(|_| {
                 self.file_path = Some(path.into());
                 self.saved_rev = self.ed.revision;
                 self.settings.add_recent(path);
@@ -374,7 +375,7 @@ impl App {
         }
         if let (Some(p), Some(m)) = (recovery_path(), recovery_meta_path()) {
             let meta = RecoveryMeta { original: self.file_path.clone(), saved_at: now_secs() };
-            if std::fs::write(&p, self.ed.doc.with_floats_committed().to_json()).is_ok() {
+            if std::fs::write(&p, self.ed.saved_doc().to_json()).is_ok() {
                 let _ = std::fs::write(m, serde_json::to_string(&meta).unwrap_or_default());
                 self.autosave_rev = self.ed.revision;
                 self.dirty_since = None;

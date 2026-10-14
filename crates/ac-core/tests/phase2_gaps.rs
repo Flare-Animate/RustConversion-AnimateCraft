@@ -244,3 +244,22 @@ fn editing_a_group_and_closing_it() {
     assert_eq!(g.len(), 3);
     assert!(ed.doc.library.is_empty(), "the temporary symbol is gone");
 }
+
+#[test]
+fn saving_while_a_group_is_open_writes_the_group() {
+    use ac_core::commands::execute;
+    use serde_json::json;
+    let mut ed = Editor::new(Default::default());
+    execute(&mut ed, "draw.rect", &json!({"x": 0, "y": 0, "w": 40, "h": 40})).unwrap();
+    execute(&mut ed, "draw.oval", &json!({"x": 50, "y": 0, "w": 40, "h": 40})).unwrap();
+    execute(&mut ed, "select.all", &json!({})).unwrap();
+    execute(&mut ed, "selection.group", &json!({})).unwrap();
+    execute(&mut ed, "select.all", &json!({})).unwrap();
+    execute(&mut ed, "group.edit", &json!({})).unwrap();
+    execute(&mut ed, "draw.rect", &json!({"x": 0, "y": 50, "w": 10, "h": 10})).unwrap();
+    let saved = ed.saved_doc();
+    assert!(saved.library.is_empty(), "no temporary symbol in the file");
+    let ElementKind::Group(g) = &saved.scene.layers[0].keyframes[&0].elements[0].kind else { panic!("a group") };
+    assert_eq!(g.len(), 3, "with the object drawn while editing");
+    assert!(ed.editing.is_some(), "still editing the group");
+}

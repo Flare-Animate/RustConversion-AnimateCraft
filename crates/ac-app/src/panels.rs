@@ -380,6 +380,9 @@ fn object_properties(app: &mut App, ui: &mut egui::Ui) {
                         app.ed.shape_cleanup("optimize");
                     }
                 });
+                if f.is_some_and(|f| !f.strokes.is_empty()) {
+                    width_profile_buttons(app, ui);
+                }
             }
             ElementKind::Shape(s) if n == 1 => {
                 section(ui, "Fill and stroke");
@@ -1462,10 +1465,17 @@ pub fn library_drag_ghost(app: &mut App, ctx: &egui::Context) {
 
 /// Copy the selected shape's variable-width profile / paste it onto the selected shapes.
 fn width_profile_buttons(app: &mut App, ui: &mut egui::Ui) {
-    let current = app.ed.selection.iter().find_map(|s| match app.ed.element_at(*s).map(|e| e.kind) {
-        Some(ElementKind::Shape(sh)) if sh.stroke.is_some() => Some(sh.width_profile.clone()),
-        _ => None,
-    });
+    // a drawing object's stroke, or the lines of a floating merge selection
+    let merge_lines = app.ed.merge_float().and_then(|(_, f)| f.strokes.first().map(|s| s.width.clone()));
+    let current = app
+        .ed
+        .selection
+        .iter()
+        .find_map(|s| match app.ed.element_at(*s).map(|e| e.kind) {
+            Some(ElementKind::Shape(sh)) if sh.stroke.is_some() => Some(sh.width_profile.clone()),
+            _ => None,
+        })
+        .or(merge_lines.clone());
     ui.horizontal(|ui| {
         if ui.add_enabled(matches!(current, Some(Some(_))), egui::Button::new("Copy width profile").small()).clicked() {
             app.width_clip = current.clone().flatten();
@@ -1473,7 +1483,9 @@ fn width_profile_buttons(app: &mut App, ui: &mut egui::Ui) {
         }
         if ui.add_enabled(app.width_clip.is_some() && current.is_some(), egui::Button::new("Paste width profile").small()).clicked() {
             let prof = app.width_clip.clone();
-            app.ed.modify_selected("Paste Width Profile", move |e| if let ElementKind::Shape(s) = &mut e.kind { if s.stroke.is_some() { s.width_profile = prof.clone() } });
+            if !(merge_lines.is_some() && app.ed.merge_paste_width(prof.clone())) {
+                app.ed.modify_selected("Paste Width Profile", move |e| if let ElementKind::Shape(s) = &mut e.kind { if s.stroke.is_some() { s.width_profile = prof.clone() } });
+            }
         }
     });
 }
@@ -1729,6 +1741,22 @@ fn camera_properties(app: &mut App, ui: &mut egui::Ui) {
         }
         return;
     }
+    // Mode: Animate's stage camera, or a free camera (VCam) you move around the scene
+    let mut mode = app.ed.doc.camera_mode;
+    ui.horizontal(|ui| {
+        ui.label("Mode");
+        ui.selectable_value(&mut mode, ac_core::CameraMode::Stage, "Stage").on_hover_text("The stage is the camera frame: drag to pan the scene under it (Animate's camera)");
+        ui.selectable_value(&mut mode, ac_core::CameraMode::Free, "Free (VCam)").on_hover_text("The camera is a frame on the scene you move, zoom and rotate like an object; output renders through it");
+    });
+    if mode != app.ed.doc.camera_mode {
+        app.ed.set_camera_mode(mode);
+    }
+    if mode == ac_core::CameraMode::Free {
+        ui.horizontal(|ui| {
+            ui.checkbox(&mut app.vcam_preview, "Preview through camera");
+            ui.checkbox(&mut app.vcam_dim, "Dim outside");
+        });
+    }
     let cam = app.ed.camera_at(app.ed.frame).unwrap_or_else(|| ac_core::default_camera(&app.ed.doc).matrix);
     let (c, rot, zoom) = Editor::camera_params(&cam);
     let (mut x, mut y, mut r, mut z) = (c.x, c.y, rot, zoom * 100.0);
@@ -1759,7 +1787,136 @@ fn camera_properties(app: &mut App, ui: &mut egui::Ui) {
             app.ed.remove_camera();
         }
     });
-    hint(ui, "Changes make a camera keyframe at the playhead; add a Classic tween on the Camera layer to animate it. The stage shows the camera view while this tool is active and during playback.");
+    camera_effects_ui(app, ui);
+    camera_options_ui(app, ui);
+    hint(ui, if mode == ac_core::CameraMode::Free {
+        "Free camera: drag inside the orange frame to move it, a corner to zoom, the knob to rotate (Shift: 15° steps). Changes make a camera keyframe; a Classic tween on the Camera layer animates it."
+    } else {
+        "Changes make a camera keyframe at the playhead; add a Classic tween on the Camera layer to animate it. The stage shows the camera view while this tool is active and during playback."
+    });
+}
+
+/// Camera colour effect and blur: they apply to everything the camera sees.
+fn camera_effects_ui(app: &mut App, ui: &mut egui::Ui) {
+    let Some(cam) = app.ed.camera_object(app.ed.frame) else { return };
+    section(ui, "Camera effects");
+    let bright = ac_core::motion::brightness_of(cam.tint);
+    let tint_c = cam.tint.filter(|(c, _)| !((c.r, c.g, c.b) == (255, 255, 255) || (c.r, c.g, c.b) == (0, 0, 0)));
+    let blur = cam.filters.iter().find_map(|f| if let ac_core::Filter::Blur { blur_x, .. } = f { Some(*blur_x) } else { None }).unwrap_or(0.0);
+    let (mut b, mut al, mut bl) = (bright * 100.0, cam.alpha * 100.0, blur);
+    let (mut tc, mut ta) = (tint_c.map(|t| c32(t.0)).unwrap_or(Color32::from_rgb(0xFF, 0x80, 0x20)), tint_c.map(|t| t.1 * 100.0).unwrap_or(0.0));
+    let mut changed: Option<&'static str> = None;
+    egui::Grid::new("cam-fx").num_columns(2).show(ui, |ui| {
+        ui.label("Brightness");
+        if edited(&ui.add(egui::Slider::new(&mut b, -100.0..=100.0).suffix("%"))) {
+            changed = Some("b");
+        }
+        ui.end_row();
+        ui.label("Tint");
+        ui.horizontal(|ui| {
+            if ui.color_edit_button_srgba(&mut tc).changed() {
+                changed = Some("t");
+            }
+            if edited(&ui.add(egui::Slider::new(&mut ta, 0.0..=100.0).suffix("%"))) {
+                changed = Some("t");
+            }
+        });
+        ui.end_row();
+        ui.label("Alpha");
+        if edited(&ui.add(egui::Slider::new(&mut al, 0.0..=100.0).suffix("%"))) {
+            changed = Some("a");
+        }
+        ui.end_row();
+        ui.label("Blur");
+        if edited(&ui.add(egui::Slider::new(&mut bl, 0.0..=60.0).suffix(" px"))) {
+            changed = Some("blur");
+        }
+        ui.end_row();
+    });
+    if let Some(which) = changed {
+        if !app.prop_dragging {
+            app.ed.begin_edit("Camera Effect");
+            app.prop_dragging = true;
+        }
+        let tcol = from32(tc);
+        app.ed.edit_camera(|e| match which {
+            "b" => e.tint = ac_core::motion::brightness_tint(b / 100.0, None),
+            "t" => e.tint = (ta > 0.0).then_some((tcol, ta / 100.0)),
+            "a" => e.alpha = al / 100.0,
+            _ => {
+                e.filters.retain(|f| !matches!(f, ac_core::Filter::Blur { .. }));
+                if bl > 0.0 {
+                    e.filters.push(ac_core::Filter::Blur { blur_x: bl, blur_y: bl, quality: 2 });
+                }
+            }
+        });
+    }
+    if !ui.input(|i| i.pointer.any_down()) {
+        app.prop_dragging = false;
+    }
+}
+
+/// Shake and follow for the camera span at the playhead.
+fn camera_options_ui(app: &mut App, ui: &mut egui::Ui) {
+    let Some(o) = app.ed.camera_opts() else { return };
+    section(ui, "Camera motion (this span)");
+    let mut n = o.clone();
+    // named objects on the scene at this frame
+    let names: Vec<String> = {
+        let tl = app.ed.scene_tl();
+        let mut v: Vec<String> = tl
+            .layers
+            .iter()
+            .filter(|l| l.kind != ac_core::LayerKind::Camera)
+            .filter_map(|l| ac_core::model::layer_elements_at(l, app.ed.frame).map(|(e, _)| e))
+            .flatten()
+            .map(|e| e.name)
+            .filter(|n| !n.is_empty())
+            .collect();
+        v.sort();
+        v.dedup();
+        v
+    };
+    ui.horizontal(|ui| {
+        ui.label("Follow");
+        egui::ComboBox::from_id_salt("cam-follow").selected_text(n.follow.clone().unwrap_or_else(|| "Nothing".into())).show_ui(ui, |ui| {
+            if ui.selectable_label(n.follow.is_none(), "Nothing").clicked() {
+                n.follow = None;
+            }
+            for name in &names {
+                if ui.selectable_label(n.follow.as_deref() == Some(name), name).clicked() {
+                    n.follow = Some(name.clone());
+                }
+            }
+        });
+    });
+    if names.is_empty() {
+        hint(ui, "Give an object an instance name (Properties › Object) to follow it.");
+    }
+    if n.follow.is_some() {
+        ui.horizontal(|ui| {
+            ui.label("Lag");
+            ui.add(egui::DragValue::new(&mut n.follow_lag).range(0..=24).suffix(" frames"));
+            ui.label("Offset");
+            ui.add(egui::DragValue::new(&mut n.follow_offset.x).speed(1.0).prefix("x "));
+            ui.add(egui::DragValue::new(&mut n.follow_offset.y).speed(1.0).prefix("y "));
+        });
+    }
+    ui.horizontal(|ui| {
+        ui.label("Shake");
+        ui.add(egui::DragValue::new(&mut n.shake).range(0.0..=200.0).speed(0.2).suffix(" px"));
+        ui.label("Speed");
+        ui.add(egui::DragValue::new(&mut n.shake_speed).range(0.1..=60.0).speed(0.1).suffix("/s"));
+    });
+    if n != o {
+        // one undo step per change; a value being dragged merges into it
+        if app.prop_dragging {
+            app.ed.set_camera_opts_live(n);
+        } else {
+            app.ed.set_camera_opts(n);
+            app.prop_dragging = ui.input(|i| i.pointer.any_down());
+        }
+    }
 }
 
 /// Window › Transform (Ctrl+T): exact scale, rotation, skew, 3D, and

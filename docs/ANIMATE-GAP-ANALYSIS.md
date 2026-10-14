@@ -96,7 +96,7 @@ The two engine milestones that unlock most of the rest:
 | Convert Lines to Fills, Expand Fill, Soften Fill Edges | Yes | — | ❌ | P2 |
 | Rectangle / Oval **Primitives** (live corner radii, start/end angle, inner radius) | Yes | Yes (per-corner and inverted radii, close path) | ✅ | |
 | Stroke styles: solid, dashed, dotted, ragged, stipple, hatched; cap/join/miter; scale mode; hinting | Yes | Solid / dashed / dotted / ragged / stipple / hatched, cap, join | 🟡 | P3 (style parameters, scale mode, hinting) |
-| Variable-width profiles (presets, save width profile) | Yes | Width tool, delete width points, copy/paste profiles | 🟡 | P3 (named presets; merge-shape lines) |
+| Variable-width profiles (presets, save width profile) | Yes | Width tool on drawing objects and merge-shape lines, delete width points, copy/paste profiles | 🟡 | P3 (named presets) |
 | Art / Pattern brushes (from Illustrator-style brush library), brush library panel | Yes | — | ❌ | P2 |
 | Gradient fills (linear, radial, up to 15 stops, overflow: extend / reflect / repeat, linear RGB) | Yes | Linear/radial, any stops, extend / reflect / repeat | 🟡 | P3 (linear RGB) |
 | Bitmap fills (and Lock Fill) | Yes | Drawing objects and merge shapes; Gradient Transform edits them; Lock Fill for gradients | ✅ | |
@@ -131,7 +131,7 @@ The two engine milestones that unlock most of the rest:
 | Eraser (E): Erase Normal / Fills / Lines / Selected Fills / Inside, Faucet, shape and size | Yes | All modes + Faucet on merge shapes (round eraser) | ✅ | |
 | Width (U) incl. delete width point, copy/paste width | Yes | Add/drag, Alt+click delete, copy/paste profile | ✅ | |
 | Asset Warp (Shift+W) incl. bitmaps/symbols, mesh options, Reset Warped Asset | Yes | Shapes only; reset via Properties | 🟡 | P2 |
-| Camera (C), camera colour effects, layer depth (Ctrl+D) | Yes | Pan/zoom/rotate | 🟡 | Layer Depth P2 |
+| Camera (C), camera colour effects, layer depth (Ctrl+D) | Yes | Pan/zoom/rotate, colour effects + blur; plus a Free (VCam) mode: the camera is a movable frame on the stage, with follow and shake | 🟡 | Layer Depth P2 |
 | Hand (H), Rotation (Shift+H), Zoom (Z) | Yes | Yes | ✅ | |
 | Stroke/Fill swatches, Swap, Black & White, No colour | Yes | Yes | ✅ | |
 | Snap toggle, Object Drawing toggle | Yes | Yes | ✅ | |
@@ -173,7 +173,7 @@ The two engine milestones that unlock most of the rest:
 | Swap Symbol | Yes | Properties ▸ Symbol | ✅ | |
 | Duplicate Symbol and swap | Yes | Duplicate only | 🟡 | P2 |
 | Colour effects: Brightness, Tint, Advanced (RGBA multiply/offset), Alpha | Yes | All five, tweenable | ✅ | |
-| **Filters**: Drop Shadow, Blur, Glow, Bevel, Gradient Glow, Gradient Bevel, Adjust Color; presets; filter tweening | Yes | All seven, presets, tweening (and motion-tween tracks); SVG export of blur/shadow/glow; HTML5 approximates gradient filters | ✅ | |
+| **Filters**: Drop Shadow, Blur, Glow, Bevel, Gradient Glow, Gradient Bevel, Adjust Color; presets; filter tweening | Yes | All seven, presets, tweening (and motion-tween tracks); SVG export of blur/shadow/glow; HTML5 renders gradient filters per pixel (exact) | ✅ | |
 | **Blend modes** (Normal, Layer, Darken, Multiply, Lighten, Screen, Overlay, Hard Light, Add, Subtract, Difference, Invert, Alpha, Erase) | Yes | All 14 | ✅ | |
 | Render: Original / Cache as Bitmap / Export as Bitmap; Visible flag | Yes | — | ❌ | P2 |
 | 9-slice scaling guides | Yes | — | ❌ | P2 |
@@ -196,7 +196,7 @@ The two engine milestones that unlock most of the rest:
 | Convert to Frame-by-Frame Animation, Convert to Keyframes | Yes | Yes | ✅ | |
 | Bones: IK poses on keyframes, joint rotation/translation constraints, **springiness / damping**, bone ease, runtime vs authoring | Yes | Poses + IK | 🟡 | P2 |
 | Asset Warp: pins, mesh density, tween warped poses, **Create Warped Asset / Reset** | Yes | Pins, rigid MLS | 🟡 | P2 |
-| Camera: tween, colour effects, attach layers, layer depth | Yes | Tweenable pan/zoom/rotate | 🟡 | P2 |
+| Camera: tween, colour effects, attach layers, layer depth | Yes | Tweenable pan/zoom/rotate, brightness/tint/alpha/blur, VCam follow + shake (beyond Animate) | 🟡 | P2 (attach layers, depth) |
 | **Auto lip-sync** (map visemes from audio) | Yes | Properties ▸ Lip Syncing with a Mouth-shapes picker; FFT-band heuristic (no speech recognition), `lipsync.apply` | 🟡 | P3 (better analysis) |
 | **Rig mapping** (map a rig onto symbols) | Yes | — | ❌ | P3 |
 | Frame-by-frame workflow helpers (onion skin keyframes-only, Ctrl+Alt+L loop) | Yes | Basic | 🟡 | P1 |
@@ -338,6 +338,8 @@ C (Phase 2) per-property classic eases, Sync/Snap, 3D/tint/filter motion tracks,
 Bezier handles + curve copy/paste, reverse loops, label types, any-span end drag, Parenting View;
 D (Phase 1) edit in place (symbols, groups), Gradient Glow/Bevel + filter presets, Export Image
 PNG/JPEG/GIF, font weights/italic, Edit Guides, Snap to Pixels.
+Then the last three: saving while a group is open in place, the Width tool on merge-shape lines,
+exact Gradient Glow/Bevel in HTML5; plus the Free camera (VCam) mode.
 
 ### Phase 5: Workspace polish
 Docking/floating panels and workspaces, preferences, a shortcut editor, the History panel,

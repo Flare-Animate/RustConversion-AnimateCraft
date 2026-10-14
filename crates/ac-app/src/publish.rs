@@ -119,7 +119,7 @@ fn spawn(app: &mut App, label: String, work: impl FnOnce(&mut dyn FnMut(u32, u32
 
 /// File actions handled here: multi-frame exports and imports.
 pub(crate) fn run_file_action(app: &mut App, action: FileAction, path: &str) -> Result<String, String> {
-    let doc = app.ed.doc.clone();
+    let doc = app.ed.saved_doc();
     let o = app.publish.opts();
     let p = std::path::PathBuf::from(path);
     match action {

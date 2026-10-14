@@ -93,6 +93,151 @@
     return c;
   }
 
+  // ---- filter stages: CSS filters and per-pixel gradient glow / bevel
+  var spare = [];
+  function spareCanvas(i) {
+    var c = spare[i] || (spare[i] = document.createElement("canvas"));
+    if (c.width !== cv.width || c.height !== cv.height) { c.width = cv.width; c.height = cv.height; }
+    var x = c.getContext("2d", { willReadFrequently: true });
+    x.setTransform(1, 0, 0, 1, 0, 0);
+    x.clearRect(0, 0, c.width, c.height);
+    return c;
+  }
+  function stages(src, list, depth) {
+    var cur = src, flip = 0;
+    for (var i = 0; i < list.length; i++) {
+      var st = list[i];
+      if (st.c) {
+        var t = spareCanvas(depth * 2 + (flip ^= 1));
+        var x = t.getContext("2d");
+        x.filter = st.c;
+        x.drawImage(cur, 0, 0);
+        x.filter = "none";
+        cur = t;
+      } else if (st.g) {
+        if (cur === src) { var t2 = spareCanvas(depth * 2 + (flip ^= 1)); t2.getContext("2d").drawImage(cur, 0, 0); cur = t2; }
+        rampFilter(cur, st.g, dpr);
+      }
+    }
+    return cur;
+  }
+  function blurPlane(p, w, h, rx, ry, passes) {
+    var tmp = new Float32Array(p.length), x, y, k, r, acc, n;
+    for (var pass = 0; pass < Math.max(1, Math.min(3, passes)); pass++) {
+      r = Math.round(rx / 2);
+      if (r > 0) {
+        n = 2 * r + 1;
+        for (y = 0; y < h; y++) {
+          var o = y * w; acc = 0;
+          for (k = 0; k <= Math.min(r, w - 1); k++) acc += p[o + k];
+          for (x = 0; x < w; x++) {
+            tmp[o + x] = acc / n;
+            if (x + r + 1 < w) acc += p[o + x + r + 1];
+            if (x >= r) acc -= p[o + x - r];
+          }
+        }
+        p.set(tmp);
+      }
+      r = Math.round(ry / 2);
+      if (r > 0) {
+        n = 2 * r + 1;
+        for (x = 0; x < w; x++) {
+          acc = 0;
+          for (k = 0; k <= Math.min(r, h - 1); k++) acc += p[k * w + x];
+          for (y = 0; y < h; y++) {
+            tmp[y * w + x] = acc / n;
+            if (y + r + 1 < h) acc += p[(y + r + 1) * w + x];
+            if (y >= r) acc -= p[(y - r) * w + x];
+          }
+        }
+        p.set(tmp);
+      }
+    }
+  }
+  function shadowPlane(alpha, w, h, bx, by, q, angle, dist, st, inner) {
+    var n = alpha.length, src = new Float32Array(n), out = new Float32Array(n), i;
+    for (i = 0; i < n; i++) src[i] = inner ? 1 - alpha[i] : alpha[i];
+    blurPlane(src, w, h, bx, by, q);
+    var dx = Math.round(Math.cos(angle * Math.PI / 180) * dist), dy = Math.round(Math.sin(angle * Math.PI / 180) * dist);
+    for (var y = 0; y < h; y++) {
+      var sy = y - dy;
+      if (sy < 0 || sy >= h) continue;
+      for (var x = 0; x < w; x++) {
+        var sx = x - dx;
+        if (sx >= 0 && sx < w) out[y * w + x] = src[sy * w + sx];
+      }
+    }
+    for (i = 0; i < n; i++) {
+      var v = Math.max(0, Math.min(1, out[i] * st));
+      out[i] = inner ? v * alpha[i] : v;
+    }
+    return out;
+  }
+  function rampAt(r, t) {
+    if (t <= r[0][0]) return r[0];
+    for (var i = 1; i < r.length; i++) {
+      if (t <= r[i][0]) {
+        var a = r[i - 1], b = r[i], u = (t - a[0]) / Math.max(1e-6, b[0] - a[0]);
+        return [t, a[1] + (b[1] - a[1]) * u, a[2] + (b[2] - a[2]) * u, a[3] + (b[3] - a[3]) * u, a[4] + (b[4] - a[4]) * u];
+      }
+    }
+    return r[r.length - 1];
+  }
+  // modes: 0 under the object, 1 over it, 2 the effect only (knockout)
+  function combineRamp(px, values, mask, r, mode) {
+    for (var i = 0, j = 0; i < values.length; i++, j += 4) {
+      var c = rampAt(r, Math.max(0, Math.min(1, values[i])));
+      var a = c[4] / 255 * Math.max(0, Math.min(1, mask[i]));
+      var f0 = c[1] / 255 * a, f1 = c[2] / 255 * a, f2 = c[3] / 255 * a, oa = px[j + 3];
+      if (mode === 0) { px[j] += f0 * (1 - oa); px[j + 1] += f1 * (1 - oa); px[j + 2] += f2 * (1 - oa); px[j + 3] = oa + a * (1 - oa); }
+      else if (mode === 1) { px[j] = f0 + px[j] * (1 - a); px[j + 1] = f1 + px[j + 1] * (1 - a); px[j + 2] = f2 + px[j + 2] * (1 - a); }
+      else { px[j] = f0; px[j + 1] = f1; px[j + 2] = f2; px[j + 3] = a; }
+    }
+  }
+  function rampFilter(canvas, g, scale) {
+    var x = canvas.getContext("2d", { willReadFrequently: true });
+    var W = canvas.width, H = canvas.height;
+    var all = x.getImageData(0, 0, W, H), d = all.data;
+    // work on the object's bounds plus the reach of the effect
+    var x0 = W, y0 = H, x1 = -1, y1 = -1, xx, yy;
+    for (yy = 0; yy < H; yy++) for (xx = 0; xx < W; xx++) if (d[(yy * W + xx) * 4 + 3]) { if (xx < x0) x0 = xx; if (xx > x1) x1 = xx; if (yy < y0) y0 = yy; if (yy > y1) y1 = yy; }
+    if (x1 < 0) return;
+    var m = Math.ceil((Math.max(g.bx, g.by) * 1.5 + Math.abs(g.d) + 2) * scale);
+    x0 = Math.max(0, x0 - m); y0 = Math.max(0, y0 - m); x1 = Math.min(W - 1, x1 + m); y1 = Math.min(H - 1, y1 + m);
+    var w = x1 - x0 + 1, h = y1 - y0 + 1, n = w * h;
+    var img = x.getImageData(x0, y0, w, h), p = img.data;
+    var px = new Float32Array(n * 4), alpha = new Float32Array(n), i;
+    for (i = 0; i < n; i++) {
+      var a = p[i * 4 + 3] / 255;
+      alpha[i] = a;
+      px[i * 4] = p[i * 4] / 255 * a; px[i * 4 + 1] = p[i * 4 + 1] / 255 * a; px[i * 4 + 2] = p[i * 4 + 2] / 255 * a; px[i * 4 + 3] = a;
+    }
+    var bx = g.bx * scale, by = g.by * scale, dist = g.d * scale, k;
+    if (g.ko) px.fill(0);
+    if (g.k === "glow") {
+      if (g.t !== 0) {
+        var o = shadowPlane(alpha, w, h, bx, by, g.q, g.a, dist, g.s, false), mk = new Float32Array(n);
+        for (k = 0; k < n; k++) mk[k] = (o[k] > 0 ? 1 : 0) * (g.ko ? 1 - alpha[k] : 1);
+        combineRamp(px, o, mk, g.r, g.ko ? 2 : 0);
+      }
+      if (g.t !== 1) combineRamp(px, shadowPlane(alpha, w, h, bx, by, g.q, g.a, dist, g.s, true), alpha, g.r, g.ko ? 2 : 1);
+    } else {
+      var side = function (inner) {
+        var lit = shadowPlane(alpha, w, h, bx, by, g.q, g.a + 180, dist, g.s, inner), dark = shadowPlane(alpha, w, h, bx, by, g.q, g.a, dist, g.s, inner), v = new Float32Array(n);
+        for (var q = 0; q < n; q++) v[q] = 0.5 + 0.5 * (inner ? lit[q] - dark[q] : dark[q] - lit[q]);
+        return v;
+      };
+      if (g.t !== 1) combineRamp(px, side(true), alpha, g.r, g.ko ? 2 : 1);
+      if (g.t !== 0) { var inv = new Float32Array(n); for (k = 0; k < n; k++) inv[k] = 1 - alpha[k]; combineRamp(px, side(false), inv, g.r, g.ko ? 2 : 0); }
+    }
+    for (i = 0; i < n; i++) {
+      var A = px[i * 4 + 3];
+      p[i * 4 + 3] = Math.round(Math.max(0, Math.min(1, A)) * 255);
+      for (var c = 0; c < 3; c++) p[i * 4 + c] = A > 0 ? Math.round(Math.max(0, Math.min(1, px[i * 4 + c] / A)) * 255) : 0;
+    }
+    x.putImageData(img, x0, y0);
+  }
+
   // per-frame: overrides by src, button substitutions
   var ov = {}, alt = {}, altDone = {};
   function prepare(f) {
@@ -121,11 +266,13 @@
       var off = offscreen(depth + 1);
       drawList(off.getContext("2d"), e.c, depth + 1);
       var fx = M.fx[e.x];
+      var src = off;
+      if (fx.s) src = stages(off, fx.s, depth + 1);
       c.save();
       c.setTransform(1, 0, 0, 1, 0, 0);
       if (fx.f) c.filter = fx.f;
       c.globalCompositeOperation = fx.o;
-      c.drawImage(off, 0, 0);
+      c.drawImage(src, 0, 0);
       c.restore();
     }
   }

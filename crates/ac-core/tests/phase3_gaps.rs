@@ -143,3 +143,38 @@ fn lifting_a_fill_keeps_its_outline() {
         assert!(!m.strokes.is_empty(), "bend {bend:?}: outline lost ({lines} lines before)");
     }
 }
+
+#[test]
+fn merge_lines_take_width_profiles_that_survive_splitting() {
+    use ac_core::merge::StrokeEdge;
+    let st = Stroke { color: Color::rgb(0, 0, 0), width: 4.0 };
+    let mut m = MergeShape::default();
+    m.add_stroke(&[pt(0.0, 50.0), pt(200.0, 50.0)], false, st);
+    m.strokes[0].set_width(0.75, 5.0); // thick near x = 150
+    assert!((m.strokes[0].width_at(0.75) - 5.0).abs() < 1e-3);
+    // a vertical line crosses at x = 100: the right half keeps the bulge
+    m.add_stroke(&[pt(100.0, 0.0), pt(100.0, 100.0)], false, st);
+    let right = m.strokes.iter().find(|s| s.pts.iter().any(|p| p.x > 190.0) && s.pts.iter().all(|p| p.x >= 99.0 && (p.y - 50.0).abs() < 1e-3)).expect("right half");
+    assert!((right.width_at(right.t_of(pt(150.0, 50.0))) - 5.0).abs() < 0.05, "bulge moved with the piece");
+    let left = m.strokes.iter().find(|s| s.pts.iter().any(|p| p.x < 10.0)).expect("left half");
+    assert!(left.width_at(0.0) < 1.01);
+    // StrokeEdge::new is plain
+    assert!(StrokeEdge::new(vec![pt(0.0, 0.0), pt(1.0, 0.0)], false, st).width.is_none());
+}
+
+#[test]
+fn width_tool_on_merge_lines_through_the_editor() {
+    let mut ed = Editor::new(Default::default());
+    ed.script_merge = true;
+    ac_core::commands::execute(&mut ed, "draw.line", &serde_json::json!({"x1": 0, "y1": 50, "x2": 200, "y2": 50, "stroke_width": 4})).unwrap();
+    let (li, line, t) = ed.merge_line_at(pt(150.0, 51.0), 3.0).expect("the line");
+    ed.merge_set_width(li, line, t, 6.0, true);
+    assert_eq!(ed.merge_width_points().len(), 1);
+    // the evaluated line is a filled outline, wider at x = 150
+    let items = ed.evaluate_current(0);
+    let it = items.iter().find(|i| i.fill.is_some()).expect("outline item");
+    let (lo, hi) = it.path.bounds().unwrap();
+    assert!(hi.y - lo.y > 20.0, "about 24 px tall there: {}", hi.y - lo.y);
+    ed.merge_remove_width_point(li, line, 1);
+    assert!(ed.canvas(li).unwrap().strokes[line].width.is_none());
+}

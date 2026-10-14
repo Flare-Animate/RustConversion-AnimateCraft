@@ -44,6 +44,10 @@ pub struct StrokeEdge {
     #[serde(default)]
     pub closed: bool,
     pub stroke: Stroke,
+    /// Variable width (Width tool): (position 0…1 by length, width multiplier),
+    /// sorted; the ends default to 1. Same format as `Shape::width_profile`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub width: Option<Vec<(f32, f32)>>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -288,6 +292,85 @@ impl FillRegion {
 }
 
 impl StrokeEdge {
+    pub fn new(pts: Vec<Pt>, closed: bool, stroke: Stroke) -> StrokeEdge {
+        StrokeEdge { pts, closed, stroke, width: None }
+    }
+    /// Position (0…1 by length) of the point of this line nearest `x`.
+    pub fn t_of(&self, x: Pt) -> f32 {
+        let pts = self.closed_pts();
+        let total = polyline_len(&pts).max(1e-6);
+        let (mut acc, mut best) = (0.0, (f32::MAX, 0.0));
+        for w in pts.windows(2) {
+            let (d, t) = seg_dist(x, w[0], w[1]);
+            let l = w[0].dist(w[1]);
+            if d < best.0 {
+                best = (d, (acc + l * t) / total);
+            }
+            acc += l;
+        }
+        best.1
+    }
+    /// Width multiplier at position `t` (1 without a profile).
+    pub fn width_at(&self, t: f32) -> f32 {
+        let Some(p) = &self.width else { return 1.0 };
+        let mut v: Vec<(f32, f32)> = p.clone();
+        if v.first().is_none_or(|a| a.0 > 1e-4) {
+            v.insert(0, (0.0, 1.0));
+        }
+        if v.last().is_none_or(|a| a.0 < 1.0 - 1e-4) {
+            v.push((1.0, 1.0));
+        }
+        for w in v.windows(2) {
+            if t <= w[1].0 {
+                let u = (t - w[0].0) / (w[1].0 - w[0].0).max(1e-6);
+                return w[0].1 + (w[1].1 - w[0].1) * u.clamp(0.0, 1.0);
+            }
+        }
+        v[v.len() - 1].1
+    }
+    /// Set the width multiplier at `t` (adds a width point, or moves one within 2%).
+    pub fn set_width(&mut self, t: f32, mult: f32) {
+        let prof = self.width.get_or_insert_with(|| vec![(0.0, 1.0), (1.0, 1.0)]);
+        match prof.iter_mut().find(|(x, _)| (x - t).abs() < 0.02) {
+            Some(w) => w.1 = mult,
+            None => {
+                prof.push((t, mult));
+                prof.sort_by(|a, b| a.0.total_cmp(&b.0));
+            }
+        }
+    }
+    /// A piece of this line (cut, split or lifted): same stroke, the part of
+    /// the width profile it covers.
+    pub fn piece(&self, pts: Vec<Pt>, closed: bool) -> StrokeEdge {
+        let width = self.width.as_ref().and_then(|_| {
+            let (f, l) = (*pts.first()?, *pts.last()?);
+            let (t0, mut t1) = (self.t_of(f), self.t_of(l));
+            if closed {
+                return self.width.clone();
+            }
+            if t1 < t0 {
+                if self.closed {
+                    t1 += 1.0; // wraps past the start of a closed line
+                } else {
+                    return None;
+                }
+            }
+            let span = (t1 - t0).max(1e-6);
+            let at = |t: f32| self.width_at(if t > 1.0 { t - 1.0 } else { t });
+            let mut prof = vec![(0.0, at(t0))];
+            for (t, w) in self.width.iter().flatten() {
+                for tt in [*t, *t + 1.0] {
+                    if tt > t0 + 1e-4 && tt < t1 - 1e-4 {
+                        prof.push(((tt - t0) / span, *w));
+                    }
+                }
+            }
+            prof.push((1.0, at(t1)));
+            prof.sort_by(|a, b| a.0.total_cmp(&b.0));
+            (!prof.iter().all(|(_, w)| (w - 1.0).abs() < 1e-3)).then_some(prof)
+        });
+        StrokeEdge { pts, closed, stroke: self.stroke, width }
+    }
     pub fn path(&self) -> Path {
         let mut segs = vec![crate::geom::Seg::M(self.pts[0])];
         for x in &self.pts[1..] {
@@ -452,7 +535,7 @@ impl MergeShape {
                 for k in kept {
                     let pts: Vec<Pt> = k.iter().map(|x| q(*x)).collect();
                     if pts.len() >= 2 && polyline_len(&pts) > 0.05 {
-                        self.strokes.push(StrokeEdge { pts, closed: false, stroke: s.stroke });
+                        self.strokes.push(s.piece(pts, false));
                     }
                 }
             }
@@ -462,6 +545,12 @@ impl MergeShape {
     /// Draw a line: it splits the fills it crosses and the lines it crosses
     /// (and is split by them).
     pub fn add_stroke(&mut self, pts: &[Pt], closed: bool, stroke: Stroke) {
+        self.add_stroke_w(pts, closed, stroke, None);
+    }
+
+    /// `add_stroke` with a variable-width profile (a drawing object's width
+    /// profile joining the merge shape).
+    pub fn add_stroke_w(&mut self, pts: &[Pt], closed: bool, stroke: Stroke, width: Option<Vec<(f32, f32)>>) {
         if pts.len() < 2 {
             return;
         }
@@ -491,7 +580,7 @@ impl MergeShape {
                 self.strokes.push(s);
             } else {
                 for piece in split_polyline(&sp, &at) {
-                    self.strokes.push(StrokeEdge { pts: piece, closed: false, stroke: s.stroke });
+                    self.strokes.push(s.piece(piece, false));
                 }
             }
         }
@@ -504,12 +593,13 @@ impl MergeShape {
         at.dedup_by(|x, y| x.0 == y.0 && (x.1 - y.1).abs() < 1e-3);
         let pieces = split_polyline(&line, &at);
         let whole = pieces.len() == 1 && closed;
+        let src = StrokeEdge { pts: pts.to_vec(), closed, stroke, width };
         for piece in pieces {
             let mut piece = piece;
             if whole {
                 piece.pop();
             }
-            self.strokes.push(StrokeEdge { pts: piece, closed: whole, stroke });
+            self.strokes.push(src.piece(piece, whole));
         }
     }
 
@@ -684,7 +774,7 @@ impl MergeShape {
             for k in line.clip_by(&av, FillRule::NonZero, ClipRule { invert: false, boundary_included: false }) {
                 let pts: Vec<Pt> = k.iter().map(|x| q(*x)).collect();
                 if pts.len() >= 2 && polyline_len(&pts) > 0.05 {
-                    inner.strokes.push(StrokeEdge { pts, closed: false, stroke: s.stroke });
+                    inner.strokes.push(s.piece(pts, false));
                 }
             }
         }
@@ -775,7 +865,7 @@ impl MergeShape {
     /// Everything as one filled+stroked path per part (Group / drawing object).
     pub fn to_shapes(&self) -> Vec<crate::model::Shape> {
         let mut v: Vec<crate::model::Shape> = self.fills.iter().map(|r| crate::model::Shape { gradient: r.gradient.clone(), bitmap_fill: r.bitmap, ..crate::model::Shape::new(r.path(), r.fill, None) }).collect();
-        v.extend(self.strokes.iter().map(|s| crate::model::Shape::new(s.path(), None, Some(s.stroke))));
+        v.extend(self.strokes.iter().map(|s| crate::model::Shape { width_profile: s.width.clone(), ..crate::model::Shape::new(s.path(), None, Some(s.stroke)) }));
         v
     }
 
@@ -937,7 +1027,8 @@ pub fn morph(a: &MergeShape, b: &MergeShape, t: f32) -> MergeShape {
                 let path = crate::geom::morph_paths(&x.path(), &y.path(), t);
                 if let Some((pts, closed)) = path_polylines(&path).into_iter().next() {
                     let stroke = Stroke { color: x.stroke.color.lerp(y.stroke.color, t), width: x.stroke.width + (y.stroke.width - x.stroke.width) * t };
-                    out.strokes.push(StrokeEdge { pts, closed, stroke });
+                    let width = if t < 0.5 { x.width.clone() } else { y.width.clone() };
+                    out.strokes.push(StrokeEdge { pts, closed, stroke, width });
                 }
             }
             (Some(x), None) if t < 0.5 => out.strokes.push(x.clone()),

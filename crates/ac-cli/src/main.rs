@@ -191,7 +191,7 @@ fn run(args: &[String]) -> Result<(), String> {
                 return Err(e);
             }
             if let Some(p) = flag("--save") {
-                save_any(&ed.doc, p)?;
+                save_any(&ed.saved_doc(), p)?;
                 eprintln!("saved {p}");
             }
             if let Some(p) = flag("--gif") {

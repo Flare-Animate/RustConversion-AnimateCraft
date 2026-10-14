@@ -250,7 +250,7 @@ impl Reader<'_> {
                     continue;
                 }
                 if many {
-                    canvas.strokes.push(StrokeEdge { pts, closed, stroke });
+                    canvas.strokes.push(StrokeEdge::new(pts, closed, stroke));
                 } else {
                     canvas.add_stroke(&pts, closed, stroke);
                 }

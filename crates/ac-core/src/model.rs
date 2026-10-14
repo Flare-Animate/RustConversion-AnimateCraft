@@ -548,6 +548,9 @@ pub struct Keyframe {
     /// not published) or Anchor (a named anchor; published like Name).
     #[serde(default, skip_serializing_if = "LabelKind::is_name")]
     pub label_kind: LabelKind,
+    /// Camera layer only: shake / follow options for this span.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub camera: Option<Box<CameraOpts>>,
     /// Classic tween: separate eases for position, rotation, scale, colour, filters.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prop_eases: Option<Box<crate::motion::PropEases>>,
@@ -605,7 +608,7 @@ impl Keyframe {
         Keyframe::with(vec![])
     }
     pub fn with(elements: Vec<Element>) -> Self {
-        Keyframe { elements, tween: Tween::None, label: None, script: None, orient_to_path: false, ease_curve: None, shape_hints: vec![], motion: None, sound: None, label_kind: LabelKind::Name, prop_eases: None, sync: false, snap: true }
+        Keyframe { elements, tween: Tween::None, label: None, script: None, orient_to_path: false, ease_curve: None, shape_hints: vec![], motion: None, sound: None, label_kind: LabelKind::Name, prop_eases: None, sync: false, snap: true, camera: None }
     }
     /// The label as a script/publish target (comments are author notes only).
     pub fn target_label(&self) -> Option<&str> {
@@ -763,6 +766,11 @@ pub struct Document {
     /// Imported sounds (library items).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub sounds: Vec<crate::sound::SoundAsset>,
+    /// How the camera is authored: Stage (the stage is the camera frame, as
+    /// in Animate's camera tool) or Free (a VCam: the camera is a frame you
+    /// move around the scene; output still renders through it).
+    #[serde(default, skip_serializing_if = "CameraMode::is_stage")]
+    pub camera_mode: CameraMode,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -799,7 +807,53 @@ impl Default for Document {
             guides: Guides::default(),
             more_scenes: vec![],
             sounds: vec![],
+            camera_mode: CameraMode::Stage,
         }
+    }
+}
+
+/// Camera authoring mode (see `Document::camera_mode`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum CameraMode {
+    #[default]
+    Stage,
+    Free,
+}
+
+impl CameraMode {
+    pub fn is_stage(&self) -> bool {
+        *self == CameraMode::Stage
+    }
+}
+
+/// Per-span camera options (on the Camera layer's keyframes): shake and
+/// following an object, as VCam users scripted them.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct CameraOpts {
+    /// Shake amount in px (0 = none) and speed in shakes per second.
+    #[serde(default)]
+    pub shake: f32,
+    #[serde(default = "default_shake_speed")]
+    pub shake_speed: f32,
+    /// Follow the object with this instance name (its centre); the camera
+    /// keyframes still set zoom and rotation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub follow: Option<String>,
+    /// Follow lag in frames (0 = locked on; larger = smoother, later).
+    #[serde(default)]
+    pub follow_lag: u32,
+    /// Offset of the view centre from the followed object, in px.
+    #[serde(default)]
+    pub follow_offset: Pt,
+}
+
+fn default_shake_speed() -> f32 {
+    8.0
+}
+
+impl Default for CameraOpts {
+    fn default() -> Self {
+        CameraOpts { shake: 0.0, shake_speed: default_shake_speed(), follow: None, follow_lag: 0, follow_offset: Pt::default() }
     }
 }
 
@@ -1363,7 +1417,14 @@ pub fn eval_element(ctx: &EvalCtx, el: &Element, parent: &Matrix, alpha: f32, lo
                     out.push(DrawItem { fill, gradient: r.gradient.clone(), pattern, alpha: a, tint: el.tint, outline, ..DrawItem::new(r.path(), m) });
                 }
                 for st in &part.strokes {
-                    out.push(DrawItem { stroke: Some(st.stroke), alpha: a, tint: el.tint, outline, ..DrawItem::new(st.path(), m) });
+                    match &st.width {
+                        // variable width: a filled outline, as for drawing objects
+                        Some(prof) => {
+                            let scaled: Vec<(f32, f32)> = prof.iter().map(|(t, w)| (*t, w * st.stroke.width)).collect();
+                            out.push(DrawItem { fill: Some(st.stroke.color), alpha: a, tint: el.tint, outline, ..DrawItem::new(crate::deform::variable_stroke(&st.path(), &scaled), m) });
+                        }
+                        None => out.push(DrawItem { stroke: Some(st.stroke), alpha: a, tint: el.tint, outline, ..DrawItem::new(st.path(), m) }),
+                    }
                 }
             }
         }
@@ -1492,10 +1553,86 @@ fn apply_motion_guide(ctx: &EvalCtx, tl: &Timeline, li: usize, g: usize, frame: 
 
 /// Camera view matrix of a timeline at `frame`, if it has a visible camera layer.
 pub fn camera_view(doc: &Document, tl: &Timeline, frame: u32) -> Option<Matrix> {
+    camera_element(doc, tl, frame).map(|c| camera_matrix_to_view(doc, &c.matrix))
+}
+
+/// The camera object at `frame` (tweened), with follow and shake applied:
+/// its matrix is the framing, its colour effect / filters apply to the view.
+pub fn camera_element(doc: &Document, tl: &Timeline, frame: u32) -> Option<Element> {
     let layer = tl.layers.iter().find(|l| l.kind == LayerKind::Camera && l.visible)?;
     let (els, _) = layer_elements_at(layer, frame)?;
-    let cam = els.first()?.matrix;
-    Some(camera_matrix_to_view(doc, &cam))
+    let mut cam = els.first()?.clone();
+    let (_, kf, _) = layer.span_at(frame)?;
+    if let Some(o) = kf.camera.as_deref() {
+        if let Some(name) = o.follow.as_deref().filter(|n| !n.is_empty()) {
+            // centre on the object, averaged over the lag window
+            let lag = o.follow_lag.min(24);
+            let pts: Vec<Pt> = (0..=lag).filter_map(|k| frame.checked_sub(k)).filter_map(|f| named_center(doc, tl, f, name)).collect();
+            if !pts.is_empty() {
+                let n = pts.len() as f32;
+                let c = pt(pts.iter().map(|p| p.x).sum::<f32>() / n, pts.iter().map(|p| p.y).sum::<f32>() / n);
+                cam.matrix.tx = c.x + o.follow_offset.x;
+                cam.matrix.ty = c.y + o.follow_offset.y;
+            }
+        }
+        if o.shake > 0.0 {
+            let t = frame as f32 * o.shake_speed.max(0.01) / doc.fps.max(1.0);
+            cam.matrix.tx += o.shake * smooth_noise(t, 17.3);
+            cam.matrix.ty += o.shake * smooth_noise(t, 91.7);
+        }
+    }
+    Some(cam)
+}
+
+/// Deterministic smooth noise in −1…1 (cosine-interpolated hashed values).
+fn smooth_noise(t: f32, seed: f32) -> f32 {
+    let h = |i: f32| {
+        let x = ((i + seed) * 12.9898).sin() * 43758.547;
+        (x - x.floor()) * 2.0 - 1.0
+    };
+    let i = t.floor();
+    let u = t - i;
+    let w = (1.0 - (u * std::f32::consts::PI).cos()) / 2.0;
+    h(i) * (1.0 - w) + h(i + 1.0) * w
+}
+
+/// Stage-space centre of the top-level object named `name` at `frame`
+/// (its drawn bounds, so tweens, parenting and motion paths count).
+pub fn named_center(doc: &Document, tl: &Timeline, frame: u32, name: &str) -> Option<Pt> {
+    let (li, ei) = tl.layers.iter().enumerate().filter(|(_, l)| l.kind != LayerKind::Camera).find_map(|(li, l)| {
+        let (els, _) = layer_elements_at(l, frame)?;
+        els.iter().position(|e| e.name == name).map(|ei| (li, ei))
+    })?;
+    let ctx = EvalCtx::new(doc, frame);
+    let mut items = vec![];
+    evaluate(&ctx, tl, frame, &Matrix::IDENTITY, 1.0, 0, &mut items);
+    let mut b: Option<(Pt, Pt)> = None;
+    for it in items.iter().filter(|it| it.src == Some((li, ei))) {
+        if let Some((lo, hi)) = it.path.transformed(&it.matrix).bounds() {
+            b = Some(match b {
+                None => (lo, hi),
+                Some((a, c)) => (pt(a.x.min(lo.x), a.y.min(lo.y)), pt(c.x.max(hi.x), c.y.max(hi.y))),
+            });
+        }
+    }
+    b.map(|(lo, hi)| pt((lo.x + hi.x) / 2.0, (lo.y + hi.y) / 2.0))
+}
+
+/// The camera's colour effect and filters apply to everything it sees.
+pub fn apply_camera_effects(items: &mut [DrawItem], cam: &Element) {
+    let fx = (!cam.filters.is_empty() || cam.blend != BlendMode::Normal).then(|| Arc::new(FxGroup { filters: cam.filters.clone(), blend: cam.blend }));
+    for it in items {
+        it.alpha *= cam.alpha;
+        if it.tint.is_none() {
+            it.tint = cam.tint;
+        }
+        if cam.color_fx.is_some() {
+            it.cx = ColorXform::compose(cam.color_fx, it.cx);
+        }
+        if let Some(f) = &fx {
+            it.fx.insert(0, f.clone());
+        }
+    }
 }
 
 /// The camera element's matrix is translate(centre)·rotate(r)·scale(zoom);
@@ -1541,8 +1678,9 @@ pub fn evaluate_scene_clock(doc: &Document, frame: u32, global: u32) -> Vec<Draw
     let ctx = EvalCtx::new(doc, global);
     let mut out = Vec::new();
     evaluate(&ctx, scene, local, &Matrix::IDENTITY, 1.0, 0, &mut out);
-    if let Some(v) = camera_view(doc, scene, local) {
-        apply_view(&mut out, &v);
+    if let Some(cam) = camera_element(doc, scene, local) {
+        apply_view(&mut out, &camera_matrix_to_view(doc, &cam.matrix));
+        apply_camera_effects(&mut out, &cam);
     }
     out
 }

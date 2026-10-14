@@ -192,7 +192,7 @@ impl W<'_> {
         cw != hole
     }
 
-    fn canvas(&self, c: &MergeShape, m: &Matrix, ind: &str) -> String {
+    fn canvas(&mut self, c: &MergeShape, m: &Matrix, ind: &str) -> String {
         let mut fills: Vec<FillKey> = vec![];
         let mut strokes: Vec<(Stroke, StrokeStyle)> = vec![];
         let mut recs = vec![];
@@ -221,6 +221,9 @@ impl W<'_> {
                 let p = edges::poly_pieces(&pts, true);
                 recs.push(if right { (0, idx, 0, p) } else { (idx, 0, 0, p) });
             }
+        }
+        if c.strokes.iter().any(|e| e.width.is_some()) {
+            self.warn.push("variable-width lines exported at their base width".into());
         }
         for e in &c.strokes {
             let key = (e.stroke, StrokeStyle::default());

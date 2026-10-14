@@ -196,10 +196,11 @@ pub fn exec(ed: &mut Editor, base: &Path, id: &str, args: &Value) -> Result<Valu
         "file.mkdir" => std::fs::create_dir_all(path()?).map(|_| Value::Bool(true)).map_err(|e| e.to_string()),
         "doc.save" => {
             let p = path()?;
+            let doc = ed.saved_doc();
             if p.extension().is_some_and(|e| e.eq_ignore_ascii_case("acx")) {
-                ac_package::save(&ed.doc, &p, None)?;
+                ac_package::save(&doc, &p, None)?;
             } else {
-                std::fs::write(&p, ed.doc.to_json()).map_err(|e| e.to_string())?;
+                std::fs::write(&p, doc.to_json()).map_err(|e| e.to_string())?;
             }
             Ok(json!(p.display().to_string()))
         }

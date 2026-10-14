@@ -31,8 +31,12 @@ pub enum Drag {
     BoneDraw { layer: usize, parent: usize, head: Pt, cur: Pt },
     Ik { layer: usize, element: usize, grab: Pt, started: bool },
     WidthPt { sel: Selection, t: f32, started: bool },
+    /// Width tool on a merge-shape line: (layer, line, position along it).
+    MergeWidth { layer: usize, line: usize, t: f32, started: bool },
     WarpPin { sel: Selection, pin: usize, started: bool },
     CameraPan { last: Pos2, rotate: bool, started: bool },
+    /// Free camera (VCam): move the frame, zoom by a corner, rotate by the knob.
+    VCam { mode: VCamGrab, from: Pt, cam0: Matrix, started: bool },
     RotView { start: f32, base: f32 },
     /// A guide being dragged out of a ruler.
     GuideNew { vertical: bool, pos: f32 },
@@ -105,6 +109,28 @@ fn seg_dist(p: Pos2, a: Pos2, b: Pos2) -> f32 {
     let ab = b - a;
     let t = ((p - a).dot(ab) / ab.length_sq().max(1e-6)).clamp(0.0, 1.0);
     p.distance(a + ab * t)
+}
+
+/// What a Camera-tool press grabs on the free camera frame.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum VCamGrab {
+    Move,
+    Zoom,
+    Rotate,
+}
+
+/// Free camera (VCam): the camera frame's corners in stage space (TL, TR, BR, BL)
+/// at `frame`, with follow and shake.
+pub(crate) fn vcam_quad(app: &App, frame: u32) -> Option<[Pt; 4]> {
+    let cam = app.ed.camera_final(frame)?;
+    let inv = ac_core::camera_matrix_to_view(&app.ed.doc, &cam.matrix).invert()?;
+    let (w, h) = (app.ed.doc.width, app.ed.doc.height);
+    Some([inv.apply(pt(0.0, 0.0)), inv.apply(pt(w, 0.0)), inv.apply(pt(w, h)), inv.apply(pt(0.0, h))])
+}
+
+/// Is the stage showing the scene as authored with a free camera frame on it?
+pub(crate) fn vcam_frame_shown(app: &App) -> bool {
+    app.ed.doc.camera_mode == ac_core::CameraMode::Free && app.ed.editing.is_none() && app.ed.camera_layer().is_some() && !app.ed.camera_view
 }
 
 /// Edit in place: one level of symbol/group editing opened from the stage,
@@ -685,7 +711,12 @@ pub(crate) fn oval_path(cx: f32, cy: f32, rx: f32, ry: f32, start: f32, end: f32
 }
 
 pub fn stage(app: &mut App, ctx: &egui::Context) {
-    app.ed.camera_view = app.ed.editing.is_none() && (app.playing || app.tool == Tool::Camera) && app.ed.camera_layer().is_some();
+    let free = app.ed.doc.camera_mode == ac_core::CameraMode::Free;
+    // Stage camera: look through it with the Camera tool and while playing.
+    // Free camera (VCam): the scene as authored with the camera frame on it;
+    // look through it while playing or with "Preview through camera".
+    let through = if free { app.playing || app.vcam_preview } else { app.playing || app.tool == Tool::Camera };
+    app.ed.camera_view = app.ed.editing.is_none() && through && app.ed.camera_layer().is_some();
     egui::CentralPanel::default().frame(egui::Frame::none().fill(Color32::from_gray(0x3C))).show(ctx, |ui| {
         egui::Frame::none().fill(Color32::from_gray(0x2E)).inner_margin(egui::Margin::symmetric(8.0, 4.0)).show(ui, |ui| {
             ui.set_width(ui.available_width());
@@ -795,8 +826,8 @@ fn stage_input(app: &mut App, ui: &egui::Ui, rect: Rect, resp: &egui::Response) 
     if let Some(hover) = resp.hover_pos() {
         let scroll = ui.input(|i| i.raw_scroll_delta.y);
         if scroll != 0.0 {
-            if app.tool == Tool::Camera && app.ed.camera_layer().is_some() && !app.playing {
-                // Camera tool: scroll zooms the camera, not the view.
+            if app.tool == Tool::Camera && app.ed.camera_layer().is_some() && !app.playing && (app.ed.doc.camera_mode == ac_core::CameraMode::Stage || app.ed.camera_view || vcam_quad(app, app.ed.frame).is_some_and(|q| ac_core::geom::point_in_polygon(app.to_doc(rect, hover), &q))) {
+                // Camera tool: scroll zooms the camera, not the view (free camera: over its frame).
                 let cam = app.ed.camera_at(app.ed.frame).unwrap_or_else(|| ac_core::default_camera(&app.ed.doc).matrix);
                 let (c, rot, z) = Editor::camera_params(&cam);
                 let nz = (z * if scroll > 0.0 { 1.1 } else { 1.0 / 1.1 }).clamp(0.05, 50.0);
@@ -1254,6 +1285,9 @@ fn press(app: &mut App, rect: Rect, tool: Tool, origin: Pos2, p0: Pt, shift: boo
                         }
                     });
                     app.status = "Width point deleted".into();
+                } else if let Some((_, li, line, i)) = app.ed.merge_width_points().into_iter().find(|w| app.to_screen(rect, w.0).distance(origin) < 8.0) {
+                    app.ed.merge_remove_width_point(li, line, i);
+                    app.status = "Width point deleted".into();
                 } else {
                     app.status = "Width: Alt+click a width point (pink dot) to delete it.".into();
                 }
@@ -1265,7 +1299,17 @@ fn press(app: &mut App, rect: Rect, tool: Tool, origin: Pos2, p0: Pt, shift: boo
                     app.ed.select(Some(s), false);
                     app.drag = Drag::WidthPt { sel: s, t, started: false };
                 }
-                None => app.status = "Width: press on the stroke (outline) of a shape and drag outwards or inwards.".into(),
+                None => {
+                    // lines of a merge shape
+                    app.ed.commit_floats();
+                    match app.ed.merge_line_at(p0, 8.0 / app.zoom) {
+                        Some((layer, line, t)) => {
+                            app.ed.selection.clear();
+                            app.drag = Drag::MergeWidth { layer, line, t, started: false };
+                        }
+                        None => app.status = "Width: press on a line or the stroke (outline) of a shape and drag outwards or inwards.".into(),
+                    }
+                }
             }
         }
         Tool::AssetWarp => warp_press(app, p0, alt),
@@ -1278,6 +1322,27 @@ fn press(app: &mut App, rect: Rect, tool: Tool, origin: Pos2, p0: Pt, shift: boo
                 app.ed.add_camera();
                 app.ed.camera_view = true;
                 app.status = "Added a Camera layer. Drag to pan, scroll to zoom, Shift+drag to rotate; keyframe it like any layer.".into();
+            }
+            if vcam_frame_shown(app) {
+                // free camera: grab the frame like an object
+                let Some(q) = vcam_quad(app, app.ed.frame) else { return };
+                let s: Vec<Pos2> = q.iter().map(|p| app.to_screen(rect, *p)).collect();
+                let knob = vcam_knob(&s);
+                let cam0 = app.ed.camera_at(app.ed.frame).unwrap_or_else(|| ac_core::default_camera(&app.ed.doc).matrix);
+                let mode = if knob.distance(origin) < 9.0 {
+                    Some(VCamGrab::Rotate)
+                } else if s.iter().any(|c| c.distance(origin) < 9.0) {
+                    Some(VCamGrab::Zoom)
+                } else if ac_core::geom::point_in_polygon(p0, &q) {
+                    Some(VCamGrab::Move)
+                } else {
+                    None
+                };
+                match mode {
+                    Some(mode) => app.drag = Drag::VCam { mode, from: p0, cam0, started: false },
+                    None => app.status = "Free camera: drag inside the camera frame to move it, a corner to zoom, the round knob to rotate.".into(),
+                }
+                return;
             }
             app.drag = Drag::CameraPan { last: origin, rotate: shift, started: false };
         }
@@ -1793,6 +1858,19 @@ fn drag(app: &mut App, ui: &egui::Ui, rect: Rect, pos: Pos2, p: Pt, shift: bool,
             let (l, e, g) = (*layer, *element, *grab);
             app.ed.ik_drag(l, e, g, p);
         }
+        Drag::MergeWidth { layer, line, t, started } => {
+            let (li, ln, t) = (*layer, *line, *t);
+            let first = !*started;
+            *started = true;
+            let Some((_, ei)) = app.ed.canvas_at(li) else { return };
+            let Some(m) = app.ed.element_at(Selection { layer: li, element: ei }).map(|e| e.matrix) else { return };
+            let Some(s) = app.ed.canvas(li).and_then(|c| c.strokes.get(ln)).cloned() else { return };
+            let Some(c) = deform::point_at(&s.path(), t) else { return };
+            let lp = m.invert().map(|i| i.apply(p)).unwrap_or(p);
+            let mult = (2.0 * lp.dist(c) / s.stroke.width.max(0.1)).clamp(0.05, 60.0);
+            app.ed.merge_set_width(li, ln, t, mult, first);
+            app.status = format!("Width {:.1} px at {:.0}% along the line", mult * s.stroke.width, t * 100.0);
+        }
         Drag::WidthPt { sel, t, started } => {
             let (sel, t) = (*sel, *t);
             if !*started {
@@ -1839,6 +1917,48 @@ fn drag(app: &mut App, ui: &egui::Ui, rect: Rect, pos: Pos2, p: Pt, shift: bool,
                     }
                 }
             });
+        }
+        Drag::VCam { mode, from, cam0, started } => {
+            let (mode, from, cam0, first) = (*mode, *from, *cam0, !*started);
+            *started = true;
+            if first {
+                app.ed.begin_edit("Camera");
+            }
+            let (c, rot, z) = Editor::camera_params(&cam0);
+            // the frame's centre as shown (follow/shake move it)
+            let shown = vcam_quad(app, app.ed.frame).map(|q| pt((q[0].x + q[2].x) / 2.0, (q[0].y + q[2].y) / 2.0)).unwrap_or(c);
+            let following = app.ed.camera_opts().is_some_and(|o| o.follow.as_deref().is_some_and(|f| !f.is_empty()));
+            match mode {
+                VCamGrab::Move if following => {
+                    // following an object: the drag sets the offset from it
+                    let mut o = app.ed.camera_opts().unwrap_or_default();
+                    o.follow_offset = pt(o.follow_offset.x + p.x - from.x, o.follow_offset.y + p.y - from.y);
+                    if let Drag::VCam { from, .. } = &mut app.drag {
+                        *from = p;
+                    }
+                    app.ed.set_camera_opts(o);
+                    app.status = "Camera offset from the followed object".into();
+                }
+                VCamGrab::Move => {
+                    app.ed.set_camera(Editor::camera_from(pt(c.x + p.x - from.x, c.y + p.y - from.y), rot, z));
+                }
+                VCamGrab::Zoom => {
+                    let (d0, d1) = (from.dist(shown).max(1.0), p.dist(shown).max(1.0));
+                    let nz = (z * d0 / d1).clamp(0.05, 50.0);
+                    app.ed.set_camera(Editor::camera_from(c, rot, nz));
+                    app.status = format!("Camera zoom {:.0}%", nz * 100.0);
+                }
+                VCamGrab::Rotate => {
+                    let a0 = (from.y - shown.y).atan2(from.x - shown.x);
+                    let a1 = (p.y - shown.y).atan2(p.x - shown.x);
+                    let mut nr = rot + (a1 - a0).to_degrees();
+                    if shift {
+                        nr = (nr / 15.0).round() * 15.0;
+                    }
+                    app.ed.set_camera(Editor::camera_from(c, nr, z));
+                    app.status = format!("Camera rotation {nr:.0}°");
+                }
+            }
         }
         Drag::CameraPan { last, rotate, started } => {
             let (rotate, l, first) = (*rotate, *last, !*started);
@@ -2244,6 +2364,26 @@ fn render_stage(app: &mut App, ui: &egui::Ui, rect: Rect) {
     let mut items = app.ed.evaluate_current(app.ed.frame);
     crate::scripting::apply_overrides(app, &mut items);
     ac_render::draw_items(&mut pix.as_mut(), &items, &ac_render::RenderOpts { view: content_view, ..Default::default() });
+    // free camera: dim what the camera doesn't see
+    if app.vcam_dim && vcam_frame_shown(app) {
+        if let Some(q) = vcam_quad(app, app.ed.frame) {
+            let mut pb = sk::PathBuilder::new();
+            let (w, h) = (pw as f32, ph as f32);
+            pb.push_rect(sk::Rect::from_xywh(0.0, 0.0, w, h).unwrap());
+            let v = content_view;
+            let s: Vec<Pt> = q.iter().map(|p| v.apply(*p)).collect();
+            pb.move_to(s[0].x, s[0].y);
+            for p in &s[1..] {
+                pb.line_to(p.x, p.y);
+            }
+            pb.close();
+            if let Some(path) = pb.finish() {
+                let mut paint = sk::Paint::default();
+                paint.set_color(sk::Color::from_rgba8(0, 0, 0, 80));
+                pix.fill_path(&path, &paint, sk::FillRule::EvenOdd, sk::Transform::identity(), None);
+            }
+        }
+    }
 
     let img = egui::ColorImage::from_rgba_premultiplied([pw as usize, ph as usize], pix.data());
     let tex = match &mut app.stage_tex {
@@ -2258,6 +2398,14 @@ fn render_stage(app: &mut App, ui: &egui::Ui, rect: Rect) {
         }
     };
     ui.painter_at(rect).image(tex.id(), rect, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
+}
+
+/// The free camera's rotation knob: above the middle of the frame's top edge.
+fn vcam_knob(s: &[Pos2]) -> Pos2 {
+    let top = pos2((s[0].x + s[1].x) / 2.0, (s[0].y + s[1].y) / 2.0);
+    let c = pos2((s[0].x + s[2].x) / 2.0, (s[0].y + s[2].y) / 2.0);
+    let d = (top - c).normalized();
+    top + d * 22.0
 }
 
 fn handle_box(painter: &egui::Painter, c: Pos2, size: f32, fill: Color32) {
@@ -2315,6 +2463,31 @@ fn overlays(app: &App, ui: &egui::Ui, rect: Rect) {
     if matches!(app.tool, Tool::Select | Tool::Subselect | Tool::FreeTransform) && !app.playing {
         crate::motion_ui::draw_path(app, &painter, rect, app.tool == Tool::Subselect);
         crate::motion_ui::draw_hints(app, &painter, rect);
+    }
+    // Free camera (VCam) frame on the scene
+    if vcam_frame_shown(app) {
+        if let Some(q) = vcam_quad(app, app.ed.frame) {
+            let cam_col = Color32::from_rgb(0xFF, 0xA0, 0x30);
+            let s: Vec<Pos2> = q.iter().map(|p| app.to_screen(rect, *p)).collect();
+            painter.add(egui::Shape::closed_line(s.clone(), EStroke::new(2.0_f32, cam_col)));
+            let c = pos2((s[0].x + s[2].x) / 2.0, (s[0].y + s[2].y) / 2.0);
+            painter.line_segment([c - vec2(8.0, 0.0), c + vec2(8.0, 0.0)], EStroke::new(1.0_f32, cam_col));
+            painter.line_segment([c - vec2(0.0, 8.0), c + vec2(0.0, 8.0)], EStroke::new(1.0_f32, cam_col));
+            if app.tool == Tool::Camera {
+                for k in &s {
+                    painter.rect_filled(Rect::from_center_size(*k, vec2(8.0, 8.0)), 0.0, cam_col);
+                }
+                let knob = vcam_knob(&s);
+                let top = pos2((s[0].x + s[1].x) / 2.0, (s[0].y + s[1].y) / 2.0);
+                painter.line_segment([top, knob], EStroke::new(1.0_f32, cam_col));
+                painter.circle_filled(knob, 5.0, cam_col);
+            }
+            if let Some(cam) = app.ed.camera_final(app.ed.frame) {
+                let (cc, rot, z) = Editor::camera_params(&cam.matrix);
+                let follow = app.ed.camera_opts().and_then(|o| o.follow).map(|f| format!("  following {f}")).unwrap_or_default();
+                painter.text(s[0] + vec2(6.0, 6.0), egui::Align2::LEFT_TOP, format!("🎥 VCam  x {:.0} y {:.0}  zoom {:.0}%  rot {:.0}°{follow}", cc.x, cc.y, z * 100.0, rot), egui::FontId::proportional(12.0), cam_col);
+            }
+        }
     }
     // Camera frame
     if app.ed.camera_view {
@@ -2553,8 +2726,19 @@ fn overlays(app: &App, ui: &egui::Ui, rect: Rect) {
                     }
                 }
             }
+            for (q, ..) in app.ed.merge_width_points() {
+                painter.circle_filled(app.to_screen(rect, q), 4.0, warn);
+            }
             if let Some(h) = hover.filter(|h| rect.contains(*h)) {
                 let p = app.to_doc(rect, h);
+                if stroked_shape_at(app, p).is_none() {
+                    if let Some((li, line, t)) = app.ed.merge_line_at(p, 8.0 / app.zoom) {
+                        let m = app.ed.canvas_at(li).and_then(|(_, ei)| app.ed.element_at(Selection { layer: li, element: ei })).map(|e| e.matrix).unwrap_or(Matrix::IDENTITY);
+                        if let Some(q) = app.ed.canvas(li).and_then(|c| c.strokes.get(line)).and_then(|s| deform::point_at(&s.path(), t)) {
+                            painter.circle_stroke(app.to_screen(rect, m.apply(q)), 5.0, EStroke::new(1.5_f32, warn));
+                        }
+                    }
+                }
                 if let Some((s, t)) = stroked_shape_at(app, p) {
                     if let Some(el) = app.ed.element_at(s) {
                         if let ElementKind::Shape(sh) = &el.kind {

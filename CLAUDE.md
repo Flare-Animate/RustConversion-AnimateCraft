@@ -70,8 +70,10 @@ Status: ✅ in the demo · 🟡 partial · ⬜ planned
 - ✅ Magic Wand, brush shapes, Ragged/Stipple/Hatched strokes, gradient flow
   (Extend/Reflect/Repeat), Ctrl-drag to add a corner, Width point delete + profile
   copy/paste, Break Apart on text and bitmaps, bitmap fills on merge shapes
-- ⬜ Toolbar gaps: Art/Pattern brushes, pressure/tilt, Width tool on merge lines,
-  Asset Warp on symbols/bitmaps, camera colour filters and layer depth
+- ✅ Width tool on merge-shape lines (profiles survive cuts/splits); camera colour effects + blur
+- ✅ Free camera (VCam) mode: the camera is an orange frame on the stage you move, zoom and rotate,
+  with follow (named object, lag, offset), shake and Preview through camera; all exports match
+- ⬜ Toolbar gaps: Art/Pattern brushes, pressure/tilt, Asset Warp on symbols/bitmaps, layer depth
 - ✅ Groups, bitmaps (PNG/JPG/GIF/BMP, animated GIF, sequences), SVG import, system fonts with styles and weights (simulated when missing)
 - ⬜ Dynamic/input text
 
@@ -113,8 +115,8 @@ Status: ✅ in the demo · 🟡 partial · ⬜ planned
 **Output**
 - ✅ Animated GIF, image frame (PNG / JPEG / GIF with options), SVG frame (same rasteriser as the stage)
 - ✅ PNG sequence, MP4/WebM/MOV via ffmpeg, GIF options, Publish Settings, background export jobs
-- ✅ HTML5 Canvas publish (own runtime: display lists, scripts, buttons, sounds; folder or one
-  .html), sprite sheet + atlas (JSON hash/array, Starling XML), animated SVG (SMIL), Lottie JSON,
+- ✅ HTML5 Canvas publish (own runtime: display lists, scripts, buttons, sounds, per-pixel gradient
+  filters; folder or one .html), sprite sheet + atlas (JSON hash/array, Starling XML), animated SVG (SMIL), Lottie JSON,
   sound mixed into video exports
 - ⬜ SWF (Ruffle's MIT/Apache SWF crates), WebGL, publish profiles
 

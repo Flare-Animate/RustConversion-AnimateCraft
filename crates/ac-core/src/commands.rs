@@ -104,6 +104,9 @@ cmds! {
     "camera.add", "", "Add a camera layer to the scene";
     "camera.set", "x?, y?, zoom?, rotation?, frame?", "Camera centre, zoom (1 = 100%) and rotation at a frame (makes a keyframe)";
     "camera.remove", "", "Remove the camera layer";
+    "camera.mode", "mode ('stage'|'free')", "Stage: the stage is the camera frame (Animate). Free: a VCam frame you move around the scene";
+    "camera.options", "shake? (px), shake_speed? (per second), follow? (instance name; '' = none), follow_lag? (frames), offset_x?, offset_y?, frame?", "Shake and follow for the camera span at the target frame";
+    "camera.effect", "brightness? (-100..100), tint?, tint_amount? (0..100), alpha? (0..100), blur? (px), frame?", "Colour effect / blur on everything the camera sees (makes a camera keyframe)";
     "selection.arrange", "front (bool)", "Bring to front / send to back";
     "drawing.mode", "merge (bool)", "Merge Drawing on: draw.* commands cut and merge into the layer's shape instead of adding drawing objects";
     "merge.select", "x, y, connected? (double-click), add?", "Select the fill or line of the merge shape at a point (it floats until deselected)";
@@ -1168,6 +1171,73 @@ pub fn execute(ed: &mut Editor, id: &str, a: &Value) -> Result<Value, String> {
         "camera.add" => Ok(json!(ed.add_camera() + 1)),
         "camera.remove" => {
             ed.remove_camera();
+            Ok(Value::Null)
+        }
+        "camera.mode" => {
+            let m = match string(a, "mode").unwrap_or("").to_ascii_lowercase().as_str() {
+                "stage" | "fixed" => crate::model::CameraMode::Stage,
+                "free" | "vcam" => crate::model::CameraMode::Free,
+                m => return Err(format!("unknown camera mode '{m}' (stage, free)")),
+            };
+            ed.set_camera_mode(m);
+            Ok(Value::Null)
+        }
+        "camera.options" => {
+            if ed.camera_layer().is_none() {
+                ed.add_camera();
+            }
+            if let Some(f) = frame_arg(a, "frame")? {
+                ed.set_frame(f);
+            }
+            let mut o = ed.camera_opts().unwrap_or_default();
+            if let Some(v) = num(a, "shake") {
+                o.shake = v.max(0.0);
+            }
+            if let Some(v) = num(a, "shake_speed") {
+                o.shake_speed = v.max(0.01);
+            }
+            if let Some(v) = a.get("follow") {
+                o.follow = v.as_str().filter(|s| !s.is_empty()).map(str::to_string);
+            }
+            if let Some(v) = num(a, "follow_lag") {
+                o.follow_lag = v.clamp(0.0, 24.0) as u32;
+            }
+            if let Some(v) = num(a, "offset_x") {
+                o.follow_offset.x = v;
+            }
+            if let Some(v) = num(a, "offset_y") {
+                o.follow_offset.y = v;
+            }
+            ed.set_camera_opts(o);
+            Ok(Value::Null)
+        }
+        "camera.effect" => {
+            if ed.camera_layer().is_none() {
+                ed.add_camera();
+            }
+            if let Some(f) = frame_arg(a, "frame")? {
+                ed.set_frame(f);
+            }
+            let tint = color_arg(a, "tint")?.flatten();
+            let (b, ta, al, bl) = (num(a, "brightness"), num(a, "tint_amount"), num(a, "alpha"), num(a, "blur"));
+            ed.begin_edit("Camera Effect");
+            ed.edit_camera(|e| {
+                if let Some(b) = b {
+                    e.tint = crate::motion::brightness_tint(b / 100.0, None);
+                }
+                if let Some(c) = tint {
+                    e.tint = Some((c, ta.unwrap_or(50.0).clamp(0.0, 100.0) / 100.0));
+                }
+                if let Some(al) = al {
+                    e.alpha = (al / 100.0).clamp(0.0, 1.0);
+                }
+                if let Some(bl) = bl {
+                    e.filters.retain(|f| !matches!(f, crate::fx::Filter::Blur { .. }));
+                    if bl > 0.0 {
+                        e.filters.push(crate::fx::Filter::Blur { blur_x: bl, blur_y: bl, quality: 2 });
+                    }
+                }
+            });
             Ok(Value::Null)
         }
         "camera.set" => {

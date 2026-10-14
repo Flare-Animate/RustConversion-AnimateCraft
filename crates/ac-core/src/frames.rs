@@ -39,6 +39,7 @@ pub fn keyframe_at(layer: &Layer, f: u32) -> Keyframe {
     if let Some((s, src, _)) = layer.span_at(f) {
         kf.ease_curve = src.ease_curve.clone();
         kf.orient_to_path = src.orient_to_path;
+        kf.camera = src.camera.clone();
         if let (Some(m), Some(el)) = (&src.motion, kf.elements.first()) {
             let mut head = (**m).clone();
             let pose = crate::motion::Pose::of(el, m.pivot);

@@ -278,8 +278,9 @@ impl Editor {
         let mut out = Vec::new();
         evaluate(&ctx, self.timeline(), frame, &Matrix::IDENTITY, 1.0, 0, &mut out);
         if self.camera_view && self.editing.is_none() {
-            if let Some(v) = camera_view(&self.doc, self.scene_tl(), frame) {
-                apply_view(&mut out, &v);
+            if let Some(cam) = camera_element(&self.doc, self.scene_tl(), frame) {
+                apply_view(&mut out, &camera_matrix_to_view(&self.doc, &cam.matrix));
+                apply_camera_effects(&mut out, &cam);
             }
         }
         out
@@ -357,6 +358,33 @@ impl Editor {
         self.selection = vec![s];
         self.frame_sel = None;
         true
+    }
+
+    /// The document as it should be saved or published: floating merge
+    /// selections committed and any group being edited folded back into a
+    /// group (the temporary symbol never reaches a file). Editing goes on.
+    pub fn saved_doc(&self) -> Document {
+        let mut doc = self.doc.clone();
+        for (id, prev, s, frame) in self.group_edit.iter().rev() {
+            let Some(sym) = doc.symbol(*id) else { continue };
+            let children: Vec<Element> = sym.timeline.layers.iter().rev().filter_map(|l| layer_elements_at(l, 0).map(|(e, _)| e)).flatten().collect();
+            let scene = if self.scene < doc.scene_count() { self.scene } else { 0 };
+            let tl = match prev {
+                Some(p) => doc.symbol_mut(*p).map(|x| &mut x.timeline),
+                None => doc.scene_at_mut(scene),
+            };
+            if let Some(layer) = tl.and_then(|t| t.layers.get_mut(s.layer)) {
+                if let Some(key) = layer.span_at(*frame).map(|(k, _, _)| k) {
+                    if let Some(e) = layer.keyframes.get_mut(&key).and_then(|k| k.elements.get_mut(s.element)) {
+                        if matches!(&e.kind, ElementKind::Instance(i) if i.symbol == *id) {
+                            e.kind = ElementKind::Group(children);
+                        }
+                    }
+                }
+            }
+            doc.library.retain(|x| x.id != *id);
+        }
+        doc.with_floats_committed()
     }
 
     pub fn exit_to_scene(&mut self) {
@@ -1990,6 +2018,96 @@ impl Editor {
         let (_, ei) = self.canvas_at(layer).unwrap_or((0, 0));
         self.element_at(Selection { layer, element: ei }).and_then(|e| e.matrix.invert()).unwrap_or(Matrix::IDENTITY)
     }
+    // ---- Width tool on merge-shape lines
+    /// A merge-shape line near stage point `p` (within `tol` + half its width):
+    /// (layer, line index, position along it 0…1).
+    pub fn merge_line_at(&self, p: Pt, tol: f32) -> Option<(usize, usize, f32)> {
+        let mut best: Option<(f32, usize, usize, f32)> = None;
+        for li in 0..self.timeline().layers.len() {
+            if !self.layer_editable(li) {
+                continue;
+            }
+            let Some(c) = self.canvas(li) else { continue };
+            let lp = self.canvas_inv(li).apply(p);
+            for (i, s) in c.strokes.iter().enumerate() {
+                let maxw = s.width.as_ref().map(|w| w.iter().map(|x| x.1).fold(1.0f32, f32::max)).unwrap_or(1.0);
+                let d = s.dist(lp);
+                if d <= tol + s.stroke.width * maxw / 2.0 && best.is_none_or(|b| d < b.0) {
+                    best = Some((d, li, i, s.t_of(lp)));
+                }
+            }
+        }
+        best.map(|(_, li, i, t)| (li, i, t))
+    }
+    /// Set a merge line's width multiplier at `t`; `first` makes the undo step
+    /// (later calls during the same drag merge into it).
+    pub fn merge_set_width(&mut self, li: usize, line: usize, t: f32, mult: f32, first: bool) {
+        let Some((key, ei)) = self.canvas_at(li) else { return };
+        if first {
+            self.checkpoint("Width");
+        } else {
+            self.revision += 1;
+        }
+        if let Some(s) = self.canvas_mut(li, key, ei).and_then(|c| c.strokes.get_mut(line)) {
+            s.set_width(t, mult);
+        }
+    }
+    /// Remove width point `i` of a merge line (the line goes back to constant
+    /// width when only plain ends are left).
+    pub fn merge_remove_width_point(&mut self, li: usize, line: usize, i: usize) {
+        let Some((key, ei)) = self.canvas_at(li) else { return };
+        self.checkpoint("Delete Width Point");
+        if let Some(s) = self.canvas_mut(li, key, ei).and_then(|c| c.strokes.get_mut(line)) {
+            if let Some(p) = &mut s.width {
+                if i < p.len() {
+                    p.remove(i);
+                }
+                if p.iter().all(|w| (w.1 - 1.0).abs() < 1e-3) {
+                    s.width = None;
+                }
+            }
+        }
+    }
+    /// Set (or clear) the profile of every line in the floating merge selection.
+    pub fn merge_paste_width(&mut self, profile: Option<Vec<(f32, f32)>>) -> bool {
+        let layers: Vec<usize> = self.selection.iter().map(|s| s.layer).filter(|l| self.canvas(*l).is_some_and(|c| c.float.as_ref().is_some_and(|f| !f.strokes.is_empty()))).collect();
+        if layers.is_empty() {
+            return false;
+        }
+        self.checkpoint("Paste Width Profile");
+        for li in layers {
+            let Some((key, ei)) = self.canvas_at(li) else { continue };
+            if let Some(f) = self.canvas_mut(li, key, ei).and_then(|c| c.float.as_mut()) {
+                for s in &mut f.strokes {
+                    s.width = profile.clone();
+                }
+            }
+        }
+        true
+    }
+    /// Width points of every editable merge line: (stage position, layer, line, point index).
+    pub fn merge_width_points(&self) -> Vec<(Pt, usize, usize, usize)> {
+        let mut out = vec![];
+        for li in 0..self.timeline().layers.len() {
+            if !self.layer_editable(li) {
+                continue;
+            }
+            let (Some(c), Some((_, ei))) = (self.canvas(li), self.canvas_at(li)) else { continue };
+            let m = self.element_at(Selection { layer: li, element: ei }).map(|e| e.matrix).unwrap_or(Matrix::IDENTITY);
+            for (i, s) in c.strokes.iter().enumerate() {
+                for (k, (t, _)) in s.width.iter().flatten().enumerate() {
+                    if *t <= 1e-4 || *t >= 1.0 - 1e-4 {
+                        continue;
+                    }
+                    if let Some(q) = crate::deform::point_at(&s.path(), *t) {
+                        out.push((m.apply(q), li, i, k));
+                    }
+                }
+            }
+        }
+        out
+    }
+
     /// Deselect: every floating merge selection in this timeline merges back.
     pub fn commit_floats(&mut self) -> bool {
         let mut any = false;
@@ -2406,6 +2524,7 @@ impl Editor {
         let ElementKind::Shape(sh) = &el.kind else { return false };
         let path = sh.path.transformed(&el.matrix);
         let (fill, grad, stroke, bitmap) = (sh.fill, sh.gradient.clone(), sh.stroke, sh.bitmap_fill);
+        let width = sh.width_profile.clone();
         let el_m = el.matrix;
         self.checkpoint("Break Apart");
         let Some(key) = self.target_keyframe(s.layer, false) else { return false };
@@ -2431,6 +2550,15 @@ impl Editor {
                         for (pts, closed) in crate::merge::path_polylines(&local) {
                             c.add_stroke(&pts, closed, st);
                         }
+                    }
+                }
+                None if width.is_some() && stroke.is_some() => {
+                    // keep a variable-width line's profile (single outline only: the profile runs along it)
+                    c.add_path(&local, fill, grad, None);
+                    let lines = crate::merge::path_polylines(&local);
+                    let one = lines.len() == 1;
+                    for (pts, closed) in lines {
+                        c.add_stroke_w(&pts, closed, stroke.unwrap(), if one { width.clone() } else { None });
                     }
                 }
                 None => c.add_path(&local, fill, grad, stroke),
@@ -2905,6 +3033,62 @@ impl Editor {
             kf.elements.push(doc_cam);
         }
         kf.elements[0].matrix = cam;
+    }
+
+    /// Change the camera object at the playhead (colour effect, filters…);
+    /// makes a camera keyframe. No undo step: call `begin_edit` first.
+    pub fn edit_camera(&mut self, f: impl FnOnce(&mut Element)) {
+        let Some(cur) = self.camera_at(self.frame) else { return };
+        self.set_camera(cur);
+        let fr = self.frame;
+        let Some(i) = self.camera_layer() else { return };
+        if let Some(e) = self.scene_tl_mut().layers[i].keyframes.get_mut(&fr).and_then(|k| k.elements.first_mut()) {
+            f(e);
+        }
+    }
+    /// The camera object at `frame` as keyed/tweened (before follow and shake).
+    pub fn camera_object(&self, frame: u32) -> Option<Element> {
+        let l = &self.scene_tl().layers[self.camera_layer()?];
+        layer_elements_at(l, frame).and_then(|(e, _)| e.first().cloned())
+    }
+    /// The camera as the output sees it at `frame` (follow and shake applied).
+    pub fn camera_final(&self, frame: u32) -> Option<Element> {
+        camera_element(&self.doc, self.scene_tl(), frame)
+    }
+    /// Shake / follow options of the camera span at the playhead.
+    pub fn camera_opts(&self) -> Option<CameraOpts> {
+        let l = &self.scene_tl().layers[self.camera_layer()?];
+        let (_, kf, _) = l.span_at(self.frame)?;
+        Some(kf.camera.as_deref().cloned().unwrap_or_default())
+    }
+    /// Set the shake / follow options of the camera span at the playhead (one undo step).
+    pub fn set_camera_opts(&mut self, o: CameraOpts) {
+        let Some(i) = self.camera_layer() else { return };
+        let f = self.frame;
+        let Some((start, _, _)) = self.scene_tl().layers[i].span_at(f) else { return };
+        self.checkpoint("Camera Options");
+        let plain = o.shake <= 0.0 && o.follow.as_deref().is_none_or(str::is_empty);
+        if let Some(kf) = self.scene_tl_mut().layers[i].keyframes.get_mut(&start) {
+            kf.camera = (!plain).then(|| Box::new(o));
+        }
+    }
+    /// `set_camera_opts` during a drag (no new undo step).
+    pub fn set_camera_opts_live(&mut self, o: CameraOpts) {
+        let Some(i) = self.camera_layer() else { return };
+        let f = self.frame;
+        let Some((start, _, _)) = self.scene_tl().layers[i].span_at(f) else { return };
+        self.revision += 1;
+        let plain = o.shake <= 0.0 && o.follow.as_deref().is_none_or(str::is_empty);
+        if let Some(kf) = self.scene_tl_mut().layers[i].keyframes.get_mut(&start) {
+            kf.camera = (!plain).then(|| Box::new(o));
+        }
+    }
+    /// Stage (Animate's camera) or Free (VCam) camera authoring.
+    pub fn set_camera_mode(&mut self, m: CameraMode) {
+        if self.doc.camera_mode != m {
+            self.checkpoint("Camera Mode");
+            self.doc.camera_mode = m;
+        }
     }
 
     pub fn camera_params(cam: &Matrix) -> (Pt, f32, f32) {

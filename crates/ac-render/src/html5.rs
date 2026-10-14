@@ -108,7 +108,37 @@ fn fx_json(filters: &[Filter], blend: BlendMode) -> String {
     let css = |c: Color, strength: f32| format!("rgba({},{},{},{})", c.r, c.g, c.b, (c.a as f32 / 255.0 * (strength / 100.0).min(1.0) * 100.0).round() / 100.0);
     let mut f = vec![];
     let mut unsupported = false;
+    // gradient filters run as per-pixel stages in the runtime (exact, like the
+    // stage); CSS filters before/after them are grouped into their own stages
+    let mut stages: Vec<String> = vec![];
+    let mut any_ramp = false;
     for x in filters {
+        if let Filter::GradientGlow { blur_x, blur_y, strength, quality, angle, distance, knockout, kind, stops } | Filter::GradientBevel { blur_x, blur_y, strength, quality, angle, distance, knockout, kind, stops } = x {
+            if !f.is_empty() {
+                stages.push(format!("{{\"c\":{}}}", js_str(&f.join(" "))));
+                f.clear();
+            }
+            any_ramp = true;
+            let k = if matches!(x, Filter::GradientGlow { .. }) { "glow" } else { "bevel" };
+            let t = match kind {
+                BevelType::Inner => 0,
+                BevelType::Outer => 1,
+                BevelType::Full => 2,
+            };
+            let r: Vec<String> = stops.iter().map(|(p, c)| format!("[{},{},{},{},{}]", n(*p), c.r, c.g, c.b, c.a)).collect();
+            stages.push(format!(
+                "{{\"g\":{{\"k\":\"{k}\",\"bx\":{},\"by\":{},\"s\":{},\"q\":{},\"a\":{},\"d\":{},\"ko\":{},\"t\":{t},\"r\":[{}]}}}}",
+                n(*blur_x),
+                n(*blur_y),
+                n(strength / 100.0),
+                quality,
+                n(*angle),
+                n(*distance),
+                knockout,
+                r.join(",")
+            ));
+            continue;
+        }
         match x {
             Filter::Blur { blur_x, blur_y, .. } => f.push(format!("blur({}px)", n((blur_x + blur_y) / 4.0))),
             Filter::DropShadow { blur_x, blur_y, strength, angle, distance, color, inner, knockout, hide_object, .. } => {
@@ -130,21 +160,7 @@ fn fx_json(filters: &[Filter], blend: BlendMode) -> String {
                 f.push(format!("drop-shadow({}px {}px {b}px {})", n(-dx), n(-dy), css(*highlight, *strength)));
                 f.push(format!("drop-shadow({}px {}px {b}px {})", n(dx), n(dy), css(*shadow, *strength)));
             }
-            Filter::GradientGlow { blur_x, blur_y, strength, angle, distance, stops, .. } => {
-                // canvas filters have no ramps: a glow in the ramp's strongest colour
-                unsupported = true;
-                let c = stops.iter().max_by_key(|s| s.1.a).map(|s| s.1).unwrap_or(Color::rgb(0, 0, 0));
-                let (dx, dy) = (angle.to_radians().cos() * distance, angle.to_radians().sin() * distance);
-                f.push(format!("drop-shadow({}px {}px {}px {})", n(dx), n(dy), n((blur_x + blur_y) / 4.0), css(c, *strength)));
-            }
-            Filter::GradientBevel { blur_x, blur_y, strength, angle, distance, stops, .. } => {
-                unsupported = true;
-                let (hi, lo) = (stops.first().map(|s| s.1).unwrap_or(Color::rgb(255, 255, 255)), stops.last().map(|s| s.1).unwrap_or(Color::rgb(0, 0, 0)));
-                let (dx, dy) = (angle.to_radians().cos() * distance, angle.to_radians().sin() * distance);
-                let b = n((blur_x + blur_y) / 4.0);
-                f.push(format!("drop-shadow({}px {}px {b}px {})", n(-dx), n(-dy), css(hi, *strength)));
-                f.push(format!("drop-shadow({}px {}px {b}px {})", n(dx), n(dy), css(lo, *strength)));
-            }
+            Filter::GradientGlow { .. } | Filter::GradientBevel { .. } => {} // handled above
             Filter::AdjustColor { brightness, contrast, saturation, hue } => {
                 f.push(format!("brightness({}) contrast({}) saturate({}) hue-rotate({}deg)", n(1.0 + brightness / 100.0), n(1.0 + contrast / 100.0), n(1.0 + saturation / 100.0), n(*hue)));
             }
@@ -166,6 +182,12 @@ fn fx_json(filters: &[Filter], blend: BlendMode) -> String {
         BlendMode::Erase => "destination-out",
     };
     let _ = unsupported;
+    if any_ramp {
+        if !f.is_empty() {
+            stages.push(format!("{{\"c\":{}}}", js_str(&f.join(" "))));
+        }
+        return format!("{{\"f\":\"\",\"s\":[{}],\"o\":\"{op}\"}}", stages.join(","));
+    }
     format!("{{\"f\":{},\"o\":\"{op}\"}}", js_str(&f.join(" ")))
 }
 

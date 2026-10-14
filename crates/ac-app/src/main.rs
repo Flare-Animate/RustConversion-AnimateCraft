@@ -85,6 +85,10 @@ pub struct App {
     pub(crate) preset_name: String,
     /// Edit in place levels (innermost last).
     pub(crate) place: Vec<crate::stage::InPlace>,
+    /// Free camera: look through it while authoring.
+    pub(crate) vcam_preview: bool,
+    /// Free camera: dim the scene outside the camera frame.
+    pub(crate) vcam_dim: bool,
     /// Editor revision at the last save/open (dirty = different).
     pub(crate) saved_rev: u64,
     pub(crate) autosave_rev: u64,
@@ -185,6 +189,8 @@ impl App {
             settings: files::Settings::load(),
             preset_name: String::new(),
             place: vec![],
+            vcam_preview: false,
+            vcam_dim: true,
             saved_rev: 0,
             autosave_rev: 0,
             dirty_since: None,

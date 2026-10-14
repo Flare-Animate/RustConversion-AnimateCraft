@@ -99,6 +99,12 @@ tools. Options for the active tool are in Properties ▸ **Tool**.
   to move, rotate and stretch (bitmap fills too).
 - **Camera (C)**: adds a Camera layer; drag pans, scroll zooms, Shift+drag
   rotates. Keyframe and tween it like any layer; playback shows the camera view.
+  Camera effects (brightness, tint, alpha, blur) apply to the whole shot.
+- **Free camera (VCam)**: Properties ▸ Camera ▸ Mode ▸ Free. The stage stays put
+  and the camera becomes an orange frame on it: drag inside to move, a corner to
+  zoom, the knob to rotate (Shift: 15° steps). Follow a named object (with lag
+  and offset), add shake, and tick "Preview through camera" to see the shot.
+- **Width (U)** works on drawing objects and on merge-shape lines.
 - **Rotation (Shift+H)** turns the view only (double-click to reset).
 
 ### Files, import and export
