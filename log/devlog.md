@@ -88,3 +88,7 @@
 - Removed the optional `META-INF/metadata.xml` (XMP with the `adobe:ns:meta/` namespace) from XFL exports; it isn't needed for interoperability. Documented why the remaining identifiers must stay.
 - Dependency licences checked (496 crates): MIT/Apache/BSD-style, MPL-2.0 for Symphonia and usvg (unmodified), r-efi offers MIT/Apache. No GPL-only code.
 - Added CONTRIBUTING.md (clean-room rules: allowed/forbidden sources, interoperability identifiers, trademarks, test files, dependency licences, AI-assisted contributions, DCO sign-off, workflow, how to report concerns), a "Legal and provenance" section in the README and a pointer in CLAUDE.md's rules.
+
+## 2026-10-14 — Review of what Flare uses from OpenToonz
+- Cloned Flare-Animate/Flare (0368b5b): ~880k lines of C++ (OpenToonz fork, Qt) + 670k third-party; its native Rust Studio already runs on a copy of our ac-core (e3aadad) with Flare patches listed in its ORIGIN.md.
+- Wrote docs/OPENTOONZ-REVIEW.md: subsystem map, 16 OpenToonz features worth porting (Trace Bitmap, Magic Wand, stroke styles, MyPaint raster painting, Rhubarb lip-sync, curve keyframe types + expressions, Jacobian IK, plastic mesh deformation, drawing assistants, vector deformation tools, PSD, particles, FX subset, Shift & Trace, XDTS), what to learn from but not port, what to skip, licence/provenance rules (port from upstream OpenToonz with BSD notices; avoid Flare's GPL/AGPL-referenced Flash readers), and a suggested order.
