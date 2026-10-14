@@ -472,6 +472,9 @@ pub enum ElementKind {
     /// Merge Drawing: the layer's raw shape, where drawing cuts and merges
     /// (Flash's planar shape). At most one per keyframe, kept at the bottom.
     Canvas(crate::merge::MergeShape),
+    /// A particle emitter (Particle tool): particles sprayed over time from
+    /// the keyframe where it appears.
+    Particles(Box<crate::particles::Emitter>),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
@@ -499,6 +502,10 @@ pub struct Element {
     /// Color effect › Advanced: per-channel multiplier and offset.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub color_fx: Option<ColorXform>,
+    /// Asset Warp on a bitmap, symbol or group: pins (element coordinates)
+    /// deform a mesh over what the element draws (OpenToonz plastic-style).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mesh: Option<crate::deform::MeshWarp>,
 }
 
 /// Animate's Advanced colour effect: `out = in × mul + add` per channel
@@ -559,10 +566,18 @@ fn is_normal_blend(b: &crate::fx::BlendMode) -> bool {
 
 impl Element {
     fn base(name: &str, matrix: Matrix, kind: ElementKind) -> Self {
-        Element { name: name.into(), matrix, alpha: 1.0, tint: None, kind, three_d: None, filters: vec![], blend: Default::default(), color_fx: None }
+        Element { name: name.into(), matrix, alpha: 1.0, tint: None, kind, three_d: None, filters: vec![], blend: Default::default(), color_fx: None, mesh: None }
     }
     pub fn group(children: Vec<Element>) -> Self {
         Element::base("", Matrix::IDENTITY, ElementKind::Group(children))
+    }
+    /// A particle emitter at the origin (place it with `matrix`).
+    pub fn particles(e: crate::particles::Emitter) -> Self {
+        Element { name: String::new(), ..Element::group(vec![]) }.with_kind(ElementKind::Particles(Box::new(e)))
+    }
+    fn with_kind(mut self, kind: ElementKind) -> Self {
+        self.kind = kind;
+        self
     }
     pub fn bitmap(name: &str, bitmap: crate::bitmap::BitmapId, matrix: Matrix) -> Self {
         Element::base(name, matrix, ElementKind::Bitmap(BitmapRef { bitmap }))
@@ -805,6 +820,9 @@ pub struct Bone {
     /// The child's rotation relative to its parent when the bone was made (degrees).
     #[serde(default)]
     pub rest: f32,
+    /// Pinned joint: while posing, the joint stays at this point (layer coordinates).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pin: Option<Pt>,
 }
 
 impl Bone {
@@ -1719,6 +1737,7 @@ pub fn eval_element(ctx: &EvalCtx, el: &Element, parent: &Matrix, alpha: f32, lo
                 out.push(DrawItem { fill, alpha: a, tint: el.tint, outline, image, ..DrawItem::new(path, m) });
             }
         }
+        ElementKind::Particles(e) => e.eval(ctx, &m, a, el.tint, local, outline, depth, out),
         ElementKind::Instance(inst) => {
             let Some(sym) = ctx.doc.symbol(inst.symbol) else { return };
             let dur = sym.timeline.frame_count();
@@ -1759,10 +1778,25 @@ pub fn eval_element(ctx: &EvalCtx, el: &Element, parent: &Matrix, alpha: f32, lo
             it.matrix = Matrix::IDENTITY;
         }
     }
+    // Asset Warp mesh (bitmaps, symbols, groups): the drawn layer is deformed.
+    let mesh = match (&el.mesh, &el.kind) {
+        (Some(w), ElementKind::Bitmap(_) | ElementKind::Instance(_) | ElementKind::Group(_)) if !w.pins.is_empty() && outline.is_none() => {
+            let inv = m.invert();
+            let local_bounds = inv.and_then(|inv| {
+                out[first..]
+                    .iter()
+                    .filter_map(|it| it.path.transformed(&inv.concat(&it.matrix)).bounds())
+                    .reduce(|a, b| (pt(a.0.x.min(b.0.x), a.0.y.min(b.0.y)), pt(a.1.x.max(b.1.x), a.1.y.max(b.1.y))))
+            });
+            local_bounds.map(|(lo, hi)| Arc::new(w.map(lo, hi, &m)))
+        }
+        _ => None,
+    };
     // Filters and blend modes: everything this element drew is one layer.
-    if (!el.filters.is_empty() || el.blend != BlendMode::Normal) && outline.is_none() {
+    if ((!el.filters.is_empty() || el.blend != BlendMode::Normal) && outline.is_none()) || mesh.is_some() {
         let mut g = FxGroup::new(el.filters.clone(), el.blend);
         g.time = local as f32 / ctx.doc.fps.max(1.0);
+        g.mesh = mesh;
         let fx = Arc::new(g);
         for it in &mut out[first..] {
             it.fx.insert(0, fx.clone());
@@ -1956,13 +1990,19 @@ pub fn apply_view(items: &mut [DrawItem], view: &Matrix) {
         it.matrix = view.concat(&it.matrix);
         // Motion-blur deltas live in the items' space: carry them into the view.
         for g in &mut it.fx {
-            if let (Some(m), Some(inv)) = (g.motion, inv) {
+            let has_motion = g.motion.is_some() && inv.is_some();
+            if has_motion || g.mesh.is_some() {
                 let k = Arc::as_ptr(g);
                 let n = moved
                     .entry(k)
                     .or_insert_with(|| {
                         let mut ng = (**g).clone();
-                        ng.motion = Some(view.concat(&m).concat(&inv));
+                        if let (Some(m), Some(inv)) = (g.motion, inv) {
+                            ng.motion = Some(view.concat(&m).concat(&inv));
+                        }
+                        if let Some(mesh) = &g.mesh {
+                            ng.mesh = Some(Arc::new(mesh.transformed(view)));
+                        }
                         Arc::new(ng)
                     })
                     .clone();

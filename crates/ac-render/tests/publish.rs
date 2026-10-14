@@ -161,3 +161,87 @@ fn gradient_filters_publish_as_pixel_stages() {
     let rt = String::from_utf8(files[2].1.clone()).unwrap();
     assert!(rt.contains("function rampFilter"));
 }
+
+/// Asset Warp on a bitmap: the stage/PNG render, SVG (embedded picture) and
+/// HTML5 (mesh in the movie data) all carry the deformation; .fla warns.
+#[test]
+fn asset_warp_on_a_bitmap_reaches_every_export() {
+    use ac_core::commands::execute;
+    use serde_json::json;
+    let mut ed = Editor::new(Document { width: 100.0, height: 100.0, ..Default::default() });
+    let rgba: Vec<u8> = (0..40).flat_map(|_| (0..40).flat_map(|_| [200u8, 30, 30, 255])).collect();
+    let id = ed.add_bitmap(bitmap::BitmapAsset::from_rgba(0, "Red", 40, 40, &rgba).unwrap());
+    ed.place_bitmap(id, pt(20.0, 20.0)).unwrap();
+    execute(&mut ed, "select.all", &json!({})).unwrap();
+    let before = ac_render::render_frame_opts(&ed.doc, 0, 1.0, true);
+    let at = |p: &tiny_skia::Pixmap, x: u32, y: u32| p.pixel(x, y).unwrap().alpha();
+    assert_eq!(at(&before, 72, 72), 0);
+    // three corners pinned, the fourth pulled out by 20 px
+    execute(&mut ed, "selection.mesh_warp", &json!({"pins": [[20,20,20,20],[60,20,60,20],[20,60,20,60],[60,60,80,80]]})).unwrap();
+    let after = ac_render::render_frame_opts(&ed.doc, 0, 1.0, true);
+    assert!(at(&after, 72, 72) > 200, "the pulled corner reaches out");
+    assert!(at(&after, 22, 22) > 200 && at(&after, 10, 10) == 0, "pinned corner stays");
+    let svg = ac_render::export_svg(&ed.doc, 0);
+    assert!(svg.contains("<image x=") && svg.contains("data:image/png;base64"));
+    let files = publish(&ed.doc, &Html5Opts::default());
+    if let Ok(dir) = std::env::var("AC_WARP_HTML5_OUT") {
+        let page = publish(&ed.doc, &Html5Opts { single_file: true, ..Default::default() });
+        std::fs::write(std::path::Path::new(&dir).join("warp.html"), &page[0].1).unwrap();
+    }
+    let movie = String::from_utf8(files[1].1.clone()).unwrap();
+    assert!(movie.contains("\"mw\":{\"c\":"), "mesh in the HTML5 movie");
+    let runtime = String::from_utf8(files[2].1.clone()).unwrap();
+    assert!(runtime.contains("function warpMesh"));
+    // reset removes it
+    execute(&mut ed, "selection.mesh_warp", &json!({"reset": true})).unwrap();
+    assert_eq!(at(&ac_render::render_frame_opts(&ed.doc, 0, 1.0, true), 72, 72), 0);
+}
+
+/// Particle emitters: placed by command, deterministic per frame, drawn by
+/// the stage renderer and every export; symbol particles; editing by command.
+#[test]
+fn particles_render_in_every_export() {
+    use ac_core::commands::execute;
+    use serde_json::json;
+    let mut ed = Editor::new(Document { width: 200.0, height: 200.0, fps: 24.0, ..Default::default() });
+    ed.timeline_mut().layers[0].end = 24;
+    let r = execute(&mut ed, "draw.particles", &json!({"x": 100, "y": 150, "rate": 40, "life": 1, "speed": 80, "spread": 30, "gravity": [0, 0], "color_start": "#FF0000", "color_end": "#FF0000", "fade_in": 0, "fade_out": 0, "seed": 7})).unwrap();
+    assert_eq!(r["index"], json!(0));
+    let items = |ed: &Editor, f: u32| ac_core::evaluate_scene(&ed.doc, f);
+    // frame 0: the (invisible) emitter frame and the first particle
+    assert_eq!(items(&ed, 0).iter().filter(|i| i.fill.is_some()).count(), 1);
+    let n12 = items(&ed, 12).iter().filter(|i| i.fill.is_some()).count();
+    assert_eq!(n12, 21, "40/s for half a second");
+    assert_eq!(items(&ed, 12).len(), items(&ed, 12).len());
+    // pixels above the emitter are red at frame 12
+    let pix = ac_render::render_frame_opts(&ed.doc, 12, 1.0, true);
+    let red = pix.pixels().iter().filter(|p| p.alpha() > 0 && p.red() > 200 && p.green() < 60).count();
+    assert!(red > 50, "particles drawn: {red}");
+    // exports: SVG paths, HTML5 frames differ, Lottie has content
+    let svg = ac_render::export_svg(&ed.doc, 12);
+    assert!(svg.matches("#ff0000").count() + svg.matches("#FF0000").count() >= 20, "SVG has the particles");
+    let files = publish(&ed.doc, &Html5Opts::default());
+    if let Ok(dir) = std::env::var("AC_WARP_HTML5_OUT") {
+        let page = publish(&ed.doc, &Html5Opts { single_file: true, ..Default::default() });
+        std::fs::write(std::path::Path::new(&dir).join("particles.html"), &page[0].1).unwrap();
+        ac_render::render_frame(&ed.doc, 12, 1.0).save_png(std::path::Path::new(&dir).join("particles12.png")).unwrap();
+    }
+    let movie = String::from_utf8(files[1].1.clone()).unwrap();
+    let json = movie.trim_start_matches("var AC_MOVIE=").trim_end().trim_end_matches(';');
+    let m: serde_json::Value = serde_json::from_str(json).unwrap();
+    assert_ne!(m["frames"][2], m["frames"][12]);
+    let (lot, _) = lottie(&ed.doc, &ExportOpts::default());
+    assert!(lot.len() > 2000);
+    // a symbol as the particle, tinted
+    let sym = ed.new_symbol("Spark", SymbolKind::Graphic);
+    ed.doc.symbol_mut(sym).unwrap().timeline.layers[0].keyframes.insert(0, Keyframe::with(vec![Element::shape("", Shape::new(Path::rect(-3.0, -3.0, 6.0, 6.0), Some(Color::rgb(0, 0, 255)), None))]));
+    execute(&mut ed, "symbol.exit", &json!({})).unwrap();
+    execute(&mut ed, "select.all", &json!({})).unwrap();
+    execute(&mut ed, "selection.particles", &json!({"source": {"symbol": "Spark"}, "rate": 10})).unwrap();
+    let blues = items(&ed, 12).iter().filter(|i| i.fill == Some(Color::rgb(0, 0, 255))).count();
+    assert_eq!(blues, 6, "10/s, 0.5 s → 6 symbol particles");
+    assert!(execute(&mut ed, "selection.particles", &json!({"source": "smoke"})).is_err());
+    // survives JSON save/load
+    let back: Document = serde_json::from_str(&serde_json::to_string(&ed.doc).unwrap()).unwrap();
+    assert_eq!(ac_core::evaluate_scene(&back, 12).len(), items(&ed, 12).len());
+}

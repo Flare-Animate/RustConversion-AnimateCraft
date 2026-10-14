@@ -1,7 +1,7 @@
 //! Offscreen effect groups (filters + blend modes) and mask clipping.
 
 use crate::{draw_level, to_sk_path, to_sk_transform, RenderOpts};
-use ac_core::{BevelType, BlendMode, Clip, Color, DrawItem, Filter, FxGroup, Matrix};
+use ac_core::{BevelType, BlendMode, Clip, Color, DrawItem, Filter, FxGroup, Matrix, Pt};
 use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -68,6 +68,11 @@ fn device_bounds(items: &[DrawItem], view: &Matrix) -> Option<(f32, f32, f32, f3
 pub fn draw_group(pix: &mut sk::PixmapMut, items: &[DrawItem], level: usize, g: &FxGroup, opts: &RenderOpts, masks: &mut MaskCache) {
     let scale = view_scale(&opts.view);
     let Some((mut x0, mut y0, mut x1, mut y1)) = device_bounds(items, &opts.view) else { return };
+    // Asset Warp mesh: the layer is drawn deformed, so it may reach further
+    let mesh = g.mesh.as_ref().map(|m| m.transformed(&opts.view));
+    if let Some((lo, hi)) = mesh.as_ref().and_then(|m| m.dst_bounds()) {
+        (x0, y0, x1, y1) = (x0.min(lo.x), y0.min(lo.y), x1.max(hi.x), y1.max(hi.y));
+    }
     if let Some((m, frac, _)) = motion_blur(g) {
         if let Some((a0, b0, a1, b1)) = device_bounds(items, &opts.view.concat(&lerp_matrix(&Matrix::IDENTITY, &m, frac))) {
             (x0, y0, x1, y1) = (x0.min(a0), y0.min(b0), x1.max(a1), y1.max(b1));
@@ -103,6 +108,9 @@ pub fn draw_group(pix: &mut sk::PixmapMut, items: &[DrawItem], level: usize, g: 
         }
         None => draw_level(&mut tmp.as_mut(), items, level + 1, &sub, masks),
     }
+    if let Some(m) = &mesh {
+        tmp = warp_mesh(&tmp, m, x0, y0);
+    }
     for f in &g.filters {
         match f {
             Filter::Effect { id, params } => {
@@ -112,6 +120,35 @@ pub fn draw_group(pix: &mut sk::PixmapMut, items: &[DrawItem], level: usize, g: 
         }
     }
     composite(pix, &tmp, x0 as i32, y0 as i32, g.blend);
+}
+
+/// Draw `src` (device pixels offset by `x0, y0`) through a deformed mesh:
+/// each triangle is filled with the picture mapped by its affine transform.
+/// Triangles are grown by half a pixel so neighbours meet without seams.
+pub fn warp_mesh(src: &sk::Pixmap, mesh: &ac_core::deform::MeshMap, x0: f32, y0: f32) -> sk::Pixmap {
+    let mut out = sk::Pixmap::new(src.width(), src.height()).unwrap_or_else(|| src.clone());
+    let off = |p: Pt| ac_core::pt(p.x - x0, p.y - y0);
+    for (a, b) in mesh.triangles() {
+        let (a, b) = (a.map(off), b.map(off));
+        let Some(m) = ac_core::deform::triangle_affine(&a, &b) else { continue };
+        let c = ac_core::pt((b[0].x + b[1].x + b[2].x) / 3.0, (b[0].y + b[1].y + b[2].y) / 3.0);
+        let grow = |p: Pt| {
+            let (dx, dy) = (p.x - c.x, p.y - c.y);
+            let l = (dx * dx + dy * dy).sqrt().max(1e-6);
+            ac_core::pt(p.x + dx / l * 0.5, p.y + dy / l * 0.5)
+        };
+        let mut pb = sk::PathBuilder::new();
+        let g = b.map(grow);
+        pb.move_to(g[0].x, g[0].y);
+        pb.line_to(g[1].x, g[1].y);
+        pb.line_to(g[2].x, g[2].y);
+        pb.close();
+        let Some(path) = pb.finish() else { continue };
+        let shader = sk::Pattern::new(src.as_ref(), sk::SpreadMode::Pad, sk::FilterQuality::Bilinear, 1.0, sk::Transform::from_row(m.a, m.b, m.c, m.d, m.tx, m.ty));
+        let paint = sk::Paint { shader, anti_alias: true, ..Default::default() };
+        out.fill_path(&path, &paint, sk::FillRule::Winding, sk::Transform::identity(), None);
+    }
+    out
 }
 
 /// (motion since the previous frame, shutter as a fraction of it, samples)

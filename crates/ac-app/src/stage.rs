@@ -52,6 +52,10 @@ pub enum Drag {
     Sculpt(Box<ac_core::editor::Sculpt>),
     /// Bender: drawing the segment across the lines.
     BenderLine { a: Pt, cur: Pt },
+    /// Particle tool: aiming the emitter just placed.
+    ParticleAim { origin: Pt, cur: Pt },
+    /// Asset Warp pin on a bitmap, symbol or group.
+    MeshPin { sel: Selection, pin: usize, started: bool },
     /// Raster Brush stroke (time of the last event, for the brush's speed).
     Paint(Box<ac_core::editor::PaintSession>, f64),
     /// Assistants tool: dragging handle `k` of assistant `i` (`k = None`: the whole assistant).
@@ -1345,6 +1349,15 @@ fn press(app: &mut App, rect: Rect, tool: Tool, origin: Pos2, p0: Pt, shift: boo
         Tool::AssetWarp => warp_press(app, p0, alt),
         Tool::Magnet | Tool::Pinch | Tool::Pump | Tool::Iron | Tool::Bender => sculpt_press(app, tool, p0),
         Tool::Assistant => assist_press(app, rect, origin, p0, alt),
+        Tool::Particles => {
+            let el = Element { name: String::new(), matrix: Matrix::translate(p0.x, p0.y), ..Element::particles(ac_core::particles::Emitter::default()) };
+            if app.ed.add_element(el).is_some() {
+                app.drag = Drag::ParticleAim { origin: p0, cur: p0 };
+                app.status = "Particle emitter placed: drag to aim it (length = speed); press Enter/Ctrl+Enter to play. Settings in Properties.".into();
+            } else {
+                app.status = "The current layer is locked or hidden".into();
+            }
+        }
         Tool::Camera => {
             if app.ed.editing.is_some() {
                 app.status = "The camera belongs to the scene: leave symbol editing first (Esc).".into();
@@ -1549,6 +1562,13 @@ fn raster_press(app: &mut App, p0: Pt) {
     }
 }
 
+/// A pinned joint: a red pin head with a ring.
+fn draw_pin(painter: &egui::Painter, c: Pos2) {
+    painter.circle_stroke(c, 7.0, EStroke::new(1.5_f32, Color32::from_rgb(0xE0, 0x30, 0x30)));
+    painter.circle_filled(c + vec2(0.0, -9.0), 3.0, Color32::from_rgb(0xE0, 0x30, 0x30));
+    painter.line_segment([c + vec2(0.0, -6.0), c], EStroke::new(1.5_f32, Color32::from_rgb(0xE0, 0x30, 0x30)));
+}
+
 /// Assistants tool: grab a handle or an assistant's line; Alt+click deletes it.
 fn assist_press(app: &mut App, rect: Rect, origin: Pos2, p0: Pt, alt: bool) {
     let mut hit: Option<(usize, Option<usize>)> = None;
@@ -1676,18 +1696,113 @@ fn draw_assistants(app: &App, painter: &egui::Painter, rect: Rect, handles: bool
                     }
                 }
             }
+            K::Perspective { vx, vy, vz, three_point } => {
+                // horizon, and a fan of rays from each vanishing point
+                line(*vx, *vy, g);
+                let faint = EStroke::new(0.6_f32, guide_col.gamma_multiply(k * 0.5));
+                let mut vps = vec![*vx, *vy];
+                if *three_point {
+                    vps.push(*vz);
+                }
+                for v in &vps {
+                    for j in 0..12 {
+                        let t = std::f32::consts::TAU * j as f32 / 12.0 + 0.13;
+                        painter.line_segment([app.to_screen(rect, *v), app.to_screen(rect, pt(v.x + t.cos() * far, v.y + t.sin() * far))], faint);
+                    }
+                    painter.circle_stroke(app.to_screen(rect, *v), 5.0, g);
+                }
+                if !*three_point {
+                    let mid = vx.lerp(*vy, 0.5);
+                    for j in [-2.0f32, -1.0, 0.0, 1.0, 2.0] {
+                        let x = mid.x + j * vx.dist(*vy) / 6.0;
+                        line(pt(x, mid.y), pt(x, mid.y + 1.0), faint);
+                    }
+                }
+            }
+            K::Fisheye { c, a: ax, b } => {
+                if let Some(m) = ac_core::assist::ellipse_matrix(*c, *ax, *b) {
+                    ellipse(m, g);
+                    let faint = EStroke::new(0.6_f32, guide_col.gamma_multiply(k * 0.5));
+                    for s in [0.25f32, 0.5, 0.75] {
+                        ellipse(m.concat(&ac_core::Matrix { a: s, b: 0.0, c: 0.0, d: 1.0, tx: 0.0, ty: 0.0 }), faint);
+                        ellipse(m.concat(&ac_core::Matrix { a: 1.0, b: 0.0, c: 0.0, d: s, tx: 0.0, ty: 0.0 }), faint);
+                    }
+                    for j in 0..8 {
+                        let t = std::f32::consts::TAU * j as f32 / 8.0;
+                        painter.line_segment([app.to_screen(rect, *c), app.to_screen(rect, m.apply(pt(t.cos(), t.sin())))], faint);
+                    }
+                }
+            }
+            K::Affine { c0, a0, b0, c1, a1, b1, count, count_inv } => {
+                let frame = |c: Pt, a: Pt, b: Pt, st: EStroke| {
+                    let d = pt(a.x + b.x - c.x, a.y + b.y - c.y);
+                    painter.add(egui::Shape::closed_line([c, a, d, b].iter().map(|x| app.to_screen(rect, *x)).collect(), st));
+                };
+                frame(*c0, *a0, *b0, EStroke::new(1.4_f32, guide_col.gamma_multiply(k)));
+                frame(*c1, *a1, *b1, EStroke::new(1.4_f32, Color32::from_rgb(0xFF, 0xA0, 0x30).gamma_multiply(k)));
+                // the copies of the first frame
+                let reps = ac_core::assist::replicas(std::slice::from_ref(a));
+                for m in reps.iter().skip(1).take((*count as usize + *count_inv as usize).min(60)) {
+                    frame(m.apply(*c0), m.apply(*a0), m.apply(*b0), EStroke::new(0.6_f32, rep_col.gamma_multiply(k * 0.5)));
+                }
+            }
+            K::Jitter { c, period, amplitude, .. } => {
+                let (h, q) = (period / 2.0, period / 4.0);
+                let zig = [pt(c.x - h, c.y), pt(c.x - q, c.y + amplitude), pt(c.x + q, c.y - amplitude), pt(c.x + h, c.y)];
+                painter.add(egui::Shape::line(zig.iter().map(|x| app.to_screen(rect, *x)).collect(), r));
+            }
         }
         if handles {
             for (j, q) in a.points().iter().enumerate() {
                 let s = app.to_screen(rect, *q);
                 let col = if a.is_guide() { guide_col } else { rep_col };
-                if j == 0 {
+                let centre = j == 0 || (j == 3 && matches!(a.kind, K::Affine { .. }));
+                if centre && !matches!(a.kind, K::Perspective { .. }) {
                     painter.circle_filled(s, 5.0, if sel { Color32::WHITE } else { col });
                     painter.circle_stroke(s, 5.0, EStroke::new(1.0_f32, Color32::BLACK));
                 } else {
                     painter.circle_filled(s, 4.0, Color32::WHITE);
                     painter.circle_stroke(s, 4.0, EStroke::new(1.5_f32, col));
                 }
+            }
+        }
+    }
+}
+
+/// Emitter markers: dashed area and an arrow for direction and speed (one second of travel / 2).
+fn draw_emitters(app: &App, painter: &egui::Painter, rect: Rect) {
+    let tool = app.tool == Tool::Particles;
+    let tl = app.ed.timeline();
+    for (li, l) in tl.layers.iter().enumerate() {
+        if !l.visible {
+            continue;
+        }
+        let Some((els, _)) = ac_core::model::layer_elements_at(l, app.ed.frame) else { continue };
+        let parent = app.ed.layer_parent_at(li).unwrap_or(Matrix::IDENTITY);
+        for (ei, el) in els.iter().enumerate() {
+            let ElementKind::Particles(e) = &el.kind else { continue };
+            let sel = app.ed.is_selected(ac_core::Selection { layer: li, element: ei });
+            if !tool && !sel {
+                continue;
+            }
+            let m = parent.concat(&el.matrix);
+            let col = Color32::from_rgb(0xFF, 0xA0, 0x30).gamma_multiply(if sel { 1.0 } else { 0.6 });
+            let st = EStroke::new(1.0_f32, col);
+            let (w, h) = (e.area.x.max(0.0) / 2.0, e.area.y.max(0.0) / 2.0);
+            let quad: Vec<Pos2> = [pt(-w, -h), pt(w, -h), pt(w, h), pt(-w, h)].iter().map(|q| app.to_screen(rect, m.apply(*q))).collect();
+            if w > 0.0 || h > 0.0 {
+                painter.add(egui::Shape::dashed_line(&[quad[0], quad[1], quad[2], quad[3], quad[0]], st, 4.0, 3.0));
+            }
+            let o = app.to_screen(rect, m.apply(pt(0.0, 0.0)));
+            painter.circle_stroke(o, 5.0, st);
+            let d = e.direction.to_radians();
+            let len = e.speed * 0.5;
+            let tip = app.to_screen(rect, m.apply(pt(d.cos() * len, d.sin() * len)));
+            painter.arrow(o, tip - o, st);
+            for side in [-1.0f32, 1.0] {
+                let a = d + side * e.spread.to_radians() / 2.0;
+                let q = app.to_screen(rect, m.apply(pt(a.cos() * len * 0.6, a.sin() * len * 0.6)));
+                painter.line_segment([o, q], EStroke::new(0.6_f32, col.gamma_multiply(0.6)));
             }
         }
     }
@@ -1739,9 +1854,32 @@ fn sculpt_press(app: &mut App, tool: Tool, p0: Pt) {
 }
 
 fn warp_press(app: &mut App, p0: Pt, alt: bool) {
+    // pins on a selected bitmap / symbol / group come first (they may lie outside its pixels)
+    let tol = 9.0 / app.zoom;
+    for s in app.ed.selection.clone() {
+        if let Some(i) = app.ed.mesh_pins(s).iter().position(|q| q.dist(p0) < tol) {
+            if alt {
+                app.ed.mesh_pin_remove(s, i);
+            } else {
+                app.drag = Drag::MeshPin { sel: s, pin: i, started: false };
+            }
+            return;
+        }
+    }
     let Some((s, inv, _)) = app.shape_for_points(p0, true) else {
-        if app.ed.hit_test(p0).is_none() {
-            app.status = "Asset Warp: click a shape to drop a pin, then drag pins to bend it.".into();
+        match app.ed.hit_test(p0) {
+            Some(h) if !alt && matches!(app.ed.element_at(h).map(|e| e.kind), Some(ElementKind::Bitmap(_) | ElementKind::Instance(_) | ElementKind::Group(_))) => {
+                if !app.ed.layer_editable(h.layer) {
+                    app.locked_msg();
+                    return;
+                }
+                if let Some(i) = app.ed.mesh_pin_add(h, p0) {
+                    app.drag = Drag::MeshPin { sel: h, pin: i, started: false };
+                    app.status = "Asset Warp: pins hold the picture; drag one to bend it around the others. Alt+click a pin removes it.".into();
+                }
+            }
+            Some(_) => {}
+            None => app.status = "Asset Warp: click a shape, bitmap or symbol to drop a pin, then drag pins to bend it.".into(),
         }
         return;
     };
@@ -1886,6 +2024,20 @@ fn drag(app: &mut App, ui: &egui::Ui, rect: Rect, pos: Pos2, p: Pt, shift: bool,
     }
     if let Drag::BenderLine { cur, .. } = &mut app.drag {
         *cur = p;
+        return;
+    }
+    if let Drag::ParticleAim { origin, cur } = &mut app.drag {
+        *cur = p;
+        let d = pt(p.x - origin.x, p.y - origin.y);
+        if (d.x * d.x + d.y * d.y).sqrt() * app.zoom > 5.0 {
+            let (dir, speed) = (d.y.atan2(d.x).to_degrees(), (d.x * d.x + d.y * d.y).sqrt() * 2.0);
+            app.ed.modify_selected_continuous(move |e| {
+                if let ElementKind::Particles(pe) = &mut e.kind {
+                    pe.direction = dir;
+                    pe.speed = speed;
+                }
+            });
+        }
         return;
     }
     if let Drag::AssistPt { i, k, last, started } = app.drag {
@@ -2178,6 +2330,11 @@ fn drag(app: &mut App, ui: &egui::Ui, rect: Rect, pos: Pos2, p: Pt, shift: bool,
             });
             app.status = format!("Width {:.1} px at {:.0}% along the stroke", mult * st.width, t * 100.0);
         }
+        Drag::MeshPin { sel, pin, started } => {
+            let (sel, pin, first) = (*sel, *pin, !*started);
+            *started = true;
+            app.ed.mesh_pin_move(sel, pin, p, first);
+        }
         Drag::WarpPin { sel, pin, started } => {
             let (sel, pin) = (*sel, *pin);
             if !*started {
@@ -2335,7 +2492,7 @@ fn drag(app: &mut App, ui: &egui::Ui, rect: Rect, pos: Pos2, p: Pt, shift: bool,
                 *last = p;
             }
         }
-        Drag::None | Drag::MotionPath { .. } | Drag::Hint { .. } | Drag::Bend { .. } | Drag::RigIk { .. } | Drag::Sculpt(_) | Drag::BenderLine { .. } | Drag::AssistPt { .. } | Drag::Paint(..) => {}
+        Drag::None | Drag::MotionPath { .. } | Drag::Hint { .. } | Drag::Bend { .. } | Drag::RigIk { .. } | Drag::Sculpt(_) | Drag::BenderLine { .. } | Drag::ParticleAim { .. } | Drag::AssistPt { .. } | Drag::Paint(..) => {}
     }
 }
 
@@ -2949,6 +3106,11 @@ fn overlays(app: &App, ui: &egui::Ui, rect: Rect) {
             painter.circle_filled(t, if hot { 5.5 } else { 4.0 }, if hot { hot_bone } else { Color32::WHITE });
             painter.circle_stroke(t, 4.0, EStroke::new(1.0_f32, ACCENT));
         }
+        // pinned joints
+        let l = app.ed.layer;
+        for b in app.ed.bones(l).iter().filter_map(|b| b.pin) {
+            draw_pin(&painter, app.to_screen(rect, b));
+        }
     }
     // Shape armatures
     if app.topts.show_bones && !app.playing {
@@ -2968,6 +3130,11 @@ fn overlays(app: &App, ui: &egui::Ui, rect: Rect) {
             }
             painter.circle_filled(h, 3.0, Color32::WHITE);
             painter.circle_filled(t, 3.0, Color32::WHITE);
+            if let Some(ElementKind::Shape(Shape { rig: Some(r), .. })) = app.ed.element_at(s).map(|e| e.kind) {
+                if r.bones.get(b).and_then(|x| x.pin).is_some() {
+                    draw_pin(&painter, t);
+                }
+            }
         }
         if let Some((s, b)) = bind {
             if let Some(el) = app.ed.element_at(s) {
@@ -3103,6 +3270,30 @@ fn overlays(app: &App, ui: &egui::Ui, rect: Rect) {
                     }
                 }
             }
+            // bitmaps / symbols / groups: the deformed mesh and its pins
+            for s in &app.ed.selection {
+                let Some(el) = app.ed.element_at(*s) else { continue };
+                let Some(w) = &el.mesh else { continue };
+                let (Some((lo, hi)), Some(inv)) = (app.ed.bounds_of(&[*s]), el.matrix.invert()) else { continue };
+                let corners = [pt(lo.x, lo.y), pt(hi.x, lo.y), pt(hi.x, hi.y), pt(lo.x, hi.y)].map(|c| inv.apply(c));
+                let (llo, lhi) = corners.iter().fold((corners[0], corners[0]), |(a, b), c| (pt(a.x.min(c.x), a.y.min(c.y)), pt(b.x.max(c.x), b.y.max(c.y))));
+                let m = w.map(llo, lhi, &el.matrix);
+                let line = EStroke::new(0.7_f32, ACCENT.gamma_multiply(0.45));
+                let step = (m.cols / 8).max(1);
+                for r in (0..=m.rows).step_by(step) {
+                    let pts: Vec<Pos2> = (0..=m.cols).map(|c| app.to_screen(rect, m.dst[r * (m.cols + 1) + c])).collect();
+                    painter.add(egui::Shape::line(pts, line));
+                }
+                for c in (0..=m.cols).step_by(step) {
+                    let pts: Vec<Pos2> = (0..=m.rows).map(|r| app.to_screen(rect, m.dst[r * (m.cols + 1) + c])).collect();
+                    painter.add(egui::Shape::line(pts, line));
+                }
+                for q in app.ed.mesh_pins(*s) {
+                    let c = app.to_screen(rect, q);
+                    painter.circle_filled(c, 5.5, Color32::from_rgb(0xFF, 0xC8, 0x30));
+                    painter.circle_stroke(c, 5.5, EStroke::new(1.5_f32, Color32::BLACK));
+                }
+            }
         }
         _ => {}
     }
@@ -3231,6 +3422,8 @@ fn overlays(app: &App, ui: &egui::Ui, rect: Rect) {
     if !app.ed.doc.assistants.is_empty() && (app.tool == Tool::Assistant || (app.topts.assist_on && matches!(app.tool, Tool::Pencil | Tool::Brush | Tool::FluidBrush))) {
         draw_assistants(app, &painter, rect, app.tool == Tool::Assistant);
     }
+    // Particle emitters: their area and direction while the tool is active or one is selected
+    draw_emitters(app, &painter, rect);
     // Bender segment
     if app.tool == Tool::Bender {
         let seg = match &app.drag {

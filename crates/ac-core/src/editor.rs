@@ -2122,6 +2122,10 @@ impl Editor {
                 let all: Vec<crate::merge::Part> = (0..c.fills.len()).map(crate::merge::Part::Fill).collect();
                 c.set_fill(&all, Some(color), None);
             }
+            ElementKind::Particles(e) => {
+                e.color_start = color;
+                e.color_end = Color { a: e.color_end.a, ..color };
+            }
         });
     }
 }
@@ -3018,10 +3022,26 @@ impl Editor {
         let pm = els.get(parent).ok_or("no such object")?.matrix.invert().ok_or("object has no size")?;
         let cm = els.get(child).ok_or("no such object")?.matrix.invert().ok_or("object has no size")?;
         let rest = Bone::relative_angle(&els, parent, child).unwrap_or(0.0);
-        let bone = Bone { parent, child, head: pm.apply(head), tail_parent: pm.apply(tail), tail_child: cm.apply(tail), rotate: true, limit: None, rest };
+        let bone = Bone { parent, child, head: pm.apply(head), tail_parent: pm.apply(tail), tail_child: cm.apply(tail), rotate: true, limit: None, rest, pin: None };
         self.checkpoint("Add Bone");
         self.timeline_mut().layers[layer].bones.push(bone);
         Ok(())
+    }
+
+    /// Pin (or unpin) the joint where `child` attaches: it keeps its current place while posing.
+    pub fn set_joint_pin(&mut self, layer: usize, child: usize, pin: bool) -> bool {
+        let Some(b) = self.bones(layer).iter().find(|b| b.child == child).copied() else { return false };
+        let at = if pin {
+            let Some((els, _)) = layer_elements_at(&self.timeline().layers[layer], self.frame) else { return false };
+            els.get(child).map(|e| e.matrix.apply(b.tail_child))
+        } else {
+            None
+        };
+        self.checkpoint(if pin { "Pin Joint" } else { "Unpin Joint" });
+        if let Some(b) = self.timeline_mut().layers[layer].bones.iter_mut().find(|b| b.child == child) {
+            b.pin = at;
+        }
+        true
     }
 
     /// Joint settings of the bone that attaches `child`: rotation on/off and limits.
@@ -3082,39 +3102,29 @@ impl Editor {
                 els[y].matrix.ty += target.y - eff.y;
             }
         } else {
-            for _ in 0..16 {
-                for &x in &chain {
-                    let Some(j) = Self::bone_pivot(&bones, &els, x) else { continue };
-                    let eff = els[element].matrix.apply(grab);
-                    let a1 = (eff.y - j.y).atan2(eff.x - j.x);
-                    let a2 = (target.y - j.y).atan2(target.x - j.x);
-                    let mut d = a2 - a1;
-                    while d > std::f32::consts::PI {
-                        d -= std::f32::consts::TAU;
-                    }
-                    while d < -std::f32::consts::PI {
-                        d += std::f32::consts::TAU;
-                    }
-                    if eff.dist(j) < 1e-3 {
-                        continue;
-                    }
-                    // joint constraints (enable / rotation limits)
-                    if let Some(b) = bones.iter().find(|b| b.child == x) {
-                        let rel = Bone::relative_angle(&els, b.parent, x).unwrap_or(0.0);
-                        d = b.allowed_turn(rel, d.to_degrees()).to_radians();
-                        if d.abs() < 1e-7 {
-                            continue;
-                        }
-                    }
-                    let r = Matrix::translate(j.x, j.y).concat(&Matrix::rotate(d)).concat(&Matrix::translate(-j.x, -j.y));
-                    for y in Self::bone_subtree(&bones, x) {
-                        els[y].matrix = r.concat(&els[y].matrix);
+            // damped least squares over the whole armature: the grabbed point
+            // follows the pointer, pinned joints stay put (OpenToonz IK engine)
+            let mut joints = affected.clone();
+            let depth = |e: usize| {
+                let mut d = 0;
+                let mut cur = e;
+                while let Some(b) = bones.iter().find(|b| b.child == cur) {
+                    cur = b.parent;
+                    d += 1;
+                    if d > 64 {
+                        break;
                     }
                 }
-                if els[element].matrix.apply(grab).dist(target) < 0.25 {
-                    break;
-                }
+                d
+            };
+            joints.sort_by_key(|&e| depth(e));
+            let subtrees: Vec<Vec<usize>> = joints.iter().map(|&j| Self::bone_subtree(&bones, j)).collect();
+            let mut arm = ObjectArmature { bones: &bones, els: &mut els, joints, subtrees };
+            let mut eff = vec![crate::ik::Effector { owner: element, local: grab, target, weight: 1.0 }];
+            for b in bones.iter().filter(|b| b.pin.is_some() && affected.contains(&b.child)) {
+                eff.push(crate::ik::Effector { owner: b.child, local: b.tail_child, target: b.pin.unwrap(), weight: 4.0 });
             }
+            crate::ik::solve_dls(&mut arm, &eff, 60);
         }
         apply_bones(&bones, &mut els);
         let l = &mut self.timeline_mut().layers[layer];
@@ -4309,5 +4319,97 @@ impl Editor {
             }
         }
         self.revision += 1;
+    }
+}
+
+/// An object armature (bones between objects on a layer) seen by the IK solver:
+/// each object is a joint turning about where it attaches to its parent.
+struct ObjectArmature<'a> {
+    bones: &'a [Bone],
+    els: &'a mut Vec<Element>,
+    joints: Vec<usize>,
+    subtrees: Vec<Vec<usize>>,
+}
+
+impl crate::ik::Kinematic for ObjectArmature<'_> {
+    fn joints(&self) -> Vec<usize> {
+        self.joints.clone()
+    }
+    fn pivot(&self, j: usize) -> Pt {
+        Editor::bone_pivot(self.bones, self.els, j).unwrap_or_else(|| self.els[j].matrix.apply(pt(0.0, 0.0)))
+    }
+    fn moves(&self, j: usize, owner: usize) -> bool {
+        self.joints.iter().position(|&x| x == j).is_some_and(|i| self.subtrees[i].contains(&owner))
+    }
+    fn world(&self, owner: usize, local: Pt) -> Pt {
+        self.els[owner].matrix.apply(local)
+    }
+    fn turn(&mut self, j: usize, d: f32) {
+        let d = match self.bones.iter().find(|b| b.child == j) {
+            Some(b) => crate::ik::limited_turn(b.rotate, b.limit, b.rest, Bone::relative_angle(self.els, b.parent, j).unwrap_or(0.0), d),
+            None => d,
+        };
+        if d == 0.0 {
+            return;
+        }
+        let q = self.pivot(j);
+        let r = Matrix::translate(q.x, q.y).concat(&Matrix::rotate(d)).concat(&Matrix::translate(-q.x, -q.y));
+        let i = self.joints.iter().position(|&x| x == j).unwrap();
+        for &y in &self.subtrees[i] {
+            self.els[y].matrix = r.concat(&self.els[y].matrix);
+        }
+    }
+}
+
+// ------------------------------------------------------------ Asset Warp on bitmaps, symbols and groups
+impl Editor {
+    fn meshable(&self, s: Selection) -> bool {
+        self.element_at(s).is_some_and(|e| matches!(e.kind, ElementKind::Bitmap(_) | ElementKind::Instance(_) | ElementKind::Group(_)))
+    }
+    /// Add an Asset Warp pin at stage point `p` on a bitmap, symbol or group; returns its index.
+    pub fn mesh_pin_add(&mut self, s: Selection, p: Pt) -> Option<usize> {
+        if !self.meshable(s) || !self.layer_editable(s.layer) {
+            return None;
+        }
+        let el = self.element_at(s)?;
+        let local = el.matrix.invert()?.apply(p);
+        let mut w = el.mesh.clone().unwrap_or_default();
+        let rest = w.rest_of(local);
+        w.pins.push((rest, local));
+        let n = w.pins.len() - 1;
+        self.selection = vec![s];
+        self.modify_selected("Add Pin", move |e| e.mesh = Some(w.clone()));
+        Some(n)
+    }
+    /// Drag pin `i` to stage point `p` (`first` makes the undo step).
+    pub fn mesh_pin_move(&mut self, s: Selection, i: usize, p: Pt, first: bool) {
+        let Some(inv) = self.element_at(s).and_then(|e| e.matrix.invert()) else { return };
+        let local = inv.apply(p);
+        self.selection = vec![s];
+        if first {
+            self.begin_edit("Asset Warp");
+        }
+        self.modify_selected_continuous(move |e| {
+            if let Some(pp) = e.mesh.as_mut().and_then(|w| w.pins.get_mut(i)) {
+                pp.1 = local;
+            }
+        });
+    }
+    pub fn mesh_pin_remove(&mut self, s: Selection, i: usize) {
+        self.selection = vec![s];
+        self.modify_selected("Remove Pin", move |e| {
+            if let Some(w) = &mut e.mesh {
+                if i < w.pins.len() {
+                    w.pins.remove(i);
+                }
+                if w.pins.is_empty() {
+                    e.mesh = None;
+                }
+            }
+        });
+    }
+    /// The pins of an element's mesh warp in stage coordinates (where they are now).
+    pub fn mesh_pins(&self, s: Selection) -> Vec<Pt> {
+        self.element_at(s).and_then(|e| e.mesh.as_ref().map(|w| w.pins.iter().map(|(_, q)| e.matrix.apply(*q)).collect())).unwrap_or_default()
     }
 }

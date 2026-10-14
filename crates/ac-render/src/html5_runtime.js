@@ -84,6 +84,7 @@
 
   // ---------------------------------------------------------------- drawing
   var pool = [];
+  var warpPool = [];
   function offscreen(depth) {
     var c = pool[depth];
     if (!c) { c = pool[depth] = document.createElement("canvas"); }
@@ -269,6 +270,7 @@
       else drawList(off.getContext("2d"), e.c, depth + 1);
       var fx = M.fx[e.x];
       var src = off;
+      if (e.mw) src = warpMesh(off, e.mw, depth + 1);
       if (fx.s) src = stages(off, fx.s, depth + 1);
       c.save();
       c.setTransform(1, 0, 0, 1, 0, 0);
@@ -277,6 +279,44 @@
       c.drawImage(src, 0, 0);
       c.restore();
     }
+  }
+
+  // Asset Warp: each grid triangle of the group's picture drawn through the
+  // affine map from where it was to where it is (clip + transform), as in
+  // ac-render's warp_mesh; triangles grown half a pixel to hide seams.
+  function warpMesh(off, mw, depth) {
+    var out = warpPool[depth] || (warpPool[depth] = document.createElement("canvas"));
+    if (out.width !== off.width || out.height !== off.height) { out.width = off.width; out.height = off.height; }
+    var x = out.getContext("2d"), s = mw.s, d = mw.d, cols = mw.c, rows = mw.r;
+    x.setTransform(1, 0, 0, 1, 0, 0);
+    x.clearRect(0, 0, out.width, out.height);
+    function P(v, i) { return [v[i * 2] * dpr, v[i * 2 + 1] * dpr]; }
+    function tri(a, b, c) {
+      var s0 = P(s, a), s1 = P(s, b), s2 = P(s, c), d0 = P(d, a), d1 = P(d, b), d2 = P(d, c);
+      // source → destination affine: solve [d] = M [s]
+      var ux = s1[0] - s0[0], uy = s1[1] - s0[1], vx = s2[0] - s0[0], vy = s2[1] - s0[1];
+      var det = ux * vy - vx * uy;
+      if (Math.abs(det) < 1e-9) return;
+      var px = d1[0] - d0[0], py = d1[1] - d0[1], qx = d2[0] - d0[0], qy = d2[1] - d0[1];
+      var A = (px * vy - qx * uy) / det, C = (qx * ux - px * vx) / det;
+      var B = (py * vy - qy * uy) / det, D = (qy * ux - py * vx) / det;
+      var E = d0[0] - A * s0[0] - C * s0[1], F = d0[1] - B * s0[0] - D * s0[1];
+      var cx = (d0[0] + d1[0] + d2[0]) / 3, cy = (d0[1] + d1[1] + d2[1]) / 3;
+      function g(p) { var dx = p[0] - cx, dy = p[1] - cy, l = Math.hypot(dx, dy) || 1; return [p[0] + dx / l * 0.5, p[1] + dy / l * 0.5]; }
+      var g0 = g(d0), g1 = g(d1), g2 = g(d2);
+      x.save();
+      x.setTransform(1, 0, 0, 1, 0, 0);
+      x.beginPath(); x.moveTo(g0[0], g0[1]); x.lineTo(g1[0], g1[1]); x.lineTo(g2[0], g2[1]); x.closePath();
+      x.clip();
+      x.setTransform(A, B, C, D, E, F);
+      x.drawImage(off, 0, 0);
+      x.restore();
+    }
+    for (var r = 0; r < rows; r++) for (var c = 0; c < cols; c++) {
+      var a = r * (cols + 1) + c, b = a + 1, dd = a + cols + 1, ee = dd + 1;
+      tri(a, b, ee); tri(a, ee, dd);
+    }
+    return out;
   }
 
   // Motion Blur: the group drawn at e.mb.n instants over the shutter, averaged

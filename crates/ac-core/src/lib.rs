@@ -4,6 +4,8 @@
 pub mod assist;
 pub mod bitmap;
 pub mod centerline;
+#[cfg(feature = "codecs")]
+pub mod codecs;
 pub mod deform;
 pub mod fx;
 pub mod demo;
@@ -11,6 +13,7 @@ pub mod editor;
 pub mod expr;
 pub mod frames;
 pub mod geom;
+pub mod ik;
 pub mod model;
 pub mod merge;
 pub mod rig;
@@ -19,6 +22,7 @@ pub mod sound;
 pub mod strokes;
 pub mod motion;
 pub mod paint;
+pub mod particles;
 pub mod text;
 pub mod trace;
 pub mod xdts;

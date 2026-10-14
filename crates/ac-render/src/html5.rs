@@ -358,7 +358,16 @@ impl Tables {
                 }))
                 .map(|(m, (f, count))| format!(",\"mb\":{{\"m\":[{},{},{},{},{},{}],\"f\":{},\"n\":{count}}}", n(m.a), n(m.b), n(m.c), n(m.d), n(m.tx), n(m.ty), n(f)))
                 .unwrap_or_default();
-            out.push(format!("{{\"x\":{fx},\"c\":{inner}{mb}}}"));
+            // Asset Warp on a bitmap / symbol: the group's grid, before and after (stage space)
+            let mw = g
+                .mesh
+                .as_ref()
+                .map(|m| {
+                    let flat = |v: &[ac_core::geom::Pt]| v.iter().map(|p| format!("{},{}", n(p.x), n(p.y))).collect::<Vec<_>>().join(",");
+                    format!(",\"mw\":{{\"c\":{},\"r\":{},\"s\":[{}],\"d\":[{}]}}", m.cols, m.rows, flat(&m.src), flat(&m.dst))
+                })
+                .unwrap_or_default();
+            out.push(format!("{{\"x\":{fx},\"c\":{inner}{mb}{mw}}}"));
             i = j;
         }
         format!("[{}]", out.join(","))

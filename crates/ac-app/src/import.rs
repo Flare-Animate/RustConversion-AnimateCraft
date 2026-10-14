@@ -1,4 +1,4 @@
-//! File › Import: bitmaps (PNG/JPG/GIF/BMP, animated GIF, numbered
+//! File › Import: bitmaps (PNG/JPG/GIF/BMP/TGA/TIFF/WebP/EXR, animated GIF, numbered
 //! sequences) into the library and onto the stage, and SVG as editable shapes.
 
 use crate::App;
@@ -9,17 +9,10 @@ fn file_name(path: &str) -> String {
     FsPath::new(path).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| "Bitmap".into())
 }
 
-/// Decode any supported image into a library bitmap (PNGs are kept as they are).
+/// Decode any supported image into a library bitmap (PNGs are kept as they are;
+/// PNG/JPEG/GIF/BMP/TGA/TIFF/WebP/OpenEXR via ac_core::codecs).
 fn load_bitmap(path: &str) -> Result<BitmapAsset, String> {
-    let bytes = std::fs::read(path).map_err(|e| format!("{path}: {e}"))?;
-    let name = file_name(path);
-    if bytes.starts_with(b"\x89PNG") {
-        if let Ok(a) = BitmapAsset::from_png(&name, bytes.clone()) {
-            return Ok(a);
-        }
-    }
-    let img = image::load_from_memory(&bytes).map_err(|e| format!("{name}: {e}"))?.to_rgba8();
-    BitmapAsset::from_rgba(0, &name, img.width(), img.height(), img.as_raw())
+    ac_core::codecs::load_bitmap(FsPath::new(path))
 }
 
 /// Where to put something of size w×h: centred on the stage (top-left in a symbol).
@@ -296,6 +289,10 @@ pub(crate) fn dropped(app: &mut App, path: &str) -> Result<String, String> {
     let l = path.to_lowercase();
     if l.ends_with(".svg") {
         import_svg(app, path)
+    } else if l.ends_with(".psd") {
+        import_psd(app, path)
+    } else if l.ends_with(".xdts") {
+        ac_core::xdts::import_file(&mut app.ed, FsPath::new(path)).map(|r| r.summary())
     } else if [".wav", ".mp3", ".ogg", ".oga", ".flac", ".aif", ".aiff"].iter().any(|e| l.ends_with(e)) {
         app.import_sound(path)
     } else if l.ends_with(".json") || l.ends_with(".acx") || l.ends_with(".fla") || l.ends_with(".xfl") {

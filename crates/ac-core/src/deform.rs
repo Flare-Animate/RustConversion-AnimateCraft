@@ -296,6 +296,106 @@ impl Warp {
     }
 }
 
+/// Asset Warp on bitmaps, symbols and groups: pins in element coordinates
+/// (rest point → where it was dragged) deform a grid laid over what the
+/// element draws, rigidly as possible (moving least squares, as for shapes;
+/// OpenToonz deforms textured meshes the same way with its plastic tool).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Default)]
+pub struct MeshWarp {
+    pub pins: Vec<(Pt, Pt)>,
+}
+
+/// A deformed grid in stage (or device) space: `src` points are where the
+/// undeformed picture is, `dst` where they go; `cols × rows` cells.
+#[derive(Clone, Debug, PartialEq)]
+pub struct MeshMap {
+    pub cols: usize,
+    pub rows: usize,
+    pub src: Vec<Pt>,
+    pub dst: Vec<Pt>,
+}
+
+impl MeshWarp {
+    /// Where the picture point now shown at `d` was before the warp (the
+    /// inverse of the deformation, by fixed-point iteration), so a new pin
+    /// lands on what is under the pointer without moving anything.
+    pub fn rest_of(&self, d: Pt) -> Pt {
+        if self.pins.is_empty() {
+            return d;
+        }
+        let mut v = d;
+        for _ in 0..40 {
+            let f = rigid_mls(&self.pins, v);
+            let e = pt(d.x - f.x, d.y - f.y);
+            v = pt(v.x + e.x, v.y + e.y);
+            if e.x.abs() + e.y.abs() < 1e-3 {
+                break;
+            }
+        }
+        v
+    }
+
+    /// The grid over local bounds `lo`–`hi`, placed by `m` (local → stage).
+    pub fn map(&self, lo: Pt, hi: Pt, m: &crate::geom::Matrix) -> MeshMap {
+        let (w, h) = ((hi.x - lo.x).max(1.0), (hi.y - lo.y).max(1.0));
+        // about 24 cells along the longer side
+        let cell = w.max(h) / 24.0;
+        let cols = ((w / cell).ceil() as usize).clamp(2, 48);
+        let rows = ((h / cell).ceil() as usize).clamp(2, 48);
+        let mut src = Vec::with_capacity((cols + 1) * (rows + 1));
+        let mut dst = Vec::with_capacity(src.capacity());
+        for r in 0..=rows {
+            for c in 0..=cols {
+                let v = pt(lo.x + w * c as f32 / cols as f32, lo.y + h * r as f32 / rows as f32);
+                src.push(m.apply(v));
+                dst.push(m.apply(rigid_mls(&self.pins, v)));
+            }
+        }
+        MeshMap { cols, rows, src, dst }
+    }
+}
+
+impl MeshMap {
+    pub fn transformed(&self, m: &crate::geom::Matrix) -> MeshMap {
+        MeshMap { cols: self.cols, rows: self.rows, src: self.src.iter().map(|p| m.apply(*p)).collect(), dst: self.dst.iter().map(|p| m.apply(*p)).collect() }
+    }
+    /// The two triangles of every cell: (src, dst) corner triples.
+    pub fn triangles(&self) -> Vec<([Pt; 3], [Pt; 3])> {
+        let mut v = Vec::with_capacity(self.cols * self.rows * 2);
+        let idx = |c: usize, r: usize| r * (self.cols + 1) + c;
+        for r in 0..self.rows {
+            for c in 0..self.cols {
+                let (a, b, d, e) = (idx(c, r), idx(c + 1, r), idx(c, r + 1), idx(c + 1, r + 1));
+                v.push(([self.src[a], self.src[b], self.src[e]], [self.dst[a], self.dst[b], self.dst[e]]));
+                v.push(([self.src[a], self.src[e], self.src[d]], [self.dst[a], self.dst[e], self.dst[d]]));
+            }
+        }
+        v
+    }
+    pub fn dst_bounds(&self) -> Option<(Pt, Pt)> {
+        let mut it = self.dst.iter();
+        let f = *it.next()?;
+        Some(it.fold((f, f), |(lo, hi), p| (pt(lo.x.min(p.x), lo.y.min(p.y)), pt(hi.x.max(p.x), hi.y.max(p.y)))))
+    }
+}
+
+/// The affine map taking triangle `a` onto triangle `b` (None if degenerate).
+pub fn triangle_affine(a: &[Pt; 3], b: &[Pt; 3]) -> Option<crate::geom::Matrix> {
+    let (u1, u2) = (pt(a[1].x - a[0].x, a[1].y - a[0].y), pt(a[2].x - a[0].x, a[2].y - a[0].y));
+    let (v1, v2) = (pt(b[1].x - b[0].x, b[1].y - b[0].y), pt(b[2].x - b[0].x, b[2].y - b[0].y));
+    let det = u1.x * u2.y - u2.x * u1.y;
+    if det.abs() < 1e-9 {
+        return None;
+    }
+    // M · U = V with U = [u1 u2], V = [v1 v2]  →  M = V · U⁻¹
+    let (i11, i12, i21, i22) = (u2.y / det, -u2.x / det, -u1.y / det, u1.x / det);
+    let (ma, mc) = (v1.x * i11 + v2.x * i21, v1.x * i12 + v2.x * i22);
+    let (mb, md) = (v1.y * i11 + v2.y * i21, v1.y * i12 + v2.y * i22);
+    let tx = b[0].x - (ma * a[0].x + mc * a[0].y);
+    let ty = b[0].y - (mb * a[0].x + md * a[0].y);
+    Some(crate::geom::Matrix { a: ma, b: mb, c: mc, d: md, tx, ty })
+}
+
 /// Rigid moving-least-squares deformation (Schaefer, McPhail & Warren 2006).
 pub fn rigid_mls(pins: &[(Pt, Pt)], v: Pt) -> Pt {
     if pins.len() == 1 {

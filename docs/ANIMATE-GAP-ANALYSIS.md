@@ -21,7 +21,7 @@ files.
 |---|---|---|
 | Workspace and panels | ~65% | docking/workspaces, Color & Swatches, History, preferences |
 | Drawing model | ~88% | Convert Lines to Fills / Expand / Soften, stroke-style parameters |
-| Tools | ~95% | pressure/tilt, Art/Pattern brushes, Asset Warp on symbols/bitmaps |
+| Tools | ~96% | pressure/tilt, Art/Pattern brushes |
 | Timeline | ~92% | frame view sizes, sound envelopes, Synchronize Symbols command |
 | Symbols | ~82% | 9-slice, Visible / Cache as bitmap |
 | Animation | ~88% | tween presets, copy/paste motion, rig mapping, bone springs |
@@ -130,7 +130,7 @@ The two engine milestones that unlock most of the rest:
 | Eyedropper (I) incl. bitmap sampling | Yes | Yes (no bitmaps) | ✅ | |
 | Eraser (E): Erase Normal / Fills / Lines / Selected Fills / Inside, Faucet, shape and size | Yes | All modes + Faucet on merge shapes (round eraser) | ✅ | |
 | Width (U) incl. delete width point, copy/paste width | Yes | Add/drag, Alt+click delete, copy/paste profile | ✅ | |
-| Asset Warp (Shift+W) incl. bitmaps/symbols, mesh options, Reset Warped Asset | Yes | Shapes only; reset via Properties | 🟡 | P2 |
+| Asset Warp (Shift+W) incl. bitmaps/symbols, mesh options, Reset Warped Asset | Yes | Shapes, bitmaps, symbols and groups (pins deform a triangle grid; stage, video, SVG as a picture, HTML5); Remove warp in Properties | 🟡 | P2 (mesh density option; .fla export unwarped) |
 | Camera (C), camera colour effects, layer depth (Ctrl+D) | Yes | Pan/zoom/rotate, colour effects + blur; plus a Free (VCam) mode: the camera is a movable frame on the stage, with follow and shake | 🟡 | Layer Depth P2 |
 | Hand (H), Rotation (Shift+H), Zoom (Z) | Yes | Yes | ✅ | |
 | Stroke/Fill swatches, Swap, Black & White, No colour | Yes | Yes | ✅ | |
@@ -194,8 +194,8 @@ The two engine milestones that unlock most of the rest:
 | Motion presets panel (bounce, fly-in…, save your own) | Yes | — | ❌ | P2 |
 | Copy / Paste Motion, Copy Motion as JS/XML | Yes | — | ❌ | P2 |
 | Convert to Frame-by-Frame Animation, Convert to Keyframes | Yes | Yes | ✅ | |
-| Bones: IK poses on keyframes, joint rotation/translation constraints, **springiness / damping**, bone ease, runtime vs authoring | Yes | Poses + IK; joint rotation enable + min/max limits (object and shape bones) | 🟡 | P2 (translation constraints, springs) |
-| Asset Warp: pins, mesh density, tween warped poses, **Create Warped Asset / Reset** | Yes | Pins, rigid MLS | 🟡 | P2 |
+| Bones: IK poses on keyframes, joint rotation/translation constraints, **springiness / damping**, bone ease, runtime vs authoring | Yes | Poses + damped-least-squares IK (OpenToonz); joint rotation enable + min/max limits; pinned joints (object and shape bones) | 🟡 | P2 (translation constraints, springs) |
+| Asset Warp: pins, mesh density, tween warped poses, **Create Warped Asset / Reset** | Yes | Pins (rigid MLS) on shapes, bitmaps, symbols, groups; Reset | 🟡 | P2 (tween warped poses of bitmaps/symbols) |
 | Camera: tween, colour effects, attach layers, layer depth | Yes | Tweenable pan/zoom/rotate, brightness/tint/alpha/blur, VCam follow + shake (beyond Animate) | 🟡 | P2 (attach layers, depth) |
 | **Auto lip-sync** (map visemes from audio) | Yes | Properties ▸ Lip Syncing with a Mouth-shapes picker; Rhubarb Lip Sync (speech-based, external program) when installed, FFT-band heuristic otherwise; `lipsync.apply` | ✅ | |
 | **Rig mapping** (map a rig onto symbols) | Yes | — | ❌ | P3 |
@@ -218,7 +218,7 @@ The two engine milestones that unlock most of the rest:
 
 | Feature | Animate | AnimationCraft | Status | Pri |
 |---|---|---|---|---|
-| Import bitmaps (PNG, JPG, GIF, BMP, TIFF) to stage / library | Yes | PNG, JPG, GIF, BMP (library + stage, smoothing) | ✅ | |
+| Import bitmaps (PNG, JPG, GIF, BMP, TIFF) to stage / library | Yes | PNG, JPG, GIF, BMP, TGA, TIFF, WebP, OpenEXR (library + stage, smoothing) | ✅ | |
 | Bitmap properties (smoothing, compression, quality), Trace Bitmap | Yes | Smoothing; Trace Bitmap (threshold, minimum area, curve fit, corners) + Centerline mode (OpenToonz) | 🟡 | P2 (compression settings) |
 | Import image sequences | Yes | Yes | ✅ | |
 | Import SVG, Illustrator (.ai), Photoshop (.psd) with layer options | Yes | SVG (shapes, gradients, text as outlines); PSD (bitmap per layer, visibility, opacity) | 🟡 | P2 (.ai; PSD editable text/vector options) |
@@ -267,6 +267,7 @@ The two engine milestones that unlock most of the rest:
 | Save As .xfl (uncompressed folder) | Yes | Yes (`name.xfl` → folder with the marker file) | ✅ | |
 | Import SWF | Old versions | — | ❌ | P3 |
 | Copy/paste with Illustrator/Photoshop (clipboard formats) | Yes | Internal clipboard | ❌ | P3 |
+| Exposure sheets (XDTS: OpenToonz, Clip Studio Paint, TVPaint) | No | Export, and import onto layers (re-time same-named layers, load numbered images, or labelled blank keyframes) | ✅ | |
 | Native format | .fla | `.acx` package (ZIP: manifest, document, one JSON per scene and symbol, PNG/audio files, thumbnail; versioned, atomic save); `.acx.json` still supported | ✅ | |
 
 ## 12. Accessibility, collaboration, misc
@@ -286,6 +287,9 @@ The two engine milestones that unlock most of the rest:
 - Sandboxed frame scripts: they can't touch files or the network.
 - Open document format, and an open source project.
 - Path to a web build (WASM), Lottie export and an MCP server for AI agents.
+- From OpenToonz: drawing assistants (perspective, fisheye, symmetry, affine, jitter), deformation tools,
+  centerline trace, MyPaint raster brushes, curve expressions, XDTS timing sheets.
+- Particle emitters (dots, stars, symbols, bitmaps) that every export draws.
 
 ---
 

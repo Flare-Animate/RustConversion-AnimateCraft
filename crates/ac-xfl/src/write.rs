@@ -389,8 +389,12 @@ impl W<'_> {
             if e.three_d.is_some() {
                 self.warn.push("3D rotation/translation not exported".into());
             }
+            if e.mesh.as_ref().is_some_and(|w| !w.pins.is_empty()) {
+                self.warn.push("Asset Warp on bitmaps/symbols has no .fla form: exported unwarped".into());
+            }
             let effects = e.alpha < 1.0 || e.tint.is_some() || e.color_fx.is_some() || !e.filters.is_empty() || e.blend != BlendMode::Normal;
             match &e.kind {
+                ElementKind::Particles(_) => self.warn.push("particle emitters have no .fla form: left out (export a video or image sequence to keep them)".into()),
                 ElementKind::Canvas(c) => s.push_str(&self.canvas(c, &m, ind)),
                 ElementKind::Shape(sh) => {
                     if effects {

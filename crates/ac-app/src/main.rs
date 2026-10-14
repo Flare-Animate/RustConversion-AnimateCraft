@@ -698,9 +698,10 @@ impl App {
                     if ui.add(egui::Button::new("Save As…").shortcut_text("Ctrl+Shift+S")).clicked() { self.file(FileAction::Save); ui.close_menu(); }
                     ui.separator();
                     ui.menu_button("Import", |ui| {
-                        if ui.add(egui::Button::new("Import to Stage…").shortcut_text("Ctrl+R")).on_hover_text("PNG, JPG, GIF, BMP").clicked() { self.file(FileAction::ImportImage); ui.close_menu(); }
+                        if ui.add(egui::Button::new("Import to Stage…").shortcut_text("Ctrl+R")).on_hover_text("PNG, JPG, GIF, BMP, TGA, TIFF, WebP, OpenEXR").clicked() { self.file(FileAction::ImportImage); ui.close_menu(); }
                         if ui.button("Import Image Sequence…").on_hover_text("walk0001.png, walk0002.png, … onto consecutive keyframes").clicked() { self.file(FileAction::ImportSequence); ui.close_menu(); }
                         if ui.button("Import Photoshop (PSD)…").on_hover_text("Each Photoshop layer becomes a bitmap on its own layer, in place").clicked() { self.file(FileAction::ImportPsd); ui.close_menu(); }
+                        if ui.button("Import XDTS Timing Sheet…").on_hover_text("Exposure sheet from OpenToonz, Clip Studio Paint, TVPaint…: columns named like layers re-time them; others load numbered images next to the sheet (name_0001.png) or become labelled blank keyframes").clicked() { self.file(FileAction::ImportXdts); ui.close_menu(); }
                         if ui.button("Import SVG…").clicked() { self.file(FileAction::ImportSvg); ui.close_menu(); }
                         if ui.button("Import Sound…").on_hover_text("WAV, MP3, OGG Vorbis, FLAC, AIFF").clicked() { self.file(FileAction::ImportSound); ui.close_menu(); }
                     });

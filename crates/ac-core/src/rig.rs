@@ -21,6 +21,9 @@ pub struct RigBone {
     /// Joint: Rotation ▸ Constrain: allowed `angle` range in degrees (min ≤ 0 ≤ max).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub limit: Option<(f32, f32)>,
+    /// Pinned tail: while posing, the bone's tail stays here (posed shape coordinates).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pin: Option<Pt>,
 }
 
 fn yes() -> bool {
@@ -214,48 +217,35 @@ impl ShapeRig {
             }
             None => (head, tail),
         };
-        self.bones.push(RigBone { parent, head: h, tail: t, angle: 0.0, rotate: true, limit: None });
+        self.bones.push(RigBone { parent, head: h, tail: t, angle: 0.0, rotate: true, limit: None, pin: None });
         self.bones.len() - 1
     }
 
     /// Inverse kinematics: move the tail of `bone` toward `target` (posed
-    /// coordinates) by rotating it and its ancestors (CCD).
+    /// coordinates), turning the armature's joints (damped least squares;
+    /// pinned tails stay where they were pinned, limits hold).
     pub fn ik(&mut self, bone: usize, target: Pt) {
-        let mut chain = vec![bone];
-        while let Some(p) = self.bones[*chain.last().unwrap()].parent {
-            if chain.contains(&p) || chain.len() > 64 {
-                break;
-            }
-            chain.push(p);
+        if bone >= self.bones.len() {
+            return;
         }
-        for _ in 0..60 {
-            for &j in &chain {
-                let posed = self.posed();
-                let end = posed[bone].1;
-                let pivot = posed[j].0;
-                let a0 = (end.y - pivot.y).atan2(end.x - pivot.x);
-                let a1 = (target.y - pivot.y).atan2(target.x - pivot.x);
-                let mut d = a1 - a0;
-                while d > std::f32::consts::PI {
-                    d -= 2.0 * std::f32::consts::PI;
-                }
-                while d < -std::f32::consts::PI {
-                    d += 2.0 * std::f32::consts::PI;
-                }
-                let b = &mut self.bones[j];
-                if !b.rotate {
-                    continue;
-                }
-                let mut a = b.angle + d;
-                if let Some((lo, hi)) = b.limit {
-                    a = a.clamp(lo.min(0.0).to_radians(), hi.max(0.0).to_radians());
-                }
-                b.angle = a;
-            }
-            if self.posed()[bone].1.dist(target) < 0.25 {
-                break;
+        let mut eff = vec![crate::ik::Effector { owner: bone, local: self.bones[bone].tail, target, weight: 1.0 }];
+        for (i, b) in self.bones.iter().enumerate() {
+            if let Some(p) = b.pin {
+                eff.push(crate::ik::Effector { owner: i, local: b.tail, target: p, weight: 4.0 });
             }
         }
+        crate::ik::solve_dls(self, &eff, 80);
+    }
+
+    /// Bone `i`'s ancestors, nearest first.
+    fn ancestors(&self, i: usize) -> Vec<usize> {
+        let mut v = vec![];
+        let mut cur = self.bones.get(i).and_then(|b| b.parent);
+        while let Some(p) = cur.filter(|p| *p < self.bones.len() && v.len() < 64) {
+            v.push(p);
+            cur = self.bones[p].parent;
+        }
+        v
     }
 
     /// Bind tool: pin point `idx` to `bone` (None = back to automatic).
@@ -274,6 +264,34 @@ impl ShapeRig {
             }
         }
         out
+    }
+}
+
+impl crate::ik::Kinematic for ShapeRig {
+    fn joints(&self) -> Vec<usize> {
+        let mut v: Vec<usize> = (0..self.bones.len()).collect();
+        v.sort_by_key(|&i| self.ancestors(i).len());
+        v
+    }
+    fn pivot(&self, j: usize) -> Pt {
+        self.posed()[j].0
+    }
+    fn moves(&self, j: usize, owner: usize) -> bool {
+        owner == j || self.ancestors(owner).contains(&j)
+    }
+    fn world(&self, owner: usize, local: Pt) -> Pt {
+        self.transforms()[owner].apply(local)
+    }
+    fn turn(&mut self, j: usize, d: f32) {
+        let b = &mut self.bones[j];
+        if !b.rotate {
+            return;
+        }
+        let mut a = b.angle + d;
+        if let Some((lo, hi)) = b.limit {
+            a = a.clamp(lo.min(0.0).to_radians(), hi.max(0.0).to_radians());
+        }
+        b.angle = a;
     }
 }
 

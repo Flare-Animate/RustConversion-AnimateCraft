@@ -52,6 +52,8 @@ pub enum Tool {
     Iron,
     /// Drawing assistants and symmetry (OpenToonz).
     Assistant,
+    /// Particle emitters.
+    Particles,
     Camera,
     Hand,
     RotateView,
@@ -110,14 +112,15 @@ impl Tool {
             Tool::Eyedropper => t("Eyedropper", Some(I), false, "Pick a colour from an object (fill → Paint Bucket, stroke → Ink Bottle)"),
             Tool::Eraser => t("Eraser", Some(E), false, "Erase whole objects you drag over (cutting fills needs Merge Drawing)"),
             Tool::Width => t("Width", Some(U), false, "Drag out from a stroke to make it thicker or thinner at that point"),
-            Tool::AssetWarp => t("Asset Warp", Some(W), true, "Click a shape to pin it, drag pins to bend it. Alt+click removes a pin"),
+            Tool::AssetWarp => t("Asset Warp", Some(W), true, "Click a shape, bitmap or symbol to pin it, drag pins to bend it. Alt+click removes a pin"),
             Tool::RasterBrush => t("Raster Brush", None, false, "Paint pixels with MyPaint brushes (pencil, ink, charcoal, watercolour, airbrush…) into a bitmap on this frame. From OpenToonz"),
             Tool::Magnet => t("Magnet", None, false, "Drag near lines and shapes to pull them along (falloff over the Size radius). From OpenToonz"),
             Tool::Pinch => t("Pinch", None, false, "Drag a point of a line: the line follows over Size units each side; Corner makes it pointed. From OpenToonz"),
             Tool::Pump => t("Pump", None, false, "Press on a line and drag up to thicken it there, down to thin it (over Size units). From OpenToonz"),
             Tool::Bender => t("Bender", None, false, "Drag a segment across lines, then drag on one side of it to bend them around its start. From OpenToonz"),
             Tool::Iron => t("Iron", None, false, "Brush over wobbly lines to smooth them (Size, Strength). From OpenToonz"),
-            Tool::Assistant => t("Assistants", None, false, "Place guides (line, vanishing point, ellipse) that straighten freehand strokes, and symmetry (mirror, star, grid) that repeats them. From OpenToonz"),
+            Tool::Assistant => t("Assistants", None, false, "Place guides (line, vanishing point, ellipse, perspective, fisheye) that straighten freehand strokes, replicators (mirror, star, grid, affine) that repeat them, and jitter. From OpenToonz"),
+            Tool::Particles => t("Particle Emitter", None, false, "Click to place an emitter that sprays dots, stars or a library symbol; drag to aim it (length = speed). Edit it in Properties"),
             Tool::Camera => t("Camera", Some(C), false, "Pan the camera by dragging, scroll to zoom, Shift+drag to rotate. Tweenable like any layer"),
             Tool::Hand => t("Hand", Some(H), false, "Drag to pan (or hold Space with any tool)"),
             Tool::RotateView => t("Rotation", Some(H), true, "Rotate the view of the stage (like turning paper). Shift snaps to 15°"),
@@ -152,7 +155,7 @@ impl Tool {
 pub const SECTIONS: &[&[&[Tool]]] = &[
     &[&[Tool::Select], &[Tool::Subselect], &[Tool::FreeTransform, Tool::GradientTransform], &[Tool::Rotate3D, Tool::Translate3D], &[Tool::Lasso, Tool::PolyLasso, Tool::MagicWand]],
     &[&[Tool::Pen, Tool::AddAnchor, Tool::DeleteAnchor, Tool::ConvertAnchor], &[Tool::Text], &[Tool::Line], &[Tool::Rect, Tool::RectPrimitive, Tool::Oval, Tool::OvalPrimitive, Tool::PolyStar]],
-    &[&[Tool::Brush, Tool::FluidBrush, Tool::Pencil, Tool::RasterBrush], &[Tool::Width], &[Tool::Magnet, Tool::Pinch, Tool::Pump, Tool::Bender, Tool::Iron], &[Tool::Assistant], &[Tool::Bone, Tool::Bind], &[Tool::AssetWarp], &[Tool::Bucket, Tool::InkBottle], &[Tool::Eyedropper], &[Tool::Eraser]],
+    &[&[Tool::Brush, Tool::FluidBrush, Tool::Pencil, Tool::RasterBrush], &[Tool::Width], &[Tool::Magnet, Tool::Pinch, Tool::Pump, Tool::Bender, Tool::Iron], &[Tool::Assistant], &[Tool::Particles], &[Tool::Bone, Tool::Bind], &[Tool::AssetWarp], &[Tool::Bucket, Tool::InkBottle], &[Tool::Eyedropper], &[Tool::Eraser]],
     &[&[Tool::Camera], &[Tool::Hand, Tool::RotateView], &[Tool::Zoom]],
 ];
 
@@ -647,6 +650,13 @@ pub fn draw_icon(p: &egui::Painter, r: Rect, t: Tool, col: Color32) {
             let arc = |sx: f32| -> Vec<egui::Pos2> { (0..=10).map(|i| { let a = -1.2 + i as f32 * 0.24; c + vec2(sx * (3.0 + a.cos() * 5.5), a.sin() * 8.0) }).collect() };
             p.add(egui::Shape::line(arc(-1.0), s));
             p.add(egui::Shape::line(arc(1.0), s));
+        }
+        Tool::Particles => {
+            // a spray of dots from a nozzle
+            p.circle_filled(c + vec2(-7.0, 7.0), 2.5, col);
+            for (dx, dy, r) in [(-1.0, 1.0, 1.6), (3.0, -1.0, 1.4), (-2.0, -4.0, 1.3), (6.0, -6.0, 1.1), (1.0, -8.0, 1.0), (8.0, 0.0, 1.0), (-6.0, -8.0, 0.9)] {
+                p.circle_filled(c + vec2(dx, dy), r, col);
+            }
         }
         Tool::Camera => {
             p.rect_stroke(Rect::from_center_size(c + vec2(-2.0, 1.0), vec2(14.0, 10.0)), 2.0, s);

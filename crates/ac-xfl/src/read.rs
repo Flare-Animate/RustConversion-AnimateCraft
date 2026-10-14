@@ -12,7 +12,7 @@ use roxmltree::Node;
 use std::collections::HashMap;
 
 pub(crate) fn el(name: &str, matrix: Matrix, kind: ElementKind) -> Element {
-    Element { name: name.into(), matrix, alpha: 1.0, tint: None, kind, three_d: None, filters: vec![], blend: BlendMode::Normal, color_fx: None }
+    Element { name: name.into(), matrix, alpha: 1.0, tint: None, kind, three_d: None, filters: vec![], blend: BlendMode::Normal, color_fx: None, mesh: None }
 }
 
 struct Reader<'a> {

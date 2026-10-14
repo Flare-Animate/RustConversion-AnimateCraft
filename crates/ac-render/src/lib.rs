@@ -537,6 +537,12 @@ impl SvgWriter<'_> {
                     while j < items.len() && items[j].fx.get(level).map(|h| std::sync::Arc::ptr_eq(h, &g)).unwrap_or(false) {
                         j += 1;
                     }
+                    if g.mesh.is_some() {
+                        // Asset Warp has no vector form: the warped group goes in as a picture
+                        body += &self.raster_group(&items[i..j], level);
+                        i = j;
+                        continue;
+                    }
                     let inner = self.level(&items[i..j], level + 1);
                     let mut attrs = String::new();
                     if let Some(f) = self.filter(&g.filters) {
@@ -561,6 +567,36 @@ impl SvgWriter<'_> {
             }
         }
         body
+    }
+    /// Items drawn through the rasteriser (from effect level `level` down) and
+    /// embedded as a PNG at 2× over the area they cover.
+    fn raster_group(&mut self, items: &[DrawItem], level: usize) -> String {
+        const S: f32 = 2.0;
+        let (w, h) = ((self.doc.width * S).round().max(1.0) as u32, (self.doc.height * S).round().max(1.0) as u32);
+        let Some(mut pix) = sk::Pixmap::new(w, h) else { return String::new() };
+        let own: Vec<DrawItem> = items.iter().map(|it| DrawItem { fx: it.fx[level.min(it.fx.len())..].to_vec(), ..it.clone() }).collect();
+        draw_items(&mut pix.as_mut(), &own, &RenderOpts { view: Matrix::scale(S, S), ..Default::default() });
+        // crop to the drawn pixels
+        let (mut x0, mut y0, mut x1, mut y1) = (w, h, 0u32, 0u32);
+        for (k, p) in pix.pixels().iter().enumerate() {
+            if p.alpha() > 0 {
+                let (x, y) = (k as u32 % w, k as u32 / w);
+                (x0, y0, x1, y1) = (x0.min(x), y0.min(y), x1.max(x + 1), y1.max(y + 1));
+            }
+        }
+        if x1 <= x0 || y1 <= y0 {
+            return String::new();
+        }
+        let Some(crop) = pix.clone_rect(sk::IntRect::from_xywh(x0 as i32, y0 as i32, x1 - x0, y1 - y0).unwrap()) else { return String::new() };
+        let Ok(png) = crop.encode_png() else { return String::new() };
+        format!(
+            "<image x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\" xlink:href=\"data:image/png;base64,{}\"/>\n",
+            x0 as f32 / S,
+            y0 as f32 / S,
+            (x1 - x0) as f32 / S,
+            (y1 - y0) as f32 / S,
+            base64_lite::encode(&png)
+        )
     }
     /// SVG filter for blur / drop shadow / glow (others render without effect).
     fn filter(&mut self, fs: &[ac_core::Filter]) -> Option<String> {

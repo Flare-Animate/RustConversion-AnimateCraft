@@ -272,3 +272,133 @@ fn centerline_trace_turns_line_art_into_lines() {
     assert!(l.dist(pt(106.0, 111.0)) < 4.0 && r.dist(pt(154.0, 131.0)) < 4.0, "placed on the stage: {l:?} {r:?}");
     assert!(execute(&mut ed, "bitmap.trace", &json!({"mode": "wireframe"})).is_err());
 }
+
+#[test]
+fn pinned_joints_stay_put_while_posing() {
+    // a four-segment chain; pin the second joint, then pull the tip around
+    let mut ed = Editor::new(Document::default());
+    let seg = |x: f32| Element::shape("seg", Shape::new(Path::rect(x, 0.0, 80.0, 16.0), Some(Color::rgb(0, 0, 0)), None));
+    for k in 0..4 {
+        ed.add_element(seg(k as f32 * 80.0));
+    }
+    for k in 0..3 {
+        ed.add_bone(0, k, k + 1, pt(k as f32 * 80.0 + 4.0, 8.0), pt((k + 1) as f32 * 80.0, 8.0)).unwrap();
+    }
+    execute(&mut ed, "bone.joint", &json!({"x": 200, "y": 8, "pin": true})).unwrap(); // object 2 attaches at (160, 8)
+    let joint = |ed: &Editor| {
+        let els = &ed.timeline().layers[0].keyframes[&0].elements;
+        let b = ed.bones(0).iter().find(|b| b.child == 2).copied().unwrap();
+        els[2].matrix.apply(b.tail_child)
+    };
+    assert_eq!(ed.bones(0).iter().find(|b| b.child == 2).unwrap().pin, Some(pt(160.0, 8.0)));
+    execute(&mut ed, "bone.drag", &json!({"x": 316, "y": 8, "to_x": 200, "to_y": 120})).unwrap();
+    assert!(joint(&ed).dist(pt(160.0, 8.0)) < 1.5, "pinned joint held: {:?}", joint(&ed));
+    let els = &ed.timeline().layers[0].keyframes[&0].elements;
+    let tip = els[3].matrix.apply(pt(316.0, 8.0));
+    assert!(tip.dist(pt(200.0, 120.0)) < 3.0, "the tip got there with the joints after the pin: {tip:?}");
+    execute(&mut ed, "bone.joint", &json!({"x": tip.x, "y": tip.y, "pin": false})).ok();
+
+    // shape bones: pin the first bone's tail
+    let mut ed = Editor::new(Document::default());
+    execute(&mut ed, "drawing.mode", &json!({"merge": false})).unwrap();
+    execute(&mut ed, "draw.rect", &json!({"x": 0, "y": 0, "w": 300, "h": 20, "fill": "#000000"})).unwrap();
+    for (a, b) in [(5, 100), (100, 200), (200, 295)] {
+        execute(&mut ed, "shape_bone.add", &json!({"x1": a, "y1": 10, "x2": b, "y2": 10})).unwrap();
+    }
+    execute(&mut ed, "shape_bone.joint", &json!({"x": 100, "y": 10, "pin": true})).unwrap();
+    execute(&mut ed, "shape_bone.pose", &json!({"x": 295, "y": 10, "to_x": 150, "to_y": 120})).unwrap();
+    let ElementKind::Shape(s) = &ed.timeline().layers[0].keyframes[&0].elements[0].kind else { panic!() };
+    let posed = s.rig.as_ref().unwrap().posed();
+    assert!(posed[0].1.dist(pt(100.0, 10.0)) < 1.5, "pinned tail held: {:?}", posed[0].1);
+    assert!(posed[2].1.dist(pt(150.0, 120.0)) < 3.0, "tip reached: {:?}", posed[2].1);
+}
+
+#[test]
+fn xdts_import_reads_sheets_and_retimes_layers() {
+    // round trip: our export reads back as the same timing
+    let d = demo::demo_document();
+    let sheet = xdts::parse(&xdts::export(&d, &d.scene)).unwrap();
+    assert_eq!(sheet.duration, d.scene.frame_count());
+    assert!(!sheet.tracks.is_empty());
+    // a hand-written sheet: negative frame, ticks, hyphen, null cell, numbers with zeros
+    let text = format!(
+        "{}\n{}",
+        xdts::IDENTIFIER,
+        json!({"version": 5, "header": {"cut": "1", "scene": "1"}, "timeTables": [{"duration": 10, "name": "c1",
+            "timeTableHeaders": [{"fieldId": 0, "names": ["Walk", "Fx"]}],
+            "fields": [{"fieldId": 0, "tracks": [
+                {"trackNo": 0, "frames": [
+                    {"frame": 0, "data": [{"id": 0, "values": ["001"]}]},
+                    {"frame": 2, "data": [{"id": 0, "values": ["2"]}]},
+                    {"frame": 3, "data": [{"id": 0, "values": ["SYMBOL_TICK_1"]}]},
+                    {"frame": 5, "data": [{"id": 0, "values": ["SYMBOL_NULL_CELL"]}]},
+                    {"frame": 6, "data": [{"id": 0, "values": ["1"]}]}]},
+                {"trackNo": 1, "frames": [
+                    {"frame": -1, "data": [{"id": 0, "values": ["3"]}]},
+                    {"frame": 4, "data": [{"id": 0, "values": ["SYMBOL_HYPHEN"]}]},
+                    {"frame": 7, "data": [{"id": 0, "values": ["4"]}]}]}]}]}]})
+    );
+    let s = xdts::parse(&text).unwrap();
+    let c = |t: usize| s.tracks[t].cells.iter().map(|c| c.clone().unwrap_or("-".into())).collect::<Vec<_>>().join("");
+    assert_eq!(c(0), "11222-1111");
+    assert_eq!(c(1), "3333333444");
+    assert!(xdts::parse("{}").is_err());
+
+    // apply: "Walk" re-times the layer of that name; "Fx" has no layer or images → labelled blanks
+    let mut ed = Editor::new(Document::default());
+    ed.rename_layer(0, "walk");
+    let shape = |x: f32| Element::shape("", Shape::new(Path::rect(x, 0.0, 10.0, 10.0), Some(Color::rgb(0, 0, 0)), None));
+    {
+        let l = &mut ed.timeline_mut().layers[0];
+        l.keyframes.insert(0, Keyframe::with(vec![shape(0.0)]));
+        l.keyframes.insert(3, Keyframe::with(vec![shape(50.0)]));
+        l.end = 6;
+    }
+    let rep = xdts::apply(&mut ed, &s, &[]);
+    assert_eq!((rep.retimed.clone(), rep.timing_only.clone()), (vec!["Walk".to_string()], vec!["Fx".to_string()]));
+    let tl = ed.timeline();
+    assert_eq!(tl.layers.len(), 2);
+    assert_eq!(tl.layers[0].name, "Fx");
+    let walk = &tl.layers[1];
+    assert_eq!(walk.keyframes.keys().copied().collect::<Vec<_>>(), [0, 2, 5, 6]);
+    assert!(walk.keyframes[&5].elements.is_empty());
+    assert_eq!(walk.keyframes[&2].elements[0].kind, shape(50.0).kind, "drawing 2 = second drawing");
+    assert_eq!(walk.end, 10);
+    assert_eq!(tl.layers[0].keyframes[&7].label.as_deref(), Some("4"));
+    ed.undo();
+    assert_eq!(ed.timeline().layers.len(), 1);
+}
+
+#[test]
+fn xdts_import_loads_numbered_images_next_to_the_sheet() {
+    let dir = std::env::temp_dir().join(format!("ac-xdts-{}", std::process::id()));
+    std::fs::create_dir_all(dir.join("B")).unwrap();
+    let png = |r: u8| {
+        let a = bitmap::BitmapAsset::from_rgba(0, "x", 4, 4, &[r, 0, 0, 255].repeat(16)).unwrap();
+        a.png
+    };
+    std::fs::write(dir.join("A_0001.png"), png(10)).unwrap();
+    std::fs::write(dir.join("A_0002.png"), png(20)).unwrap();
+    std::fs::write(dir.join("B").join("0001.png"), png(30)).unwrap();
+    let text = format!(
+        "{}\n{}",
+        xdts::IDENTIFIER,
+        json!({"version": 5, "timeTables": [{"duration": 4, "timeTableHeaders": [{"fieldId": 0, "names": ["A", "B"]}],
+            "fields": [{"fieldId": 0, "tracks": [
+                {"trackNo": 0, "frames": [{"frame": 0, "data": [{"id": 0, "values": ["1"]}]}, {"frame": 2, "data": [{"id": 0, "values": ["2"]}]}]},
+                {"trackNo": 1, "frames": [{"frame": 1, "data": [{"id": 0, "values": ["1"]}]}]}]}]}]})
+    );
+    std::fs::write(dir.join("cut.xdts"), text).unwrap();
+    let mut ed = Editor::new(Document::default());
+    let r = execute(&mut ed, "import.xdts", &json!({"path": dir.join("cut.xdts").to_string_lossy()})).unwrap();
+    assert_eq!(r["from_images"], json!(["A", "B"]), "{r}");
+    assert_eq!(ed.doc.bitmaps.len(), 3);
+    let tl = ed.timeline();
+    assert_eq!(tl.layers[0].name, "B");
+    assert_eq!(tl.layers[1].keyframes.keys().copied().collect::<Vec<_>>(), [0, 2]);
+    assert!(matches!(tl.layers[1].keyframes[&2].elements[0].kind, ElementKind::Bitmap(_)));
+    assert!(tl.layers[0].keyframes[&0].elements.is_empty() && !tl.layers[0].keyframes[&1].elements.is_empty());
+    ed.undo();
+    assert_eq!(ed.timeline().layers.len(), 1);
+    let _ = std::fs::remove_dir_all(&dir);
+}

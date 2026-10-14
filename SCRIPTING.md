@@ -140,7 +140,7 @@ ac.selection.group();                                   // ungroup: selection.un
 ac.selection.align({ op: "hcenter", to_stage: true });
 ac.selection.add_filter({ type: "drop_shadow", distance: 8, color: "#203040" });
 ac.selection.set_blend({ mode: "multiply" });
-ac.import.image({ path: "badge.png", x: 20, y: 20 });  // PNG into the library + stage
+ac.import.image({ path: "badge.png", x: 20, y: 20 });  // PNG/JPEG/GIF/BMP/TGA/TIFF/WebP/EXR into the library + stage
 ac.draw.text({ x: 40, y: 40, text: "Hi", font: "DejaVu Serif" }); // any installed font
 ```
 
@@ -232,7 +232,7 @@ ac.shape_bone.add({ x1: 385, y1: 172, x2: 460, y2: 172 });  // inside a drawing 
 ac.shape_bone.pose({ x: 460, y: 172, to_x: 430, to_y: 240 });
 ```
 
-### OpenToonz features: styles, deformers, assistants, painting, expressions
+### OpenToonz features: styles, deformers, assistants, painting, expressions, IK, timing sheets
 
 ```js
 // stroke styles with their parameters (names as in Properties; `selection.stroke_style` lists them on error)
@@ -249,10 +249,14 @@ ac.shape.deform({ tool: "iron", x: 100, y: 150, to_x: 300, to_y: 150, size: 30, 
 ac.shape.deform({ tool: "bender", x: 400, y: 120, x2: 400, y2: 180, from_x: 440, from_y: 150, to_x: 400, to_y: 230 });
 
 // drawing assistants (stored in the document); draw.path with assist:true goes through them
-ac.assistant.add({ type: "star", x: 275, y: 200, count: 8, mirror: true });  // line | vanishing_point | ellipse | mirror | star | grid
+ac.assistant.add({ type: "star", x: 275, y: 200, count: 8, mirror: true });
+// guides: line | vanishing_point | ellipse | perspective | fisheye; replicators: mirror | star | grid | affine; jitter
 ac.assistant.add({ type: "line", x: 100, y: 100, parallel: true, magnetism: 1 });
+ac.assistant.add({ type: "perspective", x: 275, y: 200, three_point: true });   // points: vx, vy, vz
+ac.assistant.add({ type: "affine", x: 275, y: 200, count: 12 });                 // points: c0, a0, b0 → c1, a1, b1
+ac.assistant.add({ type: "jitter", period: 30, amplitude: 6, keep_first: true, keep_last: true });
 ac.draw.path({ points: [[275, 150], [290, 120], [300, 90]], smooth: true, assist: true });
-ac.assistant.set({ index: 1, enabled: false });      // also points, count, mirror, parallel, concentric, count_a/_b(_inv)
+ac.assistant.set({ index: 1, enabled: false });      // also points, count(_inv), mirror, parallel, concentric, three_point, count_a/_b(_inv), period, amplitude
 ac.assistant.list(); ac.assistant.remove({ index: "all" });
 
 // Raster Brush: MyPaint brushes painting into the bitmap under the stroke (or a new one on this keyframe)
@@ -273,6 +277,16 @@ ac.motion.set_interp({ prop: "scale_x", key: 1, type: "similar_shape", expressio
 ac.bone.joint({ x: 250, y: 10, min: -30, max: 45 });   // the object attached at that point
 ac.bone.joint({ x: 150, y: 10, rotate: false });       // a locked joint
 ac.shape_bone.joint({ x: 195, y: 10, min: -45, max: 45 });
+ac.bone.joint({ x: 150, y: 10, pin: true });           // pinned: stays put while IK poses the rest
+// IK is damped least squares (OpenToonz): drags pull the chain, pins pull back harder
+
+// Asset Warp on a bitmap, symbol or group: each pin takes the point under (x, y) to (to_x, to_y)
+ac.selection.mesh_warp({ pins: [[20, 20, 20, 20], [60, 60, 80, 85]] });
+ac.selection.mesh_warp({ reset: true });
+
+// XDTS timing sheets: columns named like layers re-time them (drawing n = the n-th drawing);
+// other columns load name_0001.png… next to the sheet, or become labelled blank keyframes
+ac.import.xdts({ path: "cut01.xdts" });   // → { summary, retimed, from_images, timing_only, missing }
 ```
 
 Expressions use OpenToonz's syntax: `+ - * / ^ %`, comparisons, `and or not`,
@@ -284,6 +298,18 @@ segment), `v0`/`v1` (the segment's key values) and the object's other properties
 (`x y rotation skew scale_x scale_y alpha brightness rotation_x rotation_y depth
 tint`, optionally at another frame: `rotation(frame - 3)`), all in displayed units
 (degrees, %, px).
+
+### Particles
+
+```js
+// an emitter on the current layer; particles start at its keyframe and every export draws them
+ac.draw.particles({ x: 275, y: 380, rate: 60, life: 1.2, speed: 160, direction: -90, spread: 50,
+                    gravity: [0, 220], color_start: "#FFD040", color_end: "#FF402080", scale_end: 20 });
+ac.draw.particles({ x: 100, y: 100, source: { symbol: "Leaf" }, rate: 4, life: 4, spin: 90, tint: false });
+ac.selection.particles({ rate: 120, seed: 3, prewarm: true });   // change selected emitters
+// source: dot | square | star | {symbol} | {bitmap}; also life_var, speed_var, drag, spin_var, random_angle,
+// scale_start/scale_end (%), scale_var, fade_in/fade_out (fractions of life), area [w, h], duration (s), max
+```
 
 ### Sound, lip-sync, interchange and publishing
 

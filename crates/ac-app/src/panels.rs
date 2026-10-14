@@ -192,6 +192,7 @@ fn object_properties(app: &mut App, ui: &mut egui::Ui) {
             }
             ElementKind::Group(c) => format!("Group ({} objects)", c.len()),
             ElementKind::Bitmap(b) => app.ed.doc.bitmap(b.bitmap).map(|a| format!("Bitmap “{}” {}×{}", a.name, a.width, a.height)).unwrap_or("Bitmap (missing)".into()),
+            ElementKind::Particles(_) => "Particle emitter".to_string(),
         }
     };
     ui.horizontal(|ui| {
@@ -216,6 +217,9 @@ fn object_properties(app: &mut App, ui: &mut egui::Ui) {
                     app.ed.modify_selected("Instance Name", move |e| e.name = v.clone());
                 }
             });
+        }
+        if let (1, ElementKind::Particles(e)) = (n, &el.kind) {
+            particles_properties(app, ui, e);
         }
         section(ui, "Position and size");
         let (lo, hi) = app.ed.selection_bounds().unwrap_or((pt(0.0, 0.0), pt(0.0, 0.0)));
@@ -586,6 +590,14 @@ fn object_properties(app: &mut App, ui: &mut egui::Ui) {
         }
 
         filters_section(app, ui, &el);
+        if let Some(w) = &el.mesh {
+            ui.horizontal(|ui| {
+                hint(ui, &format!("Asset Warp: {} pin(s)", w.pins.len()));
+                if ui.small_button("Remove warp").clicked() {
+                    app.ed.modify_selected("Remove Warp", |e| e.mesh = None);
+                }
+            });
+        }
 
         // Bones (IK)
         let bones = app.ed.bones(sel0.layer).to_vec();
@@ -603,8 +615,12 @@ fn object_properties(app: &mut App, ui: &mut egui::Ui) {
             }
             // Joint: Rotation (enable / constrain), as in Animate's bone properties
             if let Some(b) = bones.iter().find(|b| b.child == sel0.element).copied() {
-                if let Some((rotate, limit)) = joint_ui(ui, ("joint", sel0.layer, sel0.element), b.rotate, b.limit) {
-                    app.ed.set_joint(sel0.layer, sel0.element, rotate, limit);
+                if let Some((rotate, limit, pin)) = joint_ui(ui, ("joint", sel0.layer, sel0.element), b.rotate, b.limit, b.pin.is_some()) {
+                    if pin != b.pin.is_some() {
+                        app.ed.set_joint_pin(sel0.layer, sel0.element, pin);
+                    } else {
+                        app.ed.set_joint(sel0.layer, sel0.element, rotate, limit);
+                    }
                 }
             }
             ui.horizontal(|ui| {
@@ -1732,7 +1748,7 @@ fn tool_properties(app: &mut App, ui: &mut egui::Ui) {
         }
         Tool::AssetWarp => {
             section(ui, "Asset Warp");
-            hint(ui, "Click inside a shape to add pins; drag a pin to bend the shape around the others. Alt+click removes a pin. Properties › Object › Remove warp restores it.");
+            hint(ui, "Click inside a shape, bitmap, symbol instance or group to add pins; drag a pin to bend it around the others. Alt+click removes a pin. Properties › Object › Remove warp restores it. Warped bitmaps and symbols show in every export except .fla (exported unwarped).");
         }
         Tool::Camera => camera_properties(app, ui),
         Tool::RotateView => {
@@ -2684,6 +2700,9 @@ fn color_effect(app: &mut App, ui: &mut egui::Ui, el: &Element) {
 }
 
 /// Properties ▸ Tool for the Assistants tool: add, list, edit.
+/// A joint's (rotate, limit, pinned) after an edit in Properties.
+type JointEdit = (bool, Option<(f32, f32)>, bool);
+
 fn assistant_properties(app: &mut App, ui: &mut egui::Ui) {
     use ac_core::assist::{Assistant, AssistantKind as K};
     section(ui, "Drawing assistants");
@@ -2703,7 +2722,7 @@ fn assistant_properties(app: &mut App, ui: &mut egui::Ui) {
     });
     let n = app.ed.doc.assistants.len();
     if n == 0 {
-        hint(ui, "Guides — Line, Vanishing point, Ellipse — pull freehand strokes onto them (the start of a stroke picks the guide that fits). Symmetry — Mirror, Star, Grid — repeats every stroke. Drag handles on the stage; Alt+click a handle deletes.");
+        hint(ui, "Guides — Line, Vanishing point, Ellipse, Perspective, Fisheye — pull freehand strokes onto them (the start of a stroke picks the guide that fits). Replicators — Mirror, Star, Grid, Affine — repeat every stroke; Jitter shakes it. Drag handles on the stage; Alt+click a handle deletes.");
         return;
     }
     let mut remove = None;
@@ -2754,6 +2773,27 @@ fn assistant_properties(app: &mut App, ui: &mut egui::Ui) {
                 ui.add(egui::DragValue::new(count_b).range(1..=20));
             });
         }
+        K::Perspective { three_point, .. } => {
+            ui.checkbox(three_point, "Three-point (verticals converge)");
+            hint(ui, "Handles: left and right vanishing points on the horizon, and the third point below or above.");
+        }
+        K::Fisheye { .. } => hint(ui, "Strokes follow the radius or the curved meridians through the poles; outside the circle they follow its edge."),
+        K::Affine { count, count_inv, .. } => {
+            ui.horizontal(|ui| {
+                ui.label("Copies");
+                ui.add(egui::DragValue::new(count).range(0..=100)).on_hover_text("Forward through the transform");
+                ui.add(egui::DragValue::new(count_inv).range(0..=100)).on_hover_text("Backward (the inverse transform)");
+            });
+            hint(ui, "The blue frame maps onto the orange one; each copy repeats that move. Drag the orange centre to move the second frame.");
+        }
+        K::Jitter { period, amplitude, keep_first, keep_last, .. } => {
+            ui.add(egui::Slider::new(period, 1.0..=300.0).logarithmic(true).text("Period"));
+            ui.add(egui::Slider::new(amplitude, 0.0..=100.0).text("Amplitude"));
+            ui.horizontal(|ui| {
+                ui.checkbox(keep_first, "Fix first point");
+                ui.checkbox(keep_last, "Fix last point");
+            });
+        }
         _ => {}
     }
     if b != a {
@@ -2767,17 +2807,21 @@ fn assistant_properties(app: &mut App, ui: &mut egui::Ui) {
 }
 
 /// Joint ▸ Rotation: Enable and Constrain (min/max degrees). Returns a change.
-fn joint_ui(ui: &mut egui::Ui, id: impl std::hash::Hash, rotate: bool, limit: Option<(f32, f32)>) -> Option<(bool, Option<(f32, f32)>)> {
+fn joint_ui(ui: &mut egui::Ui, id: impl std::hash::Hash, rotate: bool, limit: Option<(f32, f32)>, pinned: bool) -> Option<JointEdit> {
     let mut out = None;
     ui.push_id(id, |ui| {
         ui.horizontal(|ui| {
             let mut rot = rotate;
             if ui.checkbox(&mut rot, "Joint rotates").on_hover_text("Off: this joint stays as it is while you pose the chain").changed() {
-                out = Some((rot, limit));
+                out = Some((rot, limit, pinned));
             }
             let mut con = limit.is_some();
             if ui.add_enabled(rotate, egui::Checkbox::new(&mut con, "Constrain")).on_hover_text("Limit how far the joint turns from the pose it had when the bone was made").changed() {
-                out = Some((rotate, if con { Some((-45.0, 45.0)) } else { None }));
+                out = Some((rotate, if con { Some((-45.0, 45.0)) } else { None }, pinned));
+            }
+            let mut pin = pinned;
+            if ui.checkbox(&mut pin, "Pin").on_hover_text("The joint stays where it is now while you pose the rest").changed() {
+                out = Some((rotate, limit, pin));
             }
         });
         if let (true, Some((mut lo, mut hi))) = (rotate, limit) {
@@ -2787,7 +2831,7 @@ fn joint_ui(ui: &mut egui::Ui, id: impl std::hash::Hash, rotate: bool, limit: Op
                 ui.label("Max");
                 let b = ui.add(egui::DragValue::new(&mut hi).range(0.0..=180.0).speed(1.0).suffix("°"));
                 if a.changed() || b.changed() {
-                    out = Some((rotate, Some((lo, hi))));
+                    out = Some((rotate, Some((lo, hi)), pinned));
                 }
             });
         }
@@ -2986,16 +3030,143 @@ fn shape_extras(app: &mut App, ui: &mut egui::Ui, s: &ac_core::Shape) {
             });
             ui.data_mut(|d| d.insert_temp(id, bi));
             let b = r.bones[bi];
-            if let Some((rotate, limit)) = joint_ui(ui, ("rig-joint", bi), b.rotate, b.limit) {
+            let tail = r.posed()[bi].1;
+            if let Some((rotate, limit, pin)) = joint_ui(ui, ("rig-joint", bi), b.rotate, b.limit, b.pin.is_some()) {
                 app.ed.modify_selected("Joint", move |e| {
                     if let ElementKind::Shape(ac_core::Shape { rig: Some(r), .. }) = &mut e.kind {
                         if let Some(b) = r.bones.get_mut(bi) {
                             b.rotate = rotate;
                             b.limit = limit;
+                            b.pin = pin.then_some(b.pin.unwrap_or(tail));
                         }
                     }
                 });
             }
         }
+    }
+}
+
+/// Properties of a particle emitter (one undo step per slider drag).
+fn particles_properties(app: &mut App, ui: &mut egui::Ui, e0: &ac_core::particles::Emitter) {
+    use ac_core::particles::ParticleSource as Src;
+    section(ui, "Particles");
+    let mut e = e0.clone();
+    let src_name = |s: &Src, app: &App| match s {
+        Src::Dot => "Dot".to_string(),
+        Src::Square => "Square".to_string(),
+        Src::Star => "Star".to_string(),
+        Src::Symbol { symbol } => format!("Symbol: {}", app.ed.doc.symbol(*symbol).map(|s| s.name.as_str()).unwrap_or("?")),
+        Src::Bitmap { bitmap } => format!("Bitmap: {}", app.ed.doc.bitmap(*bitmap).map(|b| b.name.as_str()).unwrap_or("?")),
+    };
+    ui.horizontal(|ui| {
+        ui.label("Particle");
+        egui::ComboBox::from_id_salt("particle_src").selected_text(src_name(&e.source, app)).width(170.0).show_ui(ui, |ui| {
+            for s in [Src::Dot, Src::Square, Src::Star] {
+                let t = src_name(&s, app);
+                ui.selectable_value(&mut e.source, s, t);
+            }
+            for sym in &app.ed.doc.library {
+                ui.selectable_value(&mut e.source, Src::Symbol { symbol: sym.id }, format!("Symbol: {}", sym.name));
+            }
+            for b in &app.ed.doc.bitmaps {
+                ui.selectable_value(&mut e.source, Src::Bitmap { bitmap: b.id }, format!("Bitmap: {}", b.name));
+            }
+        });
+    });
+    egui::Grid::new("particles").num_columns(4).spacing([6.0, 3.0]).show(ui, |ui| {
+        let dv = |ui: &mut egui::Ui, v: &mut f32, lo: f32, hi: f32, speed: f64, suffix: &str| {
+            ui.add(egui::DragValue::new(v).range(lo..=hi).speed(speed).max_decimals(2).suffix(suffix.to_string()));
+        };
+        ui.label("Rate");
+        dv(ui, &mut e.rate, 0.0, 2000.0, 0.5, "/s");
+        ui.label("Max");
+        ui.add(egui::DragValue::new(&mut e.max).range(1..=20000));
+        ui.end_row();
+        ui.label("Life");
+        dv(ui, &mut e.life, 0.05, 60.0, 0.02, " s");
+        ui.label("±");
+        dv(ui, &mut e.life_var, 0.0, 1.0, 0.01, "");
+        ui.end_row();
+        ui.label("Speed");
+        dv(ui, &mut e.speed, 0.0, 5000.0, 1.0, "");
+        ui.label("±");
+        dv(ui, &mut e.speed_var, 0.0, 1.0, 0.01, "");
+        ui.end_row();
+        ui.label("Direction");
+        dv(ui, &mut e.direction, -360.0, 360.0, 1.0, "°");
+        ui.label("Spread");
+        dv(ui, &mut e.spread, 0.0, 360.0, 1.0, "°");
+        ui.end_row();
+        ui.label("Gravity X");
+        dv(ui, &mut e.gravity.x, -5000.0, 5000.0, 1.0, "");
+        ui.label("Y");
+        dv(ui, &mut e.gravity.y, -5000.0, 5000.0, 1.0, "");
+        ui.end_row();
+        ui.label("Drag");
+        dv(ui, &mut e.drag, 0.0, 0.99, 0.01, "");
+        ui.label("Spin");
+        dv(ui, &mut e.spin, -3600.0, 3600.0, 1.0, "°/s");
+        ui.end_row();
+        ui.label("Spin ±");
+        dv(ui, &mut e.spin_var, 0.0, 3600.0, 1.0, "°/s");
+        ui.checkbox(&mut e.random_angle, "Random angle");
+        ui.end_row();
+        ui.label("Scale");
+        dv(ui, &mut e.scale_start, 0.0, 2000.0, 1.0, "%");
+        ui.label("to");
+        dv(ui, &mut e.scale_end, 0.0, 2000.0, 1.0, "%");
+        ui.end_row();
+        ui.label("Scale ±");
+        dv(ui, &mut e.scale_var, 0.0, 1.0, 0.01, "");
+        ui.label("");
+        ui.end_row();
+        ui.label("Fade in");
+        dv(ui, &mut e.fade_in, 0.0, 1.0, 0.01, "");
+        ui.label("out");
+        dv(ui, &mut e.fade_out, 0.0, 1.0, 0.01, "");
+        ui.end_row();
+        ui.label("Area W");
+        dv(ui, &mut e.area.x, 0.0, 10000.0, 1.0, "");
+        ui.label("H");
+        dv(ui, &mut e.area.y, 0.0, 10000.0, 1.0, "");
+        ui.end_row();
+        ui.label("Stop after");
+        dv(ui, &mut e.duration, 0.0, 3600.0, 0.05, " s");
+        ui.label("Seed");
+        ui.add(egui::DragValue::new(&mut e.seed));
+        ui.end_row();
+    });
+    ui.horizontal(|ui| {
+        ui.label("Colour");
+        let mut a = c32(e.color_start);
+        if ui.color_edit_button_srgba(&mut a).changed() {
+            e.color_start = from32(a);
+        }
+        ui.label("to");
+        let mut b = c32(e.color_end);
+        if ui.color_edit_button_srgba(&mut b).changed() {
+            e.color_end = from32(b);
+        }
+        if matches!(e.source, Src::Symbol { .. } | Src::Bitmap { .. }) {
+            ui.checkbox(&mut e.tint, "Tint").on_hover_text("Tint the symbol / bitmap by the colour (its alpha = amount)");
+        }
+    });
+    ui.checkbox(&mut e.prewarm, "Pre-warm (start full)");
+    hint(ui, "Particles start at the emitter's keyframe and play like a graphic symbol: scrub freely, every export draws them.");
+    if e != *e0 {
+        let first = !app.prop_dragging;
+        app.prop_dragging = ui.input(|inp| inp.pointer.any_down());
+        let set = move |el: &mut Element| {
+            if let ElementKind::Particles(p) = &mut el.kind {
+                **p = e.clone();
+            }
+        };
+        if first {
+            app.ed.modify_selected("Particles", set);
+        } else {
+            app.ed.modify_selected_continuous(set);
+        }
+    } else if !ui.input(|inp| inp.pointer.any_down()) {
+        app.prop_dragging = false;
     }
 }

@@ -15,3 +15,9 @@ base64 = "0.22"
 png.workspace = true
 # MyPaint brush engine (pure-Rust libmypaint port), referenced, not copied
 hokusai = { version = "0.3", default-features = false, features = ["myb-json", "tile-mem"] }
+# image decoders for bitmap import (PNG/JPEG/GIF/BMP/TGA/TIFF/WebP/OpenEXR)
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "bmp", "tga", "tiff", "webp", "exr"], optional = true }
+
+[features]
+default = ["codecs"]
+codecs = ["dep:image"]

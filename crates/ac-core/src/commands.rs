@@ -77,9 +77,11 @@ cmds! {
     "draw.line", "x1, y1, x2, y2, stroke?, stroke_width?", "Straight line";
     "draw.polystar", "cx, cy, r, sides? (5), star? (false), inner? (0.5), fill?, stroke?", "Polygon or star";
     "draw.path", "points [[x,y]...], closed?, smooth?, fill?, stroke?, stroke_width?, assist? (apply drawing assistants: snap + symmetry)", "Path through points";
-    "assistant.add", "type ('line'|'vanishing_point'|'ellipse'|'mirror'|'star'|'grid'), x, y, size? (100), count? (star), mirror? (star), parallel? (line), concentric? (ellipse), magnetism? (0..1)", "Add a drawing assistant (OpenToonz): guides snap freehand strokes, replicators repeat them; returns its index (1-based)";
+    "assistant.add", "type ('line'|'vanishing_point'|'ellipse'|'perspective'|'fisheye'|'mirror'|'star'|'grid'|'affine'|'jitter'), x, y, size? (100), count? (star, affine), count_inv? (affine), mirror? (star), parallel? (line), concentric? (ellipse), three_point? (perspective), period?, amplitude?, keep_first?, keep_last? (jitter), magnetism? (0..1)", "Add a drawing assistant (OpenToonz): guides snap freehand strokes, replicators repeat them, jitter shakes them; returns its index (1-based)";
     "assistant.list", "", "Drawing assistants with their points";
-    "assistant.set", "index (1-based), enabled?, magnetism?, points? [[x,y]...], count?, mirror?, parallel?, concentric?, count_a?, count_b?, count_a_inv?, count_b_inv?", "Change a drawing assistant";
+    "draw.particles", "x, y, then any emitter settings: source ('dot'|'square'|'star' or {symbol: name} or {bitmap: name}), rate (/s), life (s), life_var (0..1), speed, speed_var, direction (degrees, -90 = up), spread, gravity [x, y], drag (0..1), spin (°/s), spin_var, random_angle, scale_start, scale_end (%), scale_var, color_start, color_end, tint, fade_in, fade_out (fractions of life), area [w, h], prewarm, duration (s, 0 = forever), max, seed", "Place a particle emitter on the current layer (particles start at its keyframe); returns its selection";
+    "selection.particles", "any draw.particles setting", "Change the selected particle emitters";
+    "assistant.set", "index (1-based), enabled?, magnetism?, points? [[x,y]...] (perspective: vx, vy[, vz]; affine: c0, a0, b0, c1, a1, b1), count?, count_inv?, mirror?, parallel?, concentric?, three_point?, count_a?, count_b?, count_a_inv?, count_b_inv?, period?, amplitude?, keep_first?, keep_last?", "Change a drawing assistant";
     "assistant.remove", "index (1-based) or 'all'", "Delete drawing assistants";
     "draw.text", "x, y, text, size? (24), color?, font? ('sans'|'mono'|system family), align?, weight? (100–900), bold?, italic?", "Static text";
     "select.all", "", "Select everything editable on the current frame";
@@ -109,7 +111,7 @@ cmds! {
     "bone.list", "layer?", "Bones on a layer";
     "bone.clear", "layer?", "Remove all bones on a layer";
     "bone.drag", "x, y, to_x, to_y", "IK: drag the bonded object point at (x,y) to (to_x,to_y), posing the chain";
-    "bone.joint", "x, y (an object attached by a bone), rotate? (bool), min?, max? (degrees from the pose when the bone was made; omit both or free:true = no limit), free?", "Joint constraints: whether the joint turns, and how far";
+    "bone.joint", "x, y (an object attached by a bone), rotate? (bool), min?, max? (degrees from the pose when the bone was made; omit both or free:true = no limit), free?, pin? (bool: the joint stays where it is while posing)", "Joint constraints: whether the joint turns, how far, and pinning";
     "camera.add", "", "Add a camera layer to the scene";
     "camera.set", "x?, y?, zoom?, rotation?, frame?", "Camera centre, zoom (1 = 100%) and rotation at a frame (makes a keyframe)";
     "camera.remove", "", "Remove the camera layer";
@@ -129,12 +131,13 @@ cmds! {
     "selection.stroke_style", "dash? ('solid'|'dashed'|'dotted'|'ragged'|'stipple'|'hatched'|OpenToonz: 'herringbone'|'chain'|'circlets'|'scratchy'|'rope'|'tulle'|'plait'|'fuzz'|'bubbles'|'jagged'|'zigzag'|'wave'|'curl'), cap? ('none'|'round'|'square'), join? ('miter'|'round'|'bevel'), dash_len?, gap?, params? ({name: value}, e.g. {\"tilt\": 0.8}), colors? ([\"#RRGGBB\"|null, …] extra colours)", "Stroke style of selected drawing objects";
     "paint.brushes", "", "The bundled MyPaint brushes (id, name, group)";
     "paint.stroke", "points [[x,y] or [x,y,pressure]...], brush? (id or name, default 'classic_pencil'), color?, size? (radius px), opacity? (0..1), eraser?", "Raster Brush: paint a stroke with a MyPaint brush into the bitmap under it (or a new one on the current layer)";
+    "selection.mesh_warp", "pins [[x, y, to_x, to_y], …] (stage coordinates), reset? (bool)", "Asset Warp on the selected bitmap, symbol or group: each pin takes the point under (x, y) to (to_x, to_y); reset removes the warp";
     "shape.deform", "tool ('magnet'|'pinch'|'pump'|'bender'|'iron'), x, y, to_x, to_y, size? (px, default 40), sharp? (pinch: corner), strength? (iron 0..1); bender: x, y, x2, y2 = the segment across the lines, from_x, from_y → to_x, to_y = the drag", "OpenToonz deformation tools on drawing objects and merge shapes (one drag); returns how many objects changed";
     "selection.bitmap_fill", "bitmap (name or id, null = none)", "Fill selected drawing objects, or the merge-shape selection, with a library bitmap";
     "draw.rect_primitive", "x, y, w, h, radius? or radii [tl,tr,br,bl], fill?, stroke?", "Rectangle Primitive (corner radii stay editable)";
     "draw.oval_primitive", "x, y, w, h, start?, end?, inner? (%), fill?, stroke?", "Oval Primitive (angles and inner radius stay editable)";
     "shape_bone.add", "x1, y1, x2, y2", "Bone inside the drawing object at (x1,y1), from (x1,y1) to (x2,y2); chains onto a bone ending at (x1,y1)";
-    "shape_bone.joint", "x, y (near the bone's tail), rotate? (bool), min?, max? (degrees from rest), free?", "Joint constraints of a shape bone";
+    "shape_bone.joint", "x, y (near the bone's tail), rotate? (bool), min?, max? (degrees from rest), free?, pin? (bool: the tail stays put while posing)", "Joint constraints of a shape bone";
     "shape_bone.pose", "x, y, to_x, to_y", "Drag the shape bone whose tail is at (x,y) to (to_x,to_y) (IK)";
     "selection.set_looping", "mode? ('loop'|'play_once'|'single_frame'|'play_reverse_once'|'loop_reverse'), first_frame? (1-based)", "Graphic instance looping options";
     "selection.swap_symbol", "symbol (name or id)", "Swap Symbol: selected instances show another symbol, keeping transform and effects";
@@ -146,7 +149,8 @@ cmds! {
     "selection.clear_filters", "", "Remove all filters";
     "bitmap.trace", "color_threshold? (0–500, 100), min_area? (px, 8), curve_fit? ('pixels'|'very tight'|'tight'|'normal'|'smooth'|'very smooth'), corners? ('many'|'normal'|'few'), mode? ('outline'|'centerline'), line_threshold? (centerline ink darkness 1–254, 128), uniform_width? (centerline)", "Trace Bitmap: the selected bitmaps become vector fills (outline) or lines (centerline, OpenToonz) in the layer's shape; returns how many fills/lines";
     "selection.set_blend", "mode ('normal'|'multiply'|'screen'|…)", "Blend mode";
-    "import.image", "path (PNG), x?, y?, place? (true)", "Import a PNG into the library (and place it)";
+    "import.image", "path (PNG, JPEG, GIF, BMP, TGA, TIFF, WebP, OpenEXR), x?, y?, place? (true)", "Import an image into the library (and place it)";
+    "import.xdts", "path (.xdts)", "Import an XDTS timing sheet: tracks named like layers re-time them (drawing n = the layer's n-th drawing), others load numbered images next to the sheet (name_0001.png or name/0001.png) or become labelled blank keyframes; returns a summary";
     "import.sound", "path (WAV/MP3/OGG/FLAC), name?", "Import a sound into the library; returns its id";
     "timeline.set_sound", "sound (name or id; null = none), sync? ('event'|'start'|'stop'|'stream'), repeat? (1), loop? (false), effect? ('none'|'left channel'|'right channel'|'fade to right'|'fade to left'|'fade in'|'fade out'), layer?, frame?", "Properties ▸ Sound on the keyframe at the target";
     "sound.list", "", "Library sounds with length (seconds, when this build can decode them)";
@@ -203,6 +207,93 @@ fn joint_limit(a: &Value, cur: Option<(f32, f32)>) -> Result<Option<(f32, f32)>,
 }
 
 /// Type-specific options of `assistant.add` / `assistant.set`.
+/// The `source` argument of the particle commands, resolved against the library.
+fn particle_source(ed: &Editor, a: &Value) -> Result<Option<crate::particles::ParticleSource>, String> {
+    use crate::particles::ParticleSource as Src;
+    let Some(src) = a.get("source") else { return Ok(None) };
+    Ok(Some(match src {
+        Value::String(s) => match s.to_ascii_lowercase().as_str() {
+            "dot" | "circle" => Src::Dot,
+            "square" => Src::Square,
+            "star" => Src::Star,
+            other => return Err(format!("unknown particle source '{other}' (dot, square, star, {{symbol}}, {{bitmap}})")),
+        },
+        Value::Object(o) => {
+            if let Some(name) = o.get("symbol") {
+                let id = match name {
+                    Value::Number(n) => n.as_u64().unwrap_or(0) as crate::model::SymbolId,
+                    Value::String(n) => ed.doc.library.iter().find(|s| &s.name == n).map(|s| s.id).ok_or_else(|| format!("no symbol '{n}'"))?,
+                    _ => return Err("symbol: name or id".into()),
+                };
+                Src::Symbol { symbol: id }
+            } else if let Some(name) = o.get("bitmap") {
+                let id = match name {
+                    Value::Number(n) => n.as_u64().unwrap_or(0) as crate::bitmap::BitmapId,
+                    Value::String(n) => ed.doc.bitmaps.iter().find(|b| &b.name == n).map(|b| b.id).ok_or_else(|| format!("no bitmap '{n}'"))?,
+                    _ => return Err("bitmap: name or id".into()),
+                };
+                Src::Bitmap { bitmap: id }
+            } else {
+                return Err("source: 'dot', 'square', 'star', {symbol: name} or {bitmap: name}".into());
+            }
+        }
+        _ => return Err("source: 'dot', 'square', 'star', {symbol: name} or {bitmap: name}".into()),
+    }))
+}
+
+/// Apply `draw.particles` settings to an emitter (unknown keys are ignored).
+fn particle_settings(e: &mut crate::particles::Emitter, a: &Value, src: Option<crate::particles::ParticleSource>) -> Result<(), String> {
+    if let Some(s) = src {
+        e.source = s;
+    }
+    let f = |k: &str, v: &mut f32| {
+        if let Some(x) = num(a, k) {
+            *v = x;
+        }
+    };
+    f("rate", &mut e.rate);
+    f("life", &mut e.life);
+    f("life_var", &mut e.life_var);
+    f("speed", &mut e.speed);
+    f("speed_var", &mut e.speed_var);
+    f("direction", &mut e.direction);
+    f("spread", &mut e.spread);
+    f("drag", &mut e.drag);
+    f("spin", &mut e.spin);
+    f("spin_var", &mut e.spin_var);
+    f("scale_start", &mut e.scale_start);
+    f("scale_end", &mut e.scale_end);
+    f("scale_var", &mut e.scale_var);
+    f("fade_in", &mut e.fade_in);
+    f("fade_out", &mut e.fade_out);
+    f("duration", &mut e.duration);
+    let pair = |k: &str| a.get(k).and_then(Value::as_array).and_then(|v| Some(pt(v.first()?.as_f64()? as f32, v.get(1)?.as_f64()? as f32)));
+    if let Some(g) = pair("gravity") {
+        e.gravity = g;
+    }
+    if let Some(g) = pair("area") {
+        e.area = g;
+    }
+    for (k, v) in [("random_angle", &mut e.random_angle), ("tint", &mut e.tint), ("prewarm", &mut e.prewarm)] {
+        if let Some(b) = boolean(a, k) {
+            *v = b;
+        }
+    }
+    if let Some(c) = color_arg(a, "color_start")?.flatten() {
+        e.color_start = c;
+    }
+    if let Some(c) = color_arg(a, "color_end")?.flatten() {
+        e.color_end = c;
+    }
+    if let Some(x) = num(a, "max") {
+        e.max = x.clamp(1.0, 20000.0) as u32;
+    }
+    if let Some(x) = num(a, "seed") {
+        e.seed = x.max(0.0) as u32;
+    }
+    Ok(())
+}
+
 fn assistant_options(kind: &mut crate::assist::AssistantKind, a: &Value) {
     use crate::assist::AssistantKind as K;
     let int = |k: &str| num(a, k).map(|v| v.clamp(0.0, 64.0) as u32);
@@ -230,6 +321,32 @@ fn assistant_options(kind: &mut crate::assist::AssistantKind, a: &Value) {
                 if let Some(v) = int(k) {
                     *f = v;
                 }
+            }
+        }
+        K::Perspective { three_point, .. } => {
+            if let Some(v) = boolean(a, "three_point") {
+                *three_point = v;
+            }
+        }
+        K::Affine { count, count_inv, .. } => {
+            for (k, f) in [("count", count), ("count_inv", count_inv)] {
+                if let Some(v) = int(k) {
+                    *f = v;
+                }
+            }
+        }
+        K::Jitter { period, amplitude, keep_first, keep_last, .. } => {
+            if let Some(v) = num(a, "period") {
+                *period = v.clamp(0.0, 1000.0);
+            }
+            if let Some(v) = num(a, "amplitude") {
+                *amplitude = v.clamp(0.0, 1000.0);
+            }
+            if let Some(v) = boolean(a, "keep_first") {
+                *keep_first = v;
+            }
+            if let Some(v) = boolean(a, "keep_last") {
+                *keep_last = v;
             }
         }
         _ => {}
@@ -350,6 +467,7 @@ fn element_json(ed: &Editor, s: Selection) -> Value {
         ElementKind::Group(c) => ("group", json!({ "children": c.len() })),
         ElementKind::Bitmap(b) => ("bitmap", json!({ "bitmap": ed.doc.bitmap(b.bitmap).map(|a| a.name.clone()) })),
         ElementKind::Canvas(c) => ("merge_shape", json!({ "fills": c.fills.len(), "strokes": c.strokes.len() })),
+        ElementKind::Particles(e) => ("particles", serde_json::to_value(e.as_ref()).unwrap_or(Value::Null)),
     };
     let b = ed.bounds_of(&[s]);
     json!({
@@ -897,13 +1015,38 @@ pub fn execute(ed: &mut Editor, id: &str, a: &Value) -> Result<Value, String> {
         "assistant.add" => {
             let ty = string(a, "type").ok_or("missing 'type'")?;
             let c = pt(num(a, "x").unwrap_or(ed.doc.width / 2.0), num(a, "y").unwrap_or(ed.doc.height / 2.0));
-            let mut kind = crate::assist::AssistantKind::create(ty, c, num(a, "size").unwrap_or(100.0)).ok_or_else(|| format!("unknown assistant '{ty}' (line, vanishing_point, ellipse, mirror, star, grid)"))?;
+            let mut kind = crate::assist::AssistantKind::create(ty, c, num(a, "size").unwrap_or(100.0)).ok_or_else(|| format!("unknown assistant '{ty}' (line, vanishing_point, ellipse, perspective, fisheye, mirror, star, grid, affine, jitter)"))?;
             assistant_options(&mut kind, a);
             let mut asst = crate::assist::Assistant::new(kind);
             if let Some(m) = num(a, "magnetism") {
                 asst.magnetism = m.clamp(0.0, 1.0);
             }
             Ok(json!(ed.add_assistant(asst) + 1))
+        }
+        "draw.particles" => {
+            let mut e = crate::particles::Emitter::default();
+            let src = particle_source(ed, a)?;
+            particle_settings(&mut e, a, src)?;
+            let el = Element { matrix: Matrix::translate(num(a, "x").unwrap_or(ed.doc.width / 2.0), num(a, "y").unwrap_or(ed.doc.height / 2.0)), ..Element::particles(e) };
+            let s = ed.add_element(el).ok_or("current layer is locked or hidden")?;
+            Ok(json!({"layer": s.layer + 1, "index": s.element}))
+        }
+        "selection.particles" => {
+            need_selection(ed)?;
+            let any = ed.selection.iter().any(|&s| matches!(ed.element_at(s).map(|e| e.kind), Some(ElementKind::Particles(_))));
+            if !any {
+                return Err("no particle emitter selected".into());
+            }
+            let src = particle_source(ed, a)?;
+            // validate once (colours etc.)
+            particle_settings(&mut crate::particles::Emitter::default(), a, src)?;
+            let changes = a.clone();
+            ed.modify_selected("Particles", move |el| {
+                if let ElementKind::Particles(p) = &mut el.kind {
+                    let _ = particle_settings(p, &changes, src);
+                }
+            });
+            Ok(Value::Null)
         }
         "assistant.list" => Ok(Value::Array(
             ed.doc.assistants.iter().enumerate().map(|(i, x)| json!({ "index": i + 1, "type": x.name(), "enabled": x.enabled, "magnetism": x.magnetism, "points": x.points().iter().map(|p| json!([p.x, p.y])).collect::<Vec<_>>() })).collect(),
@@ -921,15 +1064,8 @@ pub fn execute(ed: &mut Editor, id: &str, a: &Value) -> Result<Value, String> {
                 for (k, p) in ps.iter().enumerate() {
                     if let (Some(px), Some(py)) = (p.get(0).and_then(Value::as_f64), p.get(1).and_then(Value::as_f64)) {
                         // set exactly (no carrying of the other handles)
-                        let n = x.points().len();
-                        if k < n {
-                            let others: Vec<Pt> = x.points();
-                            x.set_point(k, pt(px as f32, py as f32));
-                            if k == 0 {
-                                for (j, q) in others.iter().enumerate().skip(1) {
-                                    x.set_point(j, *q);
-                                }
-                            }
+                        if let Some(q) = x.kind.points_mut().into_iter().nth(k) {
+                            *q = pt(px as f32, py as f32);
                         }
                     }
                 }
@@ -1108,6 +1244,32 @@ pub fn execute(ed: &mut Editor, id: &str, a: &Value) -> Result<Value, String> {
             ed.paint_end(s);
             Ok(json!(bmp))
         }
+        "selection.mesh_warp" => {
+            need_selection(ed)?;
+            let s = ed.selection[0];
+            let el = ed.element_at(s).ok_or("no object")?;
+            if !matches!(el.kind, ElementKind::Bitmap(_) | ElementKind::Instance(_) | ElementKind::Group(_)) {
+                return Err("Asset Warp pins here work on bitmaps, symbols and groups (shapes: drag pins with the Asset Warp tool)".into());
+            }
+            if boolean(a, "reset").unwrap_or(false) {
+                ed.modify_selected("Reset Warp", |e| e.mesh = None);
+                return Ok(Value::Null);
+            }
+            let pins: Vec<[f32; 4]> = a
+                .get("pins")
+                .and_then(Value::as_array)
+                .ok_or("missing 'pins' [[x, y, to_x, to_y], …]")?
+                .iter()
+                .filter_map(|p| Some([p.get(0)?.as_f64()? as f32, p.get(1)?.as_f64()? as f32, p.get(2)?.as_f64()? as f32, p.get(3)?.as_f64()? as f32]))
+                .collect();
+            let mark = ed.undo_depth();
+            for [x, y, tx, ty] in pins {
+                let i = ed.mesh_pin_add(s, pt(x, y)).ok_or("the layer is locked")?;
+                ed.mesh_pin_move(s, i, pt(tx, ty), false);
+            }
+            ed.squash_undo(mark, "Asset Warp");
+            Ok(Value::Null)
+        }
         "shape.deform" => {
             let tool = string(a, "tool").unwrap_or("magnet");
             let kind = crate::sculpt::Kind::from_id(tool).ok_or_else(|| format!("unknown deformation tool '{tool}' (magnet, pinch, pump, bender, iron)"))?;
@@ -1160,6 +1322,9 @@ pub fn execute(ed: &mut Editor, id: &str, a: &Value) -> Result<Value, String> {
             let path = string(a, "path").ok_or("missing 'path'")?;
             let bytes = std::fs::read(path).map_err(|e| format!("{path}: {e}"))?;
             let name = std::path::Path::new(path).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or("Bitmap".into());
+            #[cfg(feature = "codecs")]
+            let asset = crate::codecs::bitmap_from_bytes(&name, bytes)?;
+            #[cfg(not(feature = "codecs"))]
             let asset = crate::bitmap::BitmapAsset::from_png(&name, bytes)?;
             let id = ed.add_bitmap(asset);
             if boolean(a, "place").unwrap_or(true) {
@@ -1167,6 +1332,20 @@ pub fn execute(ed: &mut Editor, id: &str, a: &Value) -> Result<Value, String> {
                 ed.place_bitmap(id, at).ok_or("current layer is locked or hidden")?;
             }
             Ok(json!(id))
+        }
+        "import.xdts" => {
+            let path = string(a, "path").ok_or("missing 'path'")?;
+            #[cfg(feature = "codecs")]
+            {
+                let rep = crate::xdts::import_file(ed, std::path::Path::new(path))?;
+                Ok(json!({"summary": rep.summary(), "retimed": rep.retimed, "from_images": rep.from_images, "timing_only": rep.timing_only, "missing": rep.missing}))
+            }
+            #[cfg(not(feature = "codecs"))]
+            {
+                let text = std::fs::read_to_string(path).map_err(|e| format!("{path}: {e}"))?;
+                let rep = crate::xdts::apply(ed, &crate::xdts::parse(&text)?, &[]);
+                Ok(json!({"summary": rep.summary()}))
+            }
         }
         "draw.text" => {
             let text = string(a, "text").ok_or("missing 'text'")?;
@@ -1347,6 +1526,11 @@ pub fn execute(ed: &mut Editor, id: &str, a: &Value) -> Result<Value, String> {
                             cv.set_stroke(&all, Stroke { color: c, width: sw.unwrap_or(1.0) });
                         }
                     }
+                    ElementKind::Particles(pe) => {
+                        if let Some(Some(c)) = fill {
+                            pe.color_start = c;
+                        }
+                    }
                     ElementKind::Text(t) => {
                         if let Some(Some(c)) = fill {
                             t.color = c;
@@ -1507,6 +1691,9 @@ pub fn execute(ed: &mut Editor, id: &str, a: &Value) -> Result<Value, String> {
             let rotate = boolean(a, "rotate").unwrap_or(b.rotate);
             let limit = joint_limit(a, b.limit)?;
             ed.set_joint(h.layer, h.element, rotate, limit);
+            if let Some(pin) = boolean(a, "pin") {
+                ed.set_joint_pin(h.layer, h.element, pin);
+            }
             Ok(Value::Null)
         }
         "camera.add" => Ok(json!(ed.add_camera() + 1)),
@@ -1825,12 +2012,17 @@ pub fn execute(ed: &mut Editor, id: &str, a: &Value) -> Result<Value, String> {
             let cur = r.bones[b];
             let rotate = boolean(a, "rotate").unwrap_or(cur.rotate);
             let limit = joint_limit(a, cur.limit)?;
+            let pin = boolean(a, "pin");
+            let tail = r.posed()[b].1;
             ed.selection = vec![sel];
             ed.modify_selected("Joint", move |e| {
                 if let ElementKind::Shape(Shape { rig: Some(r), .. }) = &mut e.kind {
                     if let Some(bone) = r.bones.get_mut(b) {
                         bone.rotate = rotate;
                         bone.limit = limit;
+                        if let Some(p) = pin {
+                            bone.pin = p.then_some(tail);
+                        }
                     }
                 }
             });

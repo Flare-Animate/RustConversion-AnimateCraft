@@ -20,6 +20,7 @@ pub(crate) enum FileAction {
     ImportSvg,
     ImportSequence,
     ImportPsd,
+    ImportXdts,
     ExportXfl,
     ImportSound,
     ExportHtml5,
@@ -43,6 +44,7 @@ impl FileAction {
             FileAction::ImportSvg => "Import SVG",
             FileAction::ImportSequence => "Import image sequence (pick the first numbered image)",
             FileAction::ImportPsd => "Import Photoshop file (one layer per Photoshop layer)",
+            FileAction::ImportXdts => "Import XDTS timing sheet",
             FileAction::ExportXfl => "Export as .fla / XFL",
             FileAction::ImportSound => "Import sound to library (WAV / MP3 / OGG / FLAC / AIFF)",
             FileAction::ExportHtml5 => "Publish HTML5 Canvas (a folder, or name.html for one file)",
@@ -54,7 +56,7 @@ impl FileAction {
     }
     fn default_name(self, doc_name: &str) -> String {
         match self {
-            FileAction::Open | FileAction::ImportImage | FileAction::ImportSvg | FileAction::ImportSequence | FileAction::ImportSound | FileAction::ImportPsd => String::new(),
+            FileAction::Open | FileAction::ImportImage | FileAction::ImportSvg | FileAction::ImportSequence | FileAction::ImportSound | FileAction::ImportPsd | FileAction::ImportXdts => String::new(),
             FileAction::Save => format!("{doc_name}.acx"),
             FileAction::ExportGif => format!("{doc_name}.gif"),
             FileAction::ExportPng => format!("{doc_name}.png"),
@@ -85,12 +87,13 @@ impl FileAction {
             FileAction::ExportSvg | FileAction::ImportSvg => ("SVG", &["svg"]),
             FileAction::ExportPngSequence => ("Folder", &[]),
             FileAction::ExportVideo => ("Video", &["mp4", "webm", "mov"]),
-            FileAction::ImportImage | FileAction::ImportSequence => ("Images", &["png", "jpg", "jpeg", "gif", "bmp"]),
+            FileAction::ImportImage | FileAction::ImportSequence => ("Images", ac_core::codecs::EXTENSIONS),
+            FileAction::ImportXdts => ("XDTS timing sheet", &["xdts"]),
             FileAction::ImportPsd => ("Photoshop files", &["psd"]),
         }
     }
     fn picks_existing(self) -> bool {
-        matches!(self, FileAction::Open | FileAction::ImportImage | FileAction::ImportSvg | FileAction::ImportSequence | FileAction::ImportSound | FileAction::ImportPsd)
+        matches!(self, FileAction::Open | FileAction::ImportImage | FileAction::ImportSvg | FileAction::ImportSequence | FileAction::ImportSound | FileAction::ImportPsd | FileAction::ImportXdts)
     }
 }
 

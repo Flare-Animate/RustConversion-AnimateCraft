@@ -18,13 +18,20 @@ Ported or rebuilt in AnimationCraft, each with tests and a devlog entry:
 #1 Trace Bitmap (outline and centerline), #2 Magic Wand, #3 stroke styles
 (13 OpenToonz styles), #4 raster painting (MyPaint brushes through the
 pure-Rust `hokusai` port), #5 Rhubarb lip sync, #6 curve keyframe types and
-expressions, #7 joint limits (the solver is still CCD), #9 drawing assistants
-and symmetry, #10 vector deformation tools, #11 PSD import, #14 Shift & Trace,
-#15 XDTS export. Still open: damped-least-squares IK and pinned joints (#7),
-mesh deformation of bitmaps/symbols (#8), particles (#12), more effects (#13,
-partly covered by EffectCraft), XDTS import and PDF timing sheets (#15), extra
-image formats (#16), perspective/fisheye assistants and the jitter/affine
-replicators (#9).
+expressions, #7 damped-least-squares IK (after `ikjacobian.cpp`) with joint
+limits and pinned joints, #8 mesh deformation of bitmaps, symbols and groups
+(Asset Warp pins drive a deformed triangle grid; our pin warp, not Plastic's
+skeleton-driven ARAP), #9 drawing assistants (line, vanishing point, ellipse,
+perspective, fisheye) and replicators (mirror, star, grid, affine, jitter),
+#10 vector deformation tools, #11 PSD import, #12 particles (our own emitter,
+evaluated per frame so every export draws it; not a port of `iwa_particles`),
+#14 Shift & Trace, #15 XDTS export and import, #16 TGA/TIFF/WebP/OpenEXR
+import (the `image` crate).
+
+Still open: more effects (#13, partly covered by EffectCraft; wait for a GPU
+renderer), PDF timing sheets (#15), Plastic-style skeleton-driven meshes
+(#8, beyond Animate's Asset Warp), and the brush input modifiers other than
+jitter (smooth, simplify) from `tnztools/modifiers`.
 
 ## 1. What Flare is made of
 

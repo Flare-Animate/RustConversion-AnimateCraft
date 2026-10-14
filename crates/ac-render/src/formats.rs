@@ -302,7 +302,7 @@ fn lottie_item(it: &DrawItem, warn: &mut Vec<&'static str>) -> Option<String> {
         warn.push("nested masks: Lottie keeps only the innermost one");
     }
     if !it.fx.is_empty() {
-        warn.push("filters and blend modes are not exported to Lottie");
+        warn.push("filters, blend modes and Asset Warp on symbols are not exported to Lottie");
     }
     let mut parts = lottie_paths(&it.path, &it.matrix);
     if parts.is_empty() {

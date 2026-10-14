@@ -313,10 +313,12 @@ pub struct FxGroup {
     pub motion: Option<crate::geom::Matrix>,
     /// Seconds on the object's own timeline (time-dependent effects).
     pub time: f32,
+    /// Asset Warp mesh: the layer is drawn deformed (stage space).
+    pub mesh: Option<std::sync::Arc<crate::deform::MeshMap>>,
 }
 
 impl FxGroup {
     pub fn new(filters: Vec<Filter>, blend: BlendMode) -> FxGroup {
-        FxGroup { filters, blend, motion: None, time: 0.0 }
+        FxGroup { filters, blend, motion: None, time: 0.0, mesh: None }
     }
 }

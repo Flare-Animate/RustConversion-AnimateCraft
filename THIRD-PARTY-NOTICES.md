@@ -28,12 +28,14 @@ Features modelled on OpenToonz subsystems are listed in
 |---|---|
 | `ac-core/src/strokes.rs` (Herringbone … Curl) | `toonz/sources/colorfx/strokestyles.cpp` |
 | `ac-core/src/sculpt.rs` | `toonz/sources/tnztools/{magnet,pinch,pump,bender,iron}tool.cpp`, `tnzext/Stroke*Deformation.cpp` |
-| `ac-core/src/assist.rs` | `toonz/sources/tnztools/assistants/*`, `assistant.cpp` |
+| `ac-core/src/assist.rs` | `toonz/sources/tnztools/assistants/*` (incl. perspective, fisheye, affine, jitter), `assistant.cpp`; jitter noise ported from `tnztools/modifiers/modifierjitter.cpp` |
+| `ac-core/src/ik.rs` | `toonz/sources/toonzlib/ikjacobian.cpp`, `ikengine.cpp` (damped least squares, step limit, pins) |
+| `ac-core/src/deform.rs` (`MeshWarp`, `MeshMap`) | `toonz/sources/tnzext/plasticdeformer.cpp` (approach: deform a triangle grid, draw each triangle by its affine map) |
 | `ac-core/src/expr.rs` | `toonz/sources/common/expressions/tgrammar.cpp` |
 | `ac-core/src/motion.rs` (`Interp`) | `toonz/sources/common/tparam/tdoubleparam.cpp` |
 | `ac-core/src/centerline.rs` | `toonz/sources/toonzlib/tcenterline*.cpp` (approach) |
 | `ac-core/src/trace.rs` | `toonz/sources/toonzlib/toutlinevectorizer.cpp` (approach) |
-| `ac-core/src/xdts.rs` | `toonz/sources/toonz/xdtsio.cpp` (format) |
+| `ac-core/src/xdts.rs` | `toonz/sources/toonz/xdtsio.cpp` (format, cell rules for import), `xdtsimportpopup.cpp` (level lookup, approach) |
 
 Where code is ported (not just the approach), the file says so and carries
 this notice:
@@ -54,6 +56,10 @@ contributors, MIT OR Apache-2.0. Update with `cargo update -p effectcraft-effect
 ### hokusai (github.com/reearth/hokusai)
 Pure-Rust port of libmypaint, the brush engine behind the Raster Brush
 (`ac-core/src/paint.rs`). crates.io dependency, MIT OR Apache-2.0.
+
+### image (github.com/image-rs/image)
+Decoders for bitmap import (PNG, JPEG, GIF, BMP, TGA, TIFF, WebP, OpenEXR) in
+`ac-core/src/codecs.rs`. crates.io dependency, MIT OR Apache-2.0.
 
 ### Rust crates
 All other dependencies come from crates.io under their own licences (mostly

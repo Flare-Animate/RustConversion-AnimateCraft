@@ -97,8 +97,10 @@ tools. Options for the active tool are in Properties ▸ **Tool**.
   joint to extend the chain. Then drag any bonded object with the Selection
   tool to pose the chain (inverse kinematics); poses become keyframes.
   Properties ▸ Object shows the bone and Remove bone / Remove all bones.
-- **Asset Warp (Shift+W)**: click a shape to drop pins, drag pins to bend it,
-  Alt+click removes a pin.
+- **Asset Warp (Shift+W)**: click a shape, bitmap, symbol instance or group to
+  drop pins, drag pins to bend it, Alt+click removes a pin; *Remove warp* in
+  Properties. Warped bitmaps and symbols draw the same in every export (SVG embeds
+  them as a picture; .fla gets them unwarped).
 - **Width (U)**: drag out from a stroke to make it thicker there; Alt+click a
   width point to delete it; Copy/Paste width profile in Properties.
 - **Paint Brush (Y)**: seven brush shapes (round, oval, square, flat, slanted)
@@ -169,8 +171,14 @@ tools. Options for the active tool are in Properties ▸ **Tool**.
   slide (drag; Shift+drag for the next one) and turn (Alt+drag) under your drawing.
 - **Import Photoshop (PSD)**: one bitmap layer per Photoshop layer, in place.
 - **Export Timing Sheet (XDTS)**: layer timing for Clip Studio Paint / OpenToonz.
+- **Import XDTS Timing Sheet** (File ▸ Import, or drop the file): columns named
+  like layers re-time them (drawing 1, 2, 3… = the layer's drawings in order);
+  other columns load numbered images next to the sheet (`A_0001.png`,
+  `A/0001.png`) or become blank keyframes labelled with the drawing numbers.
+- **Images**: PNG, JPEG, GIF (animated too), BMP, TGA, TIFF, WebP and OpenEXR
+  (linear light, shown in sRGB).
 
-### From OpenToonz: styles, deformers, assistants, painting
+### From OpenToonz: styles, deformers, assistants, painting, IK
 
 - **Stroke styles** (Properties ▸ Fill and stroke): besides Animate's Solid, Dashed,
   Dotted, Ragged, Stipple and Hatched, OpenToonz's Herringbone, Chain, Circlets,
@@ -181,17 +189,29 @@ tools. Options for the active tool are in Properties ▸ **Tool**.
   thins a line, **Bender** bends lines where they cross a segment you draw,
   **Iron** smooths wobbles. They work on drawing objects and merge shapes.
 - **Drawing assistants** (Assistants tool): guides that straighten freehand
-  strokes (Line or parallels, Vanishing point, Ellipse or concentric) and symmetry
-  that repeats them (Mirror, Star with optional kaleidoscope, Grid), for the Pencil,
-  Paint Brush and Fluid Brush.
+  strokes (Line or parallels, Vanishing point, Ellipse or concentric, two- or
+  three-point Perspective, Fisheye), replicators that repeat them (Mirror, Star
+  with optional kaleidoscope, Grid, Affine: a transform applied again and again)
+  and Jitter (a smooth hand-made wobble), for the Pencil, Paint Brush and Fluid Brush.
 - **Raster Brush** (Brush flyout): 25 MyPaint brushes (pencils, inks, charcoal,
   chalk, airbrush, watercolour, smudge, erasers) painting pixels into a bitmap on
   the current keyframe, frame by frame.
 - **Motion Editor**: right-click a key ▸ *Interpolation to next key*: Constant,
   Linear, Ease In/Out, Exponential, **Expression** (`sin(frame*10)*20`,
   `100 - rotation/2`, `random(0, 5)` …) or Similar Shape.
-- **Joint constraints** (Properties ▸ Bones): turn a joint off or limit how far it
-  bends.
+- **Joint constraints** (Properties ▸ Bones): turn a joint off, limit how far it
+  bends, or **pin** it so it stays put while you pose the rest. IK is OpenToonz's
+  damped least squares: the whole chain moves smoothly, and pinned joints hold.
+
+### Particles
+
+- **Particle Emitter** tool (next to Assistants): click to place an emitter, drag
+  to aim it (the drag's length sets the speed). Properties sets the particle
+  (dot, square, star, a library symbol or bitmap), rate, life, speed, direction
+  and spread, gravity, drag, spin, scale and colour over life, fades, emission
+  area, pre-warm and a stop time. Particles start at the emitter's keyframe, scrub
+  exactly, and show in every export (video, GIF, SVG, HTML5, Lottie, sprite
+  sheets); `.fla` leaves them out with a warning.
 
 ### Sound
 

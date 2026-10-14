@@ -76,9 +76,12 @@ Status: ✅ in the demo · 🟡 partial · ⬜ planned
 - ✅ Trace Bitmap (colour threshold, minimum area, curve fit, corners → merge-shape fills; approach from OpenToonz), Centerline mode for line art (lines with the ink's thickness)
 - ✅ From OpenToonz: 13 more stroke styles (Rope, Chain, Plait, Herringbone, Fuzz, Tulle, Wave, Curl, Zigzag…) with parameters; deformation
   tools Magnet / Pinch / Pump / Bender / Iron; drawing assistants (line, vanishing point, ellipse guides; mirror, star, grid symmetry);
-  Raster Brush with 25 MyPaint brushes (hokusai engine, crates.io) painting frame by frame into bitmaps
-- ⬜ Toolbar gaps: Pattern brushes, pressure/tilt, Asset Warp on symbols/bitmaps, layer depth
-- ✅ Groups, bitmaps (PNG/JPG/GIF/BMP, animated GIF, sequences), SVG import, system fonts with styles and weights (simulated when missing)
+  Raster Brush with 25 MyPaint brushes (hokusai engine, crates.io) painting frame by frame into bitmaps;
+  perspective / fisheye guides, affine and jitter replicators
+- ✅ Asset Warp on bitmaps, symbols and groups (pins deform a triangle grid; every export but .fla)
+- ✅ Particle emitters (Particle tool; dots / squares / stars / symbols / bitmaps; per-frame closed form, all exports)
+- ⬜ Toolbar gaps: Pattern brushes, pressure/tilt, layer depth
+- ✅ Groups, bitmaps (PNG/JPG/GIF/BMP/TGA/TIFF/WebP/EXR, animated GIF, sequences), SVG import, system fonts with styles and weights (simulated when missing)
 - ⬜ Dynamic/input text
 
 **Timeline**
@@ -117,9 +120,10 @@ Status: ✅ in the demo · 🟡 partial · ⬜ planned
 - ✅ 3D/tint/filter properties in motion tweens, Motion Editor Bezier handles + copy/paste
   curves, classic per-property eases, Sync, Snap; Play Reverse Once / Loop Reverse
 - ✅ Motion Editor keyframe types from OpenToonz (Constant, Linear, Ease In/Out, Exponential, Expression, Similar Shape) and its expression language
-- ✅ Joint constraints: rotation on/off and min/max limits (object bones and shape bones)
-- ⬜ Tween presets, rig mapping, bone springiness, pinned joints, armature layers
-- ✅ Bones (FK at evaluation, CCD inverse kinematics), Asset Warp pins, 3D
+- ✅ Joint constraints: rotation on/off and min/max limits, pinned joints (object bones and shape bones)
+- ✅ IK by damped least squares (after OpenToonz's ikjacobian), several effectors at once (drag + pins)
+- ⬜ Tween presets, rig mapping, bone springiness, armature layers
+- ✅ Bones (FK at evaluation, inverse kinematics), Asset Warp pins, 3D
   properties and gradients all tween with Classic tweens
 
 **Output**
@@ -134,7 +138,7 @@ Status: ✅ in the demo · 🟡 partial · ⬜ planned
 - ✅ `.fla` (CS5+, zipped XFL) and XFL folders: read + write (`ac-xfl`), round-trip tested on a
   hand-written fixture; unsupported parts are reported, never silently dropped
 - 🟡 needs a corpus of real .fla files; motion-object tweens import static
-- ✅ PSD import (one bitmap layer per Photoshop layer), XDTS timing-sheet export
+- ✅ PSD import (one bitmap layer per Photoshop layer), XDTS timing-sheet export and import
 - ⬜ legacy binary FLA (pre-CS5 compound file) read-only, AI import
 
 **Sound**
@@ -161,7 +165,8 @@ crates/
   ac-core    model, timeline evaluation, tweens (motion.rs), merge drawing (merge.rs), shape armatures (rig.rs), sounds (sound.rs), editor commands,
              Trace Bitmap (trace.rs, centerline.rs), XDTS (xdts.rs), retained tween curves from Flare (tween_edit.rs),
              OpenToonz ports: stroke styles (strokes.rs), deformation tools (sculpt.rs), assistants (assist.rs),
-             expressions (expr.rs), MyPaint raster painting (paint.rs, hokusai)   (no UI, wasm-portable)
+             expressions (expr.rs), MyPaint raster painting (paint.rs, hokusai), DLS IK (ik.rs),
+             particle emitters (particles.rs), image decoders (codecs.rs, feature `codecs`)   (no UI, wasm-portable)
   ac-render  tiny-skia rasteriser shared by stage + exports (filters, blend modes, masks);
              SVG, GIF, PNG, PNG sequence, video via ffmpeg (with sound); HTML5 Canvas (html5.rs +
              html5_runtime.js), sprite sheets / Lottie (formats.rs), animated SVG; system fonts;
