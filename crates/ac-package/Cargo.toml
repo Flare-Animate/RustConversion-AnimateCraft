@@ -1,6 +1,6 @@
 [package]
 name = "ac-package"
-description = "AnimationCraft native document package (.acx): a ZIP of JSON parts and media files"
+description = "Flare native document package (.acx): a ZIP of JSON parts and media files"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

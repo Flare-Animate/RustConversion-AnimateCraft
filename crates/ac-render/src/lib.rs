@@ -365,7 +365,7 @@ pub fn export_video(doc: &Document, o: &ExportOpts, path: &std::path::Path, ffmp
     let wav = if ac_audio::has_sound(doc) && ext != "gif" {
         let samples = ac_audio::mix(doc, *frames.start(), 48000);
         let n = ((frames.end() - frames.start() + 1) as f64 / doc.fps.max(1.0) as f64 * 48000.0) as usize * 2;
-        let p = std::env::temp_dir().join(format!("animationcraft-audio-{}.wav", std::process::id()));
+        let p = std::env::temp_dir().join(format!("flare-audio-{}.wav", std::process::id()));
         std::fs::write(&p, ac_audio::wav(&samples[..n.min(samples.len())], 48000)).map_err(|e| e.to_string())?;
         Some(p)
     } else {

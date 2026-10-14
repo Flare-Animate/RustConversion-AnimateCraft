@@ -1,4 +1,4 @@
-//! AnimationCraft core: document model, timeline evaluation, tweens, editing
+//! Flare core: document model, timeline evaluation, tweens, editing
 //! commands. No UI or rendering dependencies (portable to wasm).
 
 pub mod assist;

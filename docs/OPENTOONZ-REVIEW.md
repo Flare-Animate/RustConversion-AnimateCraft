@@ -1,5 +1,9 @@
 # What Flare takes from OpenToonz, and what AnimationCraft can use
 
+> **Note (2026-10-14):** written when this code base was still called AnimationCraft. It has since
+> become the base of Flare's Rust conversion and is named Flare; "AnimationCraft" below means this
+> repository, "Flare" the C++ Flare app.
+
 Review of `Flare-Animate/Flare` at commit `0368b5b` (Oct 2026). Flare is a fork
 of OpenToonz (BSD-3-Clause, © DWANGO and contributors) with an Animate-style
 workspace, Flash-family importers and a native Rust "Studio" built on

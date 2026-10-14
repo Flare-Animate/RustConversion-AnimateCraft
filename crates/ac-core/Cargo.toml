@@ -1,6 +1,6 @@
 [package]
 name = "ac-core"
-description = "AnimationCraft document model: timeline, layers, keyframes, symbols, tweens"
+description = "Flare document model: timeline, layers, keyframes, symbols, tweens"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

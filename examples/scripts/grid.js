@@ -1,4 +1,4 @@
-// JavaScript example (runs inside AnimationCraft, no install needed).
+// JavaScript example (runs inside Flare, no install needed).
 // Commands > Run Script... and pick this file.
 ac.layer.add({ name: "Grid" });
 for (let y = 0; y < 4; y++) {

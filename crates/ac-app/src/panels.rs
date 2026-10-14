@@ -1017,7 +1017,7 @@ fn lip_sync_section(app: &mut App, ui: &mut egui::Ui, symbol: ac_core::SymbolId)
         });
         let note = match &rhubarb {
             Some(p) => format!("found: {}", p.display()),
-            None => "not installed — using the built-in analysis (put rhubarb on PATH or next to AnimationCraft, or set AC_RHUBARB)".into(),
+            None => "not installed — using the built-in analysis (put rhubarb on PATH or next to Flare, or set AC_RHUBARB)".into(),
         };
         ui.add(egui::Label::new(RichText::new(note).small().color(Color32::from_gray(140))).wrap());
     });

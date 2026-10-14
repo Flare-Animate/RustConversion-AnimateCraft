@@ -1,6 +1,6 @@
-# Scripting AnimationCraft
+# Scripting Flare
 
-AnimationCraft has two kinds of script. They look similar but have very
+Flare has two kinds of script. They look similar but have very
 different jobs and safety rules, so they are kept apart on purpose.
 
 | | Frame scripts | Authoring scripts |
@@ -73,7 +73,7 @@ ac.export.gif({ path: "out.gif" });
 
 ```python
 # Python — uses the Python installed on your computer
-import animationcraft as ac
+import flare as ac
 ac.layer.add(name="Stars")
 ac.draw.polystar(cx=100, cy=100, r=30, star=True, fill="#FFC41F")
 info = ac.doc.info()
@@ -82,14 +82,14 @@ print(info["frames"], "frames")
 
 ```js
 // Node.js (.mjs)
-import ac from "./animationcraft.mjs";
+import ac from "./flare.mjs";
 ac.draw.rect({ x: 10, y: 10, w: 80, h: 40, radius: 8 });
 ```
 
 ```ruby
 # Ruby
-require "animationcraft"
-AnimationCraft.call("draw.text", x: 20, y: 20, text: "Hello", size: 32)
+require "flare"
+Flare.call("draw.text", x: 20, y: 20, text: "Hello", size: 32)
 ```
 
 Run a file from the console's **Script file** box, or headless:
@@ -148,7 +148,7 @@ ac.draw.text({ x: 40, y: 40, text: "Hi", font: "DejaVu Serif" }); // any install
 
 ```js
 ac.selection.add_filter({ type: "motion_blur", shutter: 180, samples: 12 }); // blur along the real movement
-// any EffectCraft effect by id (`animationcraft-cli effects blur` lists them with their parameters);
+// any EffectCraft effect by id (`flare-cli effects blur` lists them with their parameters);
 // numbers, booleans, [x, y] points (fractions of the object's bounds) and "#RRGGBBAA" colours
 ac.selection.add_filter({ type: "effect", id: "ec.blur.radial", params: { amount: 30, type: 1, center: [0.5, 0.5] } });
 ac.select.all();
@@ -329,18 +329,18 @@ From the CLI, every document argument can be an `.acx.json`, `.fla`, `.xfl`
 or XFL folder, and `--save` writes whichever extension you give:
 
 ```sh
-animationcraft-cli run build.js --doc old.fla --save new.fla
-animationcraft-cli html5 movie.fla site/            # or site.html for one file
-animationcraft-cli sprites movie.fla walk.png 0.5 --format starling
-animationcraft-cli lottie movie.fla movie.json
-animationcraft-cli svg-anim movie.fla movie.svg
-animationcraft-cli convert movie.acx.json movie.fla
-animationcraft-cli png movie.fla 1 poster.jpg 2 --quality 85   # .png / .jpg / .gif (--colors N, --transparent)
+flare-cli run build.js --doc old.fla --save new.fla
+flare-cli html5 movie.fla site/            # or site.html for one file
+flare-cli sprites movie.fla walk.png 0.5 --format starling
+flare-cli lottie movie.fla movie.json
+flare-cli svg-anim movie.fla movie.svg
+flare-cli convert movie.acx.json movie.fla
+flare-cli png movie.fla 1 poster.jpg 2 --quality 85   # .png / .jpg / .gif (--colors N, --transparent)
 ```
 
 ### JSFL scripts
 
-`.jsfl` files (Script Console language "JSFL", or `animationcraft-cli run
+`.jsfl` files (Script Console language "JSFL", or `flare-cli run
 script.jsfl`) run through a compatibility layer over the same commands. Layers
 and frames are 0-based, as in JSFL:
 
@@ -368,7 +368,7 @@ reverse, frame and layer properties), Layer/Frame/Element objects with live
 properties, copy/cut/paste frames, `FLfile` (exists, read, write, append,
 createFolder, listFolder; no remove), and the Library (items, add to document,
 rename, delete, edit, new symbol). JSFL asks before running, like external
-languages, because it can write files. Anything else throws "JSFL: … is not supported by AnimationCraft yet".
+languages, because it can write files. Anything else throws "JSFL: … is not supported by Flare yet".
 
 ### Any other language
 

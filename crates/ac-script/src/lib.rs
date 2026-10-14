@@ -1,4 +1,4 @@
-//! AnimationCraft scripting.
+//! Flare scripting.
 //!
 //! Two kinds of script, deliberately kept apart:
 //!
@@ -35,11 +35,11 @@ pub const MAX_LINE: usize = 1 << 20;
 pub const MAX_COMMANDS: usize = 200_000;
 
 pub const PROTOCOL: &str = "\
-AnimationCraft script protocol (any language)
+Flare script protocol (any language)
 -------------------------------------------
 The script is started with its folder as the working directory and these
 environment variables: ANIMATECRAFT=1, ANIMATECRAFT_HELPERS=<folder with
-animationcraft.py / animationcraft.js / animationcraft.rb>.
+flare.py / flare.js / flare.rb>.
 
 To call a command, write ONE line to stdout and flush:
     \\x1eAC {\"id\": 1, \"cmd\": \"draw.rect\", \"args\": {\"x\": 10, \"y\": 10, \"w\": 50, \"h\": 50}}
@@ -128,9 +128,9 @@ impl Language {
         match self {
             Language::Js => "// Draw a row of stars on a new layer, then tween them.\nac.layer.add({ name: \"Stars\" });\nfor (let i = 0; i < 5; i++) {\n  ac.draw.polystar({ cx: 60 + i * 100, cy: 200, r: 30, star: true, fill: \"#FFC41F\" });\n}\nac.timeline.insert_keyframe({ layer: \"Stars\", frame: 24 });\nconst n = ac.select.layer({ layer: \"Stars\" });\nac.selection.rotate({ degrees: 72 });\nac.timeline.set_tween({ kind: \"classic\", layer: \"Stars\", frame: 1 });\nprint(\"Stars:\", n);\n",
             Language::Jsfl => "// JSFL: scripts written for the authoring tool's JavaScript API.\nvar doc = fl.getDocumentDOM();\nvar tl = doc.getTimeline();\ntl.addNewLayer(\"Boxes\");\ndoc.setFillColor(\"#33AAFF\");\nfor (var i = 0; i < 4; i++) {\n  doc.addNewRectangle({ left: 40 + i * 90, top: 60, right: 110 + i * 90, bottom: 130 }, 8);\n}\ndoc.selectAll();\ndoc.convertToSymbol(\"movie clip\", \"Box Row\", \"center\");\ntl.insertKeyframe(23);\nfl.trace(\"layers: \" + tl.layerCount);\n",
-            Language::Python => "import animationcraft as ac\n\n# Draw a row of stars on a new layer, then tween them.\nac.layer.add(name=\"Stars\")\nfor i in range(5):\n    ac.draw.polystar(cx=60 + i * 100, cy=200, r=30, star=True, fill=\"#FFC41F\")\nac.timeline.insert_keyframe(layer=\"Stars\", frame=24)\nn = ac.select.layer(layer=\"Stars\")\nac.selection.rotate(degrees=72)\nac.timeline.set_tween(kind=\"classic\", layer=\"Stars\", frame=1)\nprint(\"Stars:\", n)\n",
-            Language::Node => "import ac from \"./animationcraft.mjs\";\n\nac.layer.add({ name: \"Stars\" });\nfor (let i = 0; i < 5; i++) {\n  ac.draw.polystar({ cx: 60 + i * 100, cy: 200, r: 30, star: true, fill: \"#FFC41F\" });\n}\nconsole.log(\"Layers:\", ac.layer.list().length);\n",
-            Language::Ruby => "require \"animationcraft\"\n\nac = AnimationCraft\nac.call(\"layer.add\", name: \"Stars\")\n5.times do |i|\n  ac.call(\"draw.polystar\", cx: 60 + i * 100, cy: 200, r: 30, star: true, fill: \"#FFC41F\")\nend\nputs \"Layers: #{ac.call('layer.list').length}\"\n",
+            Language::Python => "import flare as ac\n\n# Draw a row of stars on a new layer, then tween them.\nac.layer.add(name=\"Stars\")\nfor i in range(5):\n    ac.draw.polystar(cx=60 + i * 100, cy=200, r=30, star=True, fill=\"#FFC41F\")\nac.timeline.insert_keyframe(layer=\"Stars\", frame=24)\nn = ac.select.layer(layer=\"Stars\")\nac.selection.rotate(degrees=72)\nac.timeline.set_tween(kind=\"classic\", layer=\"Stars\", frame=1)\nprint(\"Stars:\", n)\n",
+            Language::Node => "import ac from \"./flare.mjs\";\n\nac.layer.add({ name: \"Stars\" });\nfor (let i = 0; i < 5; i++) {\n  ac.draw.polystar({ cx: 60 + i * 100, cy: 200, r: 30, star: true, fill: \"#FFC41F\" });\n}\nconsole.log(\"Layers:\", ac.layer.list().length);\n",
+            Language::Ruby => "require \"flare\"\n\nac = Flare\nac.call(\"layer.add\", name: \"Stars\")\n5.times do |i|\n  ac.call(\"draw.polystar\", cx: 60 + i * 100, cy: 200, r: 30, star: true, fill: \"#FFC41F\")\nend\nputs \"Layers: #{ac.call('layer.list').length}\"\n",
         }
     }
 }
@@ -354,9 +354,9 @@ fn finish(ed: &mut Editor, mark: usize, label: &str) {
 
 // ------------------------------------------------------------------ authoring: external processes
 
-const PY_HELPER: &str = r##""""AnimationCraft scripting helper for Python.
+const PY_HELPER: &str = r##""""Flare scripting helper for Python.
 
-    import animationcraft as ac
+    import flare as ac
     ac.draw.rect(x=10, y=10, w=100, h=50, fill="#FF0000")
     info = ac.doc.info()
 
@@ -374,7 +374,7 @@ except Exception:
     pass
 
 
-class AnimationCraftError(RuntimeError):
+class FlareError(RuntimeError):
     pass
 
 
@@ -386,10 +386,10 @@ def call(cmd, args=None, **kw):
     _sys.stdout.flush()
     line = _sys.stdin.readline()
     if not line:
-        raise AnimationCraftError("AnimationCraft closed the connection")
+        raise FlareError("Flare closed the connection")
     reply = _json.loads(line)
     if "error" in reply:
-        raise AnimationCraftError(cmd + ": " + reply["error"])
+        raise FlareError(cmd + ": " + reply["error"])
     return reply.get("result")
 
 
@@ -412,8 +412,8 @@ def __getattr__(name):  # module-level: ac.draw, ac.layer, ...
     return _Group(name)
 "##;
 
-const NODE_HELPER: &str = r##"// AnimationCraft scripting helper for Node.js (ES module).
-//   import ac from "./animationcraft.mjs";   // copied next to your script while it runs
+const NODE_HELPER: &str = r##"// Flare scripting helper for Node.js (ES module).
+//   import ac from "./flare.mjs";   // copied next to your script while it runs
 //   ac.draw.rect({ x: 10, y: 10, w: 100, h: 50 });
 import fs from "node:fs";
 const MARK = "\x1eAC ";
@@ -426,7 +426,7 @@ function readLine() {
     let read = 0;
     try { read = fs.readSync(0, buf, 0, buf.length, null); }
     catch (e) { if (e.code === "EAGAIN") continue; throw e; }
-    if (read === 0) throw new Error("AnimationCraft closed the connection");
+    if (read === 0) throw new Error("Flare closed the connection");
     pending += buf.toString("utf8", 0, read);
   }
 }
@@ -445,18 +445,18 @@ const ac = new Proxy({ call }, { get: (t, k) => (k in t ? t[k] : group(String(k)
 export default ac;
 "##;
 
-const RUBY_HELPER: &str = r##"# AnimationCraft scripting helper for Ruby.
-#   require "animationcraft"
-#   AnimationCraft.call("draw.rect", x: 10, y: 10, w: 100, h: 50)
+const RUBY_HELPER: &str = r##"# Flare scripting helper for Ruby.
+#   require "flare"
+#   Flare.call("draw.rect", x: 10, y: 10, w: 100, h: 50)
 require "json"
 $stdout.sync = true
-module AnimationCraft
+module Flare
   MARK = "\x1eAC "
   @n = 0
   def self.call(cmd, args = {})
     @n += 1
     $stdout.write(MARK + JSON.generate({ id: @n, cmd: cmd, args: args }) + "\n")
-    line = $stdin.gets or raise "AnimationCraft closed the connection"
+    line = $stdin.gets or raise "Flare closed the connection"
     reply = JSON.parse(line)
     raise "#{cmd}: #{reply['error']}" if reply.key?("error")
     reply["result"]
@@ -464,11 +464,16 @@ module AnimationCraft
 end
 "##;
 
+const PY_LEGACY: &str = "# Old name of the Flare helper (the app was called AnimationCraft).\nimport sys as _sys\nimport flare as _flare\n_flare.AnimationCraftError = _flare.FlareError\n_sys.modules[__name__] = _flare\n";
+const NODE_LEGACY: &str = "// Old name of the Flare helper (the app was called AnimationCraft).\nexport { default } from \"./flare.mjs\";\nexport * from \"./flare.mjs\";\n";
+const RUBY_LEGACY: &str = "# Old name of the Flare helper (the app was called AnimationCraft).\nrequire_relative \"flare\"\nAnimationCraft = Flare\n";
+
 /// Write the language helpers into a folder and return it.
 pub fn helper_dir() -> std::io::Result<PathBuf> {
-    let dir = std::env::temp_dir().join(format!("animationcraft-helpers-{}", env!("CARGO_PKG_VERSION")));
+    let dir = std::env::temp_dir().join(format!("flare-helpers-{}", env!("CARGO_PKG_VERSION")));
     std::fs::create_dir_all(&dir)?;
-    for (name, body) in [("animationcraft.py", PY_HELPER), ("animationcraft.mjs", NODE_HELPER), ("animationcraft.rb", RUBY_HELPER)] {
+    // the old module names (from when the app was called AnimationCraft) still work
+    for (name, body) in [("flare.py", PY_HELPER), ("flare.mjs", NODE_HELPER), ("flare.rb", RUBY_HELPER), ("animationcraft.py", PY_LEGACY), ("animationcraft.mjs", NODE_LEGACY), ("animationcraft.rb", RUBY_LEGACY)] {
         let p = dir.join(name);
         if std::fs::read_to_string(&p).map(|s| s != body).unwrap_or(true) {
             std::fs::write(&p, body)?;
@@ -547,7 +552,10 @@ fn run_external_in(ed: &mut Editor, script: &Path, candidates: &[Vec<String>], o
     // Node resolves relative imports from the script, so put the helper beside it too.
     if script.extension().map(|e| e == "mjs").unwrap_or(false) {
         if let Some(dir) = script.parent() {
-            let _ = std::fs::write(dir.join("animationcraft.mjs"), NODE_HELPER);
+            let _ = std::fs::write(dir.join("flare.mjs"), NODE_HELPER);
+            if std::fs::read_to_string(script).is_ok_and(|t| t.contains("animationcraft.mjs")) {
+                let _ = std::fs::write(dir.join("animationcraft.mjs"), NODE_LEGACY);
+            }
         }
     }
     let script_abs = std::fs::canonicalize(script).unwrap_or_else(|_| script.to_path_buf());

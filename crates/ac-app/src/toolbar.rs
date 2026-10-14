@@ -485,7 +485,73 @@ fn color_controls(app: &mut App, ui: &mut egui::Ui) {
     });
 }
 
+/// Flare's own tool icons (`assets/flare-icons/tools`, from the Flare repo,
+/// OpenToonz lineage, BSD-3-Clause) where Flare has one for the tool; the rest
+/// keep the drawn icons below.
+fn flare_icon_svg(t: Tool) -> Option<(&'static str, &'static str)> {
+    macro_rules! svg {
+        ($n:literal) => {
+            Some(($n, include_str!(concat!("../../../assets/flare-icons/tools/", $n, ".svg"))))
+        };
+    }
+    match t {
+        Tool::Select => svg!("selection"),
+        Tool::Subselect => svg!("controlpointeditor"),
+        Tool::FreeTransform => svg!("animate"),
+        Tool::Text => svg!("type"),
+        Tool::Brush => svg!("brush"),
+        Tool::RasterBrush => svg!("paintbrush"),
+        Tool::Bone => svg!("skeleton"),
+        Tool::Bind => svg!("hook"),
+        Tool::Bucket => svg!("fill"),
+        Tool::Eyedropper => svg!("rgbpicker"),
+        Tool::Eraser => svg!("eraser"),
+        Tool::AssetWarp => svg!("plastic"),
+        Tool::Magnet => svg!("magnet"),
+        Tool::Pinch => svg!("pinch"),
+        Tool::Pump => svg!("pump"),
+        Tool::Bender => svg!("bender"),
+        Tool::Iron => svg!("iron"),
+        Tool::Assistant => svg!("assistant"),
+        Tool::Hand => svg!("hand"),
+        Tool::RotateView => svg!("rotate"),
+        Tool::Zoom => svg!("zoom"),
+        _ => None,
+    }
+}
+
+/// The icon as a white alpha mask texture (rendered once, tinted when drawn).
+fn flare_icon_texture(ctx: &egui::Context, t: Tool) -> Option<egui::TextureHandle> {
+    use std::cell::RefCell;
+    use std::collections::HashMap;
+    thread_local! {
+        static CACHE: RefCell<HashMap<Tool, Option<egui::TextureHandle>>> = RefCell::new(HashMap::new());
+    }
+    CACHE.with(|c| {
+        c.borrow_mut()
+            .entry(t)
+            .or_insert_with(|| {
+                let (name, svg) = flare_icon_svg(t)?;
+                let tree = usvg::Tree::from_str(svg, &usvg::Options::default()).ok()?;
+                const PX: u32 = 60; // 3× a 20 px icon: sharp on HiDPI too
+                let mut pm = tiny_skia::Pixmap::new(PX, PX)?;
+                let sz = tree.size();
+                let k = PX as f32 / sz.width().max(sz.height()).max(1.0);
+                resvg::render(&tree, tiny_skia::Transform::from_scale(k, k), &mut pm.as_mut());
+                let px: Vec<Color32> = pm.pixels().iter().map(|p| Color32::from_rgba_unmultiplied(255, 255, 255, p.alpha())).collect();
+                let img = egui::ColorImage { size: [PX as usize, PX as usize], pixels: px };
+                Some(ctx.load_texture(format!("flare-tool-{name}"), img, egui::TextureOptions::LINEAR))
+            })
+            .clone()
+    })
+}
+
 pub fn draw_icon(p: &egui::Painter, r: Rect, t: Tool, col: Color32) {
+    if let Some(tex) = flare_icon_texture(p.ctx(), t) {
+        let side = r.width().min(r.height()).min(24.0) * 0.86;
+        p.image(tex.id(), Rect::from_center_size(r.center(), vec2(side, side)), Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)), col);
+        return;
+    }
     let c = r.center();
     let s = Stroke::new(1.6_f32, col);
     let thin = Stroke::new(1.0_f32, col);

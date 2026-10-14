@@ -1,6 +1,6 @@
-# Contributing to AnimationCraft
+# Contributing to Flare
 
-Thanks for helping. AnimationCraft is an independent, open-source animation
+Thanks for helping. Flare is an independent, open-source animation
 tool that offers a workflow familiar to users of Adobe Animate (formerly Flash
 Professional) and can exchange files with it. To keep the project safe to use,
 fork and ship, **every contribution must be clean-room**. Please read this
@@ -11,7 +11,7 @@ before you write the code.*
 
 ## 1. Clean-room rules
 
-AnimationCraft is written from **public information and observed behaviour**,
+Flare is written from **public information and observed behaviour**,
 never from Adobe's code or the inside of Adobe's programs.
 
 ### Allowed sources
@@ -59,7 +59,7 @@ namespace `http://ns.adobe.com/xfl/2008/`, and the package mimetype
 `application/vnd.adobe.xfl`. They appear **only** in the XFL import/export
 code (`crates/ac-xfl`), its hand-written test fixture and the `.fla`/XFL files
 it writes, and only so other tools recognise those files. Don't use them
-anywhere else, and never in AnimationCraft's own `.acx` format.
+anywhere else, and never in Flare's own `.acx` format.
 
 ## 2. Names and trademarks
 
@@ -70,12 +70,15 @@ anywhere else, and never in AnimationCraft's own `.acx` format.
   that could suggest endorsement. Keep the "Not affiliated with Adobe" note in
   the About box and README.
 - Don't imitate Adobe's visual branding (colours, icon style, logo shapes).
-- The working name "AnimationCraft" follows the ArtCraft family naming; see
-  `CLAUDE.md` before any public release.
+- The product is **Flare** (the Rust conversion of Flare-Animate/flare; the
+  code base was called AnimationCraft before October 2026). Use Flare's own
+  artwork (`assets/icon`, `assets/flare-icons`); never icons or artwork taken
+  from Adobe software. Material that Flare derived from studying Adobe binaries
+  (its Ghidra-based theme study) is not imported here.
 
 ## 3. Test files and media
 
-- Test documents must be **made by you or by AnimationCraft**, or shared by
+- Test documents must be **made by you or by Flare**, or shared by
   their author with explicit permission (say so in the pull request and keep
   a note next to the file). Hand-written XFL fixtures live in
   `crates/ac-xfl/tests/fixtures/` with a comment saying they are hand-written.

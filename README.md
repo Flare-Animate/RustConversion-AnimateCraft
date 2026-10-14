@@ -1,19 +1,28 @@
-# AnimationCraft (demo)
+# Flare (Rust)
 
-Open-source 2D animation authoring in Rust, following the Adobe Animate workflow:
-symbols, layers, keyframes, classic, shape and motion tweens with a Motion Editor,
-onion skin, scenes, and a familiar
-Tools / Stage / Timeline / Properties / Library workspace.
+<img src="assets/icon/flare.png" width="96" align="right" alt="Flare icon">
+
+**Flare**, rewritten in Rust: open-source 2D animation authoring that follows
+the Flash / Adobe Animate workflow — symbols, layers, keyframes, classic, shape
+and motion tweens with a Motion Editor, onion skin, scenes, and a familiar
+Tools / Stage / Timeline / Properties / Library workspace — plus tools from
+OpenToonz (the C++ base of [Flare](https://github.com/Flare-Animate/flare)).
+
+This repository is the base of Flare's conversion to Rust. It grew out of
+**AnimationCraft** (the original Rust project, KMSDax/AnimationCraft), whose
+engine Flare's native Studio already runs on; Flare's features are being
+rebuilt here until it replaces the C++ application. Crates keep their `ac-`
+prefix and documents their `.acx` format for now.
 
 Not affiliated with Adobe.
 
 ## Install (Windows)
 
-Download `AnimationCraft-<version>-setup.exe` from the repository's Releases (or
+Download `Flare-<version>-setup.exe` from the repository's Releases (or
 the **Windows build** workflow run under Actions) and run it. It installs for
 your user only (no admin prompt), adds Start Menu and Desktop shortcuts, opens
-`.acx` files with AnimationCraft, and can be removed from *Apps & features*. A
-portable zip (`animationcraft.exe` + `animationcraft-cli.exe`) is published too.
+`.acx` files with Flare, and can be removed from *Apps & features*. A
+portable zip (`flare.exe` + `flare-cli.exe`) is published too.
 
 Build them yourself: on Windows, `cargo build --release -p ac-app -p ac-cli`
 then `makensis packaging/windows/installer.nsi`; from Linux,
@@ -130,7 +139,7 @@ tools. Options for the active tool are in Properties ▸ **Tool**.
   (and save, if you give that extension).
 - **File › Open / Save** use your system's file dialogs; **Open Recent**
   remembers 10 files. Unsaved work is **autosaved** every minute, and after a
-  crash AnimationCraft offers to restore it. Closing with unsaved changes asks
+  crash Flare offers to restore it. Closing with unsaved changes asks
   first. Drop images, SVGs or documents onto the window to import/open them.
 - **Import** (Ctrl+R): PNG, JPG, GIF, BMP (animated GIFs become frames),
   numbered **image sequences**, and **SVG** (editable shapes, gradients, text).
@@ -358,7 +367,7 @@ See `CLAUDE.md` for the full feature map, architecture and roadmap.
 
 ## Legal and provenance
 
-AnimationCraft is an independent project. It is **not affiliated with,
+Flare is an independent project. It is **not affiliated with,
 endorsed by or sponsored by Adobe**; "Adobe", "Animate" and "Flash" are
 trademarks of Adobe and are used here only to describe compatibility.
 

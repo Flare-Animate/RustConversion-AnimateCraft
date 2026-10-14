@@ -74,7 +74,7 @@ impl FileAction {
     fn filters(self) -> (&'static str, &'static [&'static str]) {
         match self {
             FileAction::Open => ("Documents (.acx, .acx.json, .fla, .xfl)", &["acx", "json", "fla", "xfl"]),
-            FileAction::Save => ("AnimationCraft document (.acx; .acx.json = plain JSON)", &["acx", "json"]),
+            FileAction::Save => ("Flare document (.acx; .acx.json = plain JSON)", &["acx", "json"]),
             FileAction::ExportXfl => ("Animation document (.fla, .xfl)", &["fla", "xfl"]),
             FileAction::ImportSound => ("Sounds", &["wav", "mp3", "ogg", "oga", "flac", "aif", "aiff"]),
             FileAction::ExportHtml5 => ("Folder or .html", &[]),
@@ -97,7 +97,7 @@ impl FileAction {
     }
 }
 
-/// AnimationCraft packages (.acx).
+/// Flare packages (.acx).
 pub(crate) fn is_package(p: &Path) -> bool {
     p.extension().is_some_and(|e| e.eq_ignore_ascii_case(ac_package::EXTENSION))
 }
@@ -118,7 +118,7 @@ fn native_dialogs() -> bool {
     std::env::var_os("AC_NO_NATIVE_DIALOGS").is_none()
 }
 
-/// Persistent app settings (config dir / AnimationCraft / settings.json).
+/// Persistent app settings (config dir / Flare / settings.json).
 #[derive(Serialize, Deserialize, Default, Clone)]
 pub(crate) struct Settings {
     #[serde(default)]
@@ -137,7 +137,17 @@ pub(crate) struct Settings {
 }
 
 fn app_dir(base: Option<PathBuf>) -> Option<PathBuf> {
-    let d = base?.join("AnimationCraft");
+    let base = base?;
+    let d = base.join("Flare");
+    // first run after the rename: bring settings, recent files and recovery over
+    let old = base.join("AnimationCraft");
+    if !d.exists() && old.is_dir() && std::fs::create_dir_all(&d).is_ok() {
+        if let Ok(rd) = std::fs::read_dir(&old) {
+            for f in rd.flatten().filter(|f| f.path().is_file()) {
+                let _ = std::fs::copy(f.path(), d.join(f.file_name()));
+            }
+        }
+    }
     std::fs::create_dir_all(&d).ok()?;
     Some(d)
 }
@@ -316,7 +326,7 @@ impl App {
                 })
             }
             FileAction::Open => std::fs::read_to_string(p).map_err(|e| e.to_string()).and_then(|s| {
-                Document::from_json(&s).map_err(|e| format!("not an AnimationCraft document ({e})")).map(|d| {
+                Document::from_json(&s).map_err(|e| format!("not a Flare document ({e})")).map(|d| {
                     self.load_doc(d, Some(path.into()));
                     self.settings.add_recent(path);
                     format!("Opened {path}")

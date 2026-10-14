@@ -1,4 +1,4 @@
-//! Audio for AnimationCraft: decode library sounds (WAV, MP3, OGG Vorbis,
+//! Audio for Flare: decode library sounds (WAV, MP3, OGG Vorbis,
 //! FLAC via Symphonia), mix the timeline's keyframe sounds the way Animate
 //! plays them (Event / Start / Stop / Stream, repeat or loop), draw
 //! waveforms, guess mouth shapes for Auto Lip-Sync, and (feature

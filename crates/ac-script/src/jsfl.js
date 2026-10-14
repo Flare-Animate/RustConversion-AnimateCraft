@@ -1,6 +1,6 @@
 // JSFL compatibility: the common part of the authoring tool's JavaScript API
 // (fl / Document / Timeline / Layer / Frame / Library / Element) mapped onto
-// AnimationCraft commands, so existing .jsfl scripts run here. Frames and
+// Flare commands, so existing .jsfl scripts run here. Frames and
 // layers are 0-based, as in JSFL. Unsupported calls throw a clear error.
 var fl = (function () {
   "use strict";
@@ -13,7 +13,7 @@ var fl = (function () {
     }
     return u;
   }
-  function unsupported(name) { return function () { throw new Error("JSFL: " + name + " is not supported by AnimationCraft yet"); }; }
+  function unsupported(name) { return function () { throw new Error("JSFL: " + name + " is not supported by Flare yet"); }; }
   function color(c) {
     if (c === null || c === undefined) return null;
     if (typeof c === "number") return "#" + ("000000" + c.toString(16)).slice(-6);
@@ -151,7 +151,7 @@ var fl = (function () {
     cutFrames: function (a, b) { ac.timeline.cut_frames({ frame: (a === undefined ? tl.currentFrame : a) + 1, to_frame: b === undefined ? undefined : b }); },
     pasteFrames: function (a) { ac.timeline.paste_frames({ frame: (a === undefined ? tl.currentFrame : a) + 1 }); },
     copyLayers: unsupported("Timeline.copyLayers"),
-    duplicateLayers: function () { throw new Error("JSFL: Timeline.duplicateLayers is not supported by AnimationCraft yet"); },
+    duplicateLayers: function () { throw new Error("JSFL: Timeline.duplicateLayers is not supported by Flare yet"); },
     expandFolder: function (expand, recurse, i) { if (i !== undefined) ac.layer.set({ layer: i + 1 }); },
   };
 
@@ -265,7 +265,7 @@ var fl = (function () {
   };
 
   var out = {
-    version: "AnimationCraft JSFL shim 1.0",
+    version: "Flare JSFL shim 1.0",
     get documents() { return [doc]; },
     getDocumentDOM: function () { return doc; },
     createDocument: function () { return doc; },
@@ -302,6 +302,6 @@ var FLfile = (function () {
     write: function (u, text, mode) { return attempt(function () { return ac.file.write({ path: p(u), text: String(text), append: mode === "append" }); }); },
     createFolder: function (u) { return attempt(function () { return ac.file.mkdir({ path: p(u) }); }); },
     listFolder: function (u, kind) { return attempt(function () { return ac.file.list({ path: p(u).replace(/\/\*.*$/, ""), kind: kind || "all" }); }) || []; },
-    remove: function () { throw new Error("JSFL: FLfile.remove is not supported (AnimationCraft scripts don't delete files)"); },
+    remove: function () { throw new Error("JSFL: FLfile.remove is not supported (Flare scripts don't delete files)"); },
   };
 })();

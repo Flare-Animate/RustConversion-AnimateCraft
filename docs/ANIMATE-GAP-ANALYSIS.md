@@ -1,6 +1,6 @@
-# AnimationCraft vs Adobe Animate: gap analysis
+# Flare vs Adobe Animate: gap analysis
 
-Snapshot of **AnimationCraft M0.3** (commit `f372248`, Oct 2026), statuses updated after **Phase 1** against **Adobe
+Snapshot of **M0.3** (commit `f372248`, Oct 2026, when this Rust code base was called AnimationCraft), statuses updated after **Phase 1** against **Adobe
 Animate 24.x**, the last feature release. Animate has been in maintenance mode
 since Feb 2026, so this feature set is a fixed target.
 
@@ -43,7 +43,7 @@ The two engine milestones that unlock most of the rest:
 
 ## 1. Workspace and panels
 
-| Feature | Animate | AnimationCraft | Status | Pri |
+| Feature | Animate | Flare | Status | Pri |
 |---|---|---|---|---|
 | Stage, pasteboard, zoom, pan | Yes | Yes | ✅ | |
 | Stage rotation (Rotation tool) | Yes | Yes | ✅ | |
@@ -81,7 +81,7 @@ The two engine milestones that unlock most of the rest:
 
 ## 2. Drawing model and shape engine
 
-| Feature | Animate | AnimationCraft | Status | Pri |
+| Feature | Animate | Flare | Status | Pri |
 |---|---|---|---|---|
 | Object Drawing mode (J) | Yes | Toggle (J), Tool properties | ✅ | |
 | **Merge Drawing** (default mode): overlapping shapes cut and merge; same-colour fills merge; strokes split fills | Yes | Yes (i_overlay booleans; curves flattened) | ✅ | |
@@ -107,7 +107,7 @@ The two engine milestones that unlock most of the rest:
 
 ## 3. Tools panel
 
-| Tool | Animate | AnimationCraft | Status | Pri |
+| Tool | Animate | Flare | Status | Pri |
 |---|---|---|---|---|
 | Selection (V) | Click, marquee, Shift add, Alt-drag copy, edge bending | Click, marquee, Shift add, IK drag, edge bending | 🟡 | Alt-drag copy P1 |
 | Subselection (A) | Anchors and handles | Same | ✅ | |
@@ -138,7 +138,7 @@ The two engine milestones that unlock most of the rest:
 
 ## 4. Timeline
 
-| Feature | Animate | AnimationCraft | Status | Pri |
+| Feature | Animate | Flare | Status | Pri |
 |---|---|---|---|---|
 | Layers: show/hide, lock, outline, colour, rename, reorder | Yes | Yes | ✅ | |
 | **Layer folders** (nest, collapse, folder show/lock) | Yes | Yes (drag into/out of folders, collapse, hide) | ✅ | |
@@ -164,7 +164,7 @@ The two engine milestones that unlock most of the rest:
 
 ## 5. Symbols and instances
 
-| Feature | Animate | AnimationCraft | Status | Pri |
+| Feature | Animate | Flare | Status | Pri |
 |---|---|---|---|---|
 | Graphic, Movie Clip, Button symbols; Convert (F8); New (Ctrl+F8) | Yes | Yes | ✅ | |
 | Graphic looping: Loop / Play Once / Single Frame / Play Reverse once / Loop Reverse | Yes | All five | ✅ | |
@@ -184,7 +184,7 @@ The two engine milestones that unlock most of the rest:
 
 ## 6. Animation
 
-| Feature | Animate | AnimationCraft | Status | Pri |
+| Feature | Animate | Flare | Status | Pri |
 |---|---|---|---|---|
 | Classic tween (scale, skew, rotate ±turns, colour, ease, Sync, Snap, Orient to path) | Yes | All of these | ✅ | |
 | Classic tween **custom ease** (Edit easing curve per property, presets) | Yes | Curve editor + 30 presets per span, or per property (position, rotation, scale, colour, filters) | ✅ | |
@@ -203,7 +203,7 @@ The two engine milestones that unlock most of the rest:
 
 ## 7. Text
 
-| Feature | Animate | AnimationCraft | Status | Pri |
+| Feature | Animate | Flare | Status | Pri |
 |---|---|---|---|---|
 | Static text, outlined at render | Yes | Yes (2 bundled fonts) | 🟡 | |
 | **System and web fonts**: font family/style picker, Typekit/Adobe Fonts | Yes | Installed fonts, searchable picker, styles/weights (simulated when missing) | 🟡 | P3 (web fonts) |
@@ -216,7 +216,7 @@ The two engine milestones that unlock most of the rest:
 
 ## 8. Media: images, audio, video
 
-| Feature | Animate | AnimationCraft | Status | Pri |
+| Feature | Animate | Flare | Status | Pri |
 |---|---|---|---|---|
 | Import bitmaps (PNG, JPG, GIF, BMP, TIFF) to stage / library | Yes | PNG, JPG, GIF, BMP, TGA, TIFF, WebP, OpenEXR (library + stage, smoothing) | ✅ | |
 | Bitmap properties (smoothing, compression, quality), Trace Bitmap | Yes | Smoothing; Trace Bitmap (threshold, minimum area, curve fit, corners) + Centerline mode (OpenToonz) | 🟡 | P2 (compression settings) |
@@ -228,7 +228,7 @@ The two engine milestones that unlock most of the rest:
 
 ## 9. Scripting
 
-| Feature | Animate | AnimationCraft | Status | Pri |
+| Feature | Animate | Flare | Status | Pri |
 |---|---|---|---|---|
 | ActionScript 3 (frame scripts, classes, Flash Player/AIR) | Yes | Not planned: dead runtime | — | P3 |
 | HTML5 Canvas frame scripts (JavaScript/CreateJS) | Yes | Sandboxed QuickJS in the editor; the same API in published pages, plus `addEventListener` click/mouseover/mouseout | 🟡 | P2 (rest of the CreateJS display API) |
@@ -241,7 +241,7 @@ The two engine milestones that unlock most of the rest:
 
 ## 10. Publish and export
 
-| Feature | Animate | AnimationCraft | Status | Pri |
+| Feature | Animate | Flare | Status | Pri |
 |---|---|---|---|---|
 | Publish Settings dialog (targets, per-target options, profiles) | Yes | Scale, frame range, transparency, GIF loop/quality, PNG prefix, ffmpeg | 🟡 | P2 (profiles) |
 | **HTML5 Canvas** publish (JS + HTML, CreateJS runtime, sprite sheets for bitmaps) | Yes | Own runtime: per-frame display lists over shared tables (exact match with the stage), masks, gradients, bitmaps, filters/blend via canvas filters, frame scripts, buttons with Over/Down/Hit, sounds (Web Audio); folder or one self-contained .html | ✅ | (movie clips follow the main clock, as on our stage) |
@@ -259,7 +259,7 @@ The two engine milestones that unlock most of the rest:
 
 ## 11. Files and interchange
 
-| Feature | Animate | AnimationCraft | Status | Pri |
+| Feature | Animate | Flare | Status | Pri |
 |---|---|---|---|---|
 | **.fla read** (ZIP of XFL: `DOMDocument.xml`, `LIBRARY/*.xml`, `bin/*.dat` bitmaps, media) | Yes | `ac-xfl`: scenes, layers, frames (classic/shape tweens, custom and per-property eases, label types, scripts, sounds), motion-object tweens (experimental), raw shapes, drawing objects, primitives, instances, groups, static text (faces → weight/italic), bitmaps, sounds, all filters; warnings for the rest | 🟡 | P1 (real-file corpus) |
 | **.fla / XFL write** | Yes | Zipped .fla and XFL folders; shared edges; round-trip tested; motion tweens baked frame by frame | 🟡 | P2 (motion objects) |
@@ -272,7 +272,7 @@ The two engine milestones that unlock most of the rest:
 
 ## 12. Accessibility, collaboration, misc
 
-| Feature | Animate | AnimationCraft | Status | Pri |
+| Feature | Animate | Flare | Status | Pri |
 |---|---|---|---|---|
 | Accessibility panel (names/descriptions for screen readers) | Yes | — | ❌ | P3 |
 | Co-authoring, Sync settings, CC Libraries | Yes | — | ❌ | P3 |

@@ -3,8 +3,8 @@
 #   apt install gcc-mingw-w64-x86-64 nsis
 #   rustup target add x86_64-pc-windows-gnu      (or, offline: put the std source
 #   in rustlib/src/rust/library and this script builds std itself)
-# Output: target/x86_64-pc-windows-gnu/release/{animationcraft,animationcraft-cli}.exe
-#         and AnimationCraft-<version>-setup.exe next to them.
+# Output: target/x86_64-pc-windows-gnu/release/{flare,flare-cli}.exe
+#         and Flare-<version>-setup.exe next to them.
 set -e
 cd "$(dirname "$0")/.."
 T=x86_64-pc-windows-gnu

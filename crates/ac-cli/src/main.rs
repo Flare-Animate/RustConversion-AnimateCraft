@@ -1,22 +1,22 @@
-//! animationcraft-cli — headless access to the same engine the editor uses.
+//! flare-cli — headless access to the same engine the editor uses.
 //!
-//!   animationcraft-cli info   <doc.acx.json | demo>
-//!   animationcraft-cli gif    <doc | demo> <out.gif> [scale]
-//!   animationcraft-cli png    <doc | demo> <frame> <out.png|.jpg|.gif> [scale] [--quality N] [--colors N] [--transparent]
-//!   animationcraft-cli svg    <doc | demo> <frame> <out.svg>
-//!   animationcraft-cli png-seq <doc | demo> <out-dir> [scale]
-//!   animationcraft-cli video  <doc | demo> <out.mp4|.webm|.mov> [scale]   (needs ffmpeg)
-//!   animationcraft-cli xfl    <doc | demo> <out.fla | out.xfl>   (export; any <doc> may also be a .fla / .xfl / XFL folder)
-//!   animationcraft-cli html5  <doc | demo> <out-dir | out.html> [--no-loop]   (HTML5 Canvas; .html = one self-contained file)
-//!   animationcraft-cli sprites <doc | demo> <out(.png)> [scale] [--format hash|array|starling]   (sprite sheet + atlas)
-//!   animationcraft-cli svg-anim <doc | demo> <out.svg>   (animated SVG, SMIL)
-//!   animationcraft-cli lottie <doc | demo> <out.json>
-//!   animationcraft-cli convert <in> <out.acx.json | .fla | .xfl>
-//!   animationcraft-cli save-demo <out.acx.json>
-//!   animationcraft-cli run <script.js|.py|.mjs|.rb> [--doc <doc|demo>] [--save out.acx.json] [--gif out.gif]
-//!   animationcraft-cli commands            (list scriptable commands)
-//!   animationcraft-cli effects [search]    (EffectCraft effects usable as object filters)
-//!   animationcraft-cli xdts <doc> <out.xdts> (XDTS timing sheet)
+//!   flare-cli info   <doc.acx.json | demo>
+//!   flare-cli gif    <doc | demo> <out.gif> [scale]
+//!   flare-cli png    <doc | demo> <frame> <out.png|.jpg|.gif> [scale] [--quality N] [--colors N] [--transparent]
+//!   flare-cli svg    <doc | demo> <frame> <out.svg>
+//!   flare-cli png-seq <doc | demo> <out-dir> [scale]
+//!   flare-cli video  <doc | demo> <out.mp4|.webm|.mov> [scale]   (needs ffmpeg)
+//!   flare-cli xfl    <doc | demo> <out.fla | out.xfl>   (export; any <doc> may also be a .fla / .xfl / XFL folder)
+//!   flare-cli html5  <doc | demo> <out-dir | out.html> [--no-loop]   (HTML5 Canvas; .html = one self-contained file)
+//!   flare-cli sprites <doc | demo> <out(.png)> [scale] [--format hash|array|starling]   (sprite sheet + atlas)
+//!   flare-cli svg-anim <doc | demo> <out.svg>   (animated SVG, SMIL)
+//!   flare-cli lottie <doc | demo> <out.json>
+//!   flare-cli convert <in> <out.acx.json | .fla | .xfl>
+//!   flare-cli save-demo <out.acx.json>
+//!   flare-cli run <script.js|.py|.mjs|.rb> [--doc <doc|demo>] [--save out.acx.json] [--gif out.gif]
+//!   flare-cli commands            (list scriptable commands)
+//!   flare-cli effects [search]    (EffectCraft effects usable as object filters)
+//!   flare-cli xdts <doc> <out.xdts> (XDTS timing sheet)
 
 use ac_core::{demo::demo_document, Document, ElementKind, Tween};
 use std::path::Path;
@@ -227,7 +227,7 @@ fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     ac_audio::register();
     if args.is_empty() {
-        eprintln!("usage: animationcraft-cli <info|gif|png|png-seq|video|svg|svg-anim|html5|sprites|lottie|xfl|convert|save-demo|run|commands|effects|xdts> ...  (use 'demo' as the document for the built-in scene)");
+        eprintln!("usage: flare-cli <info|gif|png|png-seq|video|svg|svg-anim|html5|sprites|lottie|xfl|convert|save-demo|run|commands|effects|xdts> ...  (use 'demo' as the document for the built-in scene)");
         std::process::exit(2);
     }
     if let Err(e) = run(&args) {

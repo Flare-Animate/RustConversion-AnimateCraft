@@ -73,9 +73,12 @@ fn python_bridge() {
     assert_eq!(ed.timeline().layers.len(), 2);
     assert!(r.commands >= 9);
     // Python exceptions come back as an error with the traceback in the log
-    let r = run_code(&mut ed, Language::Python, "import animationcraft as ac\nac.draw.rect(x=1)\n", &opts());
+    let r = run_code(&mut ed, Language::Python, "import flare as ac\nac.draw.rect(x=1)\n", &opts());
     assert!(r.error.is_some());
     assert!(r.log.iter().any(|l| l.contains("missing number")), "{:?}", r.log);
+    // scripts written when the app was called AnimationCraft still run
+    let r = run_code(&mut ed, Language::Python, "import animationcraft as ac\nac.draw.rect(x=1, y=1, w=5, h=5)\nassert ac.AnimationCraftError is ac.FlareError\n", &opts());
+    assert!(r.ok(), "{:?}\n{}", r.error, r.log.join("\n"));
 }
 
 #[test]
@@ -100,6 +103,9 @@ fn ruby_bridge() {
     let r = run_code(&mut ed, Language::Ruby, Language::Ruby.example(), &opts());
     assert!(r.ok(), "{:?}\n{}", r.error, r.log.join("\n"));
     assert!(r.log.iter().any(|l| l.contains("Layers: 2")), "{:?}", r.log);
+    // the old module name still works
+    let r = run_code(&mut ed, Language::Ruby, "require \"animationcraft\"\nAnimationCraft.call(\"draw.rect\", x: 1, y: 1, w: 5, h: 5)\n", &opts());
+    assert!(r.ok(), "{:?}\n{}", r.error, r.log.join("\n"));
 }
 
 #[test]

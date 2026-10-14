@@ -1,12 +1,12 @@
 [package]
 name = "ac-cli"
-description = "AnimationCraft headless CLI: render, export, inspect"
+description = "Flare headless CLI: render, export, inspect"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 
 [[bin]]
-name = "animationcraft-cli"
+name = "flare-cli"
 path = "src/main.rs"
 
 [dependencies]

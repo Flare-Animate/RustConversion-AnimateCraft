@@ -1,21 +1,33 @@
 # Third-party notices
 
-AnimationCraft is licensed MIT OR Apache-2.0 (see `LICENSE-MIT`, `LICENSE-APACHE`).
+Flare (Rust) — formerly AnimationCraft — is licensed MIT OR Apache-2.0 (see
+`LICENSE-MIT`, `LICENSE-APACHE`); parts taken from Flare and OpenToonz keep their
+BSD-3-Clause notices below.
 It contains or links the following work by others. Each port records its source
 at the top of the file and in `log/devlog.md`, as CONTRIBUTING.md requires.
 
 ## Code ported into this repository
 
-### Flare (github.com/Flare-Animate/Flare)
-Flare's native Studio runs on a copy of AnimationCraft's `ac-core`, kept under
-MIT OR Apache-2.0. Its changes to that core were merged back so both apps share
-one engine:
+### Flare (github.com/Flare-Animate/flare)
+This repository is the Rust conversion of Flare. Flare's native Studio runs on a
+copy of this project's `ac-core` (MIT OR Apache-2.0); its changes to that core
+were merged back so both share one engine:
 
 - `crates/ac-core/src/tween_edit.rs` (retained-curve pose corrections)
 - `crates/ac-core/src/flare_frame_clock_tests.rs`, `flare_tween_boundary_tests.rs`
 - the `TweenBoundary` / playback-clock changes in `model.rs`, `frames.rs`, `editor.rs`
 
 Source: `flare/sources/flare/rust/core`, commit `a27136a` (October 2026).
+
+Artwork from Flare (BSD-3-Clause, © Flare contributors; Flare's tool icons
+descend from OpenToonz's, © DWANGO Co., Ltd. and OpenToonz contributors):
+
+- `assets/icon/flare.png`, `flare.ico`: Flare's application icon
+  (`flare/sources/flare/Flare.ico`; the .ico here adds resampled small sizes).
+- `assets/flare-icons/tools/*.svg`: 21 tool icons from
+  `flare/sources/flare/icons/dark/tools/20x20/`, unchanged (tinted at runtime).
+
+Neither was taken from Adobe software.
 Not taken from Flare: its Qt theme materials (derived from studying Adobe
 binaries) and its Flash/SWF readers (written with GPL/AGPL references). See
 `docs/FLARE-REVIEW-PHASE5.md`.
@@ -24,7 +36,7 @@ binaries) and its Flash/SWF readers (written with GPL/AGPL references). See
 Features modelled on OpenToonz subsystems are listed in
 `docs/OPENTOONZ-REVIEW.md`. Files that follow OpenToonz code or formats:
 
-| AnimationCraft | OpenToonz |
+| This repository | OpenToonz |
 |---|---|
 | `ac-core/src/strokes.rs` (Herringbone … Curl) | `toonz/sources/colorfx/strokestyles.cpp` |
 | `ac-core/src/sculpt.rs` | `toonz/sources/tnztools/{magnet,pinch,pump,bender,iron}tool.cpp`, `tnzext/Stroke*Deformation.cpp` |

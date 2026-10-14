@@ -1,5 +1,9 @@
 # Flare's own code vs AnimationCraft and OpenToonz, and the Phase 5 plan
 
+> **Note (2026-10-14):** written when this code base was still called AnimationCraft. It has since
+> become the base of Flare's Rust conversion and is named Flare; "AnimationCraft" below means this
+> repository, "Flare" the C++ Flare app.
+
 Reviewed 2026-10-14 at Flare `a27136a`. This covers only the code Flare wrote
 itself. What Flare inherits from OpenToonz is in `docs/OPENTOONZ-REVIEW.md`.
 

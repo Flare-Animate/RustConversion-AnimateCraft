@@ -1,6 +1,6 @@
 [package]
 name = "ac-render"
-description = "AnimationCraft rendering: CPU rasterizer (tiny-skia), SVG and GIF export"
+description = "Flare rendering: CPU rasterizer (tiny-skia), SVG and GIF export"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

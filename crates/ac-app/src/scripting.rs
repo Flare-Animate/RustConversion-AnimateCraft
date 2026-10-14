@@ -408,7 +408,7 @@ fn reference(app: &mut App, ctx: &egui::Context) {
     egui::Window::new("Command Reference").open(&mut open).default_size([640.0, 440.0]).resizable(true).show(ctx, |ui| {
         ui.label("Every command works the same from every language:");
         ui.label(RichText::new("JavaScript:  ac.draw.rect({x: 10, y: 10, w: 50, h: 50})     Python:  ac.draw.rect(x=10, y=10, w=50, h=50)").monospace().small());
-        ui.label(RichText::new("Node:  ac.draw.rect({...})     Ruby:  AnimationCraft.call(\"draw.rect\", x: 10, ...)     any language: see protocol below").monospace().small());
+        ui.label(RichText::new("Node:  ac.draw.rect({...})     Ruby:  Flare.call(\"draw.rect\", x: 10, ...)     any language: see protocol below").monospace().small());
         ui.separator();
         egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
             egui::Grid::new("cmdref").striped(true).num_columns(3).show(ui, |ui| {

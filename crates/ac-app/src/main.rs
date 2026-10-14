@@ -1,6 +1,6 @@
 // Release builds on Windows are GUI apps: no console window behind the editor.
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
-//! AnimationCraft desktop editor. Layout follows Adobe Animate's default
+//! Flare desktop editor. Layout follows Adobe Animate's default
 //! "Essentials" workspace: menu bar, Tools (left), Stage (centre),
 //! Properties + Library (right), Timeline (bottom).
 
@@ -251,7 +251,7 @@ impl App {
             screenshot: None,
         };
         app.lib.left = app.settings.library_left;
-        // `animationcraft file.acx.json` opens that document
+        // `flare file.acx.json` opens that document
         let arg = std::env::args().nth(1).filter(|a| !a.starts_with('-'));
         if let Some(path) = &arg {
             app.do_file(files::FileAction::Open, path);
@@ -382,7 +382,7 @@ impl App {
     /// Put a marker on the system clipboard: platforms only deliver a Paste
     /// event when the system clipboard isn't empty.
     fn mark_clipboard(&self) {
-        self.ctx.copy_text("AnimationCraft clipboard".into());
+        self.ctx.copy_text("Flare clipboard".into());
     }
     pub(crate) fn cut(&mut self) {
         if !self.ed.selection.is_empty() {
@@ -827,7 +827,7 @@ impl App {
                     if ui.button("Edit Toolbar…").clicked() { self.topts.edit_toolbar_open = true; ui.close_menu(); }
                 });
                 ui.menu_button("Help", |ui| {
-                    if ui.button("About AnimationCraft").clicked() { self.dialog = Dialog::About; ui.close_menu(); }
+                    if ui.button("About Flare").clicked() { self.dialog = Dialog::About; ui.close_menu(); }
                 });
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.label(egui::RichText::new("Essentials").color(Color32::from_gray(150)));
@@ -1036,7 +1036,7 @@ impl App {
             }
             Dialog::Recover { original, age_secs } => {
                 win("Recover unsaved work").show(ctx, |ui| {
-                    ui.label("AnimationCraft didn't close normally last time.");
+                    ui.label("Flare didn't close normally last time.");
                     ui.label(format!("An autosave from {} is available{}.", files::fmt_age(*age_secs), original.as_ref().map(|o| format!(" for {o}")).unwrap_or_default()));
                     ui.horizontal(|ui| {
                         if ui.button("Restore").clicked() || enter { recover = Some(true); close = true; }
@@ -1094,10 +1094,11 @@ impl App {
                 });
             }
             Dialog::About => {
-                win("About AnimationCraft").show(ctx, |ui| {
-                    ui.heading("AnimationCraft 0.2 (demo)");
-                    ui.label("Open-source 2D animation authoring in Rust, modelled on the Adobe Animate workflow.");
-                    ui.label("Not affiliated with Adobe. Licensed MIT OR Apache-2.0.");
+                win("About Flare").show(ctx, |ui| {
+                    ui.heading(format!("Flare {} (Rust)", env!("CARGO_PKG_VERSION")));
+                    ui.label("Open-source 2D animation authoring in Rust, following the Flash / Animate workflow, with tools from OpenToonz.");
+                    ui.label("The Rust conversion of Flare (github.com/Flare-Animate), built on the AnimationCraft engine.");
+                    ui.label("Not affiliated with Adobe. Licensed MIT OR Apache-2.0; third-party notices in THIRD-PARTY-NOTICES.md.");
                     if ui.button("Close").clicked() || esc { close = true; }
                 });
             }
@@ -1189,7 +1190,7 @@ impl eframe::App for App {
                 Err(e) => self.status = format!("Error: {e}"),
             }
         }
-        let title = format!("{}{} — AnimationCraft", self.doc_name(), if self.dirty() { " •" } else { "" });
+        let title = format!("{}{} — Flare", self.doc_name(), if self.dirty() { " •" } else { "" });
         if title != self.title_shown {
             ctx.send_viewport_cmd(egui::ViewportCommand::Title(title.clone()));
             self.title_shown = title;
@@ -1284,7 +1285,7 @@ impl eframe::App for App {
 
 /// The window / taskbar icon (the same artwork the Windows exe embeds).
 fn app_icon() -> egui::IconData {
-    let img = image::load_from_memory(include_bytes!("../../../assets/icon/animationcraft.png")).map(|i| i.to_rgba8());
+    let img = image::load_from_memory(include_bytes!("../../../assets/icon/flare.png")).map(|i| i.to_rgba8());
     match img {
         Ok(i) => egui::IconData { width: i.width(), height: i.height(), rgba: i.into_raw() },
         Err(_) => egui::IconData::default(),
@@ -1298,8 +1299,8 @@ fn main() -> eframe::Result<()> {
         .with_inner_size([1280.0, 800.0])
         .with_min_inner_size([800.0, 520.0])
         .with_maximized(!shot)
-        .with_title("AnimationCraft")
+        .with_title("Flare")
         .with_icon(app_icon());
     let options = eframe::NativeOptions { viewport, ..Default::default() };
-    eframe::run_native("AnimationCraft", options, Box::new(|cc| Ok(Box::new(App::new(cc)))))
+    eframe::run_native("Flare", options, Box::new(|cc| Ok(Box::new(App::new(cc)))))
 }

@@ -6,7 +6,7 @@ members = ["crates/ac-core", "crates/ac-render", "crates/ac-script", "crates/ac-
 version = "0.1.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/KMSDax/AnimationCraft"
+repository = "https://github.com/Flare-Animate/RustConversion-AnimateCraft"
 
 [workspace.dependencies]
 ac-core = { path = "crates/ac-core" }

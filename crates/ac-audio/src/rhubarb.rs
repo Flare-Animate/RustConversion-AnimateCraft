@@ -1,7 +1,7 @@
 //! Optional speech-based lip sync through Rhubarb Lip Sync
 //! (github.com/DanielSWolf/rhubarb-lip-sync, MIT), run as a separate program
 //! the way OpenToonz and Flare use it. Nothing of Rhubarb is bundled: if the
-//! `rhubarb` executable is installed (on PATH, next to AnimationCraft, or in
+//! `rhubarb` executable is installed (on PATH, next to Flare, or in
 //! `AC_RHUBARB`), Auto Lip-Sync can use it; otherwise the built-in heuristic.
 //!
 //! Rhubarb's mouth shapes (from its README) map onto ours:

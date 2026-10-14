@@ -1,5 +1,5 @@
-/* AnimationCraft HTML5 Canvas runtime (MIT OR Apache-2.0).
- * Plays a movie published by AnimationCraft (AC_MOVIE): precomputed display
+/* Flare HTML5 Canvas runtime (MIT OR Apache-2.0).
+ * Plays a movie published by Flare (AC_MOVIE): precomputed display
  * lists per frame, frame scripts with a CreateJS-style API, buttons and
  * Event/Start/Stop/Stream sounds. */
 (function () {
@@ -432,7 +432,7 @@
       var bin = atob(s[1].split(",")[1]);
       var u8 = new Uint8Array(bin.length);
       for (var k = 0; k < bin.length; k++) u8[k] = bin.charCodeAt(k);
-      actx.decodeAudioData(u8.buffer, function (b) { buffers[i] = b; }, function () { console.warn("AnimationCraft: can't decode sound " + s[0]); });
+      actx.decodeAudioData(u8.buffer, function (b) { buffers[i] = b; }, function () { console.warn("Flare: can't decode sound " + s[0]); });
     });
   } catch (e) { actx = null; }
   function unlock() { if (actx && actx.state === "suspended") actx.resume(); }
@@ -507,14 +507,14 @@
     if (!fn) {
       try {
         fn = scriptCache[code] = new Function("stop", "play", "gotoAndPlay", "gotoAndStop", "print", code);
-      } catch (e) { console.error("AnimationCraft frame script:", e); scriptCache[code] = function () {}; return; }
+      } catch (e) { console.error("Flare frame script:", e); scriptCache[code] = function () {}; return; }
     }
     var names = Object.keys(insts), before = {};
     names.forEach(function (n) { before[n] = snapshot(insts[n]); });
     try {
       fn.call(tl, tl.stop, tl.play, tl.gotoAndPlay, tl.gotoAndStop, function () { console.log.apply(console, arguments); });
     } catch (e) {
-      console.error("AnimationCraft frame " + (frame + 1) + " script:", e);
+      console.error("Flare frame " + (frame + 1) + " script:", e);
       playing = false;
     }
     Object.keys(insts).forEach(function (n) { if (before[n] !== undefined && before[n] !== snapshot(insts[n])) changed[n] = true; });
@@ -588,7 +588,7 @@
     if (!o || !o._l[type]) return;
     var ev = { type: type, target: o, currentTarget: o, stageX: pt.x, stageY: pt.y };
     o._l[type].slice().forEach(function (fn) {
-      try { fn.call(tl, ev); } catch (e) { console.error("AnimationCraft " + type + " handler:", e); }
+      try { fn.call(tl, ev); } catch (e) { console.error("Flare " + type + " handler:", e); }
     });
     if (jump) { frame = jump.f; playing = jump.play; jump = null; enter(); }
     dirty = true;
@@ -639,7 +639,7 @@
   draw();
   requestAnimationFrame(tick);
   // for tests and embedding pages
-  window.AnimationCraft = {
+  window.Flare = window.AnimationCraft = {
     get frame() { return frame; },
     get playing() { return playing; },
     gotoAndStop: function (f) { frame = Math.max(0, Math.min(N - 1, f)); playing = false; enter(); draw(); },

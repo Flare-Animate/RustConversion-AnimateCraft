@@ -1,6 +1,6 @@
 [package]
 name = "ac-app"
-description = "AnimationCraft desktop editor (egui)"
+description = "Flare desktop editor (egui)"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -8,7 +8,7 @@ license.workspace = true
 build = "build.rs"
 
 [[bin]]
-name = "animationcraft"
+name = "flare"
 path = "src/main.rs"
 
 [features]
@@ -29,6 +29,8 @@ rfd = { version = "0.15", default-features = false, features = ["xdg-portal", "t
 dirs = "5"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "bmp"] }
 usvg = "0.44"
+# draws Flare's tool icons (SVG) into textures
+resvg = { version = "0.44", default-features = false }
 # PSD import (MIT/Apache-2.0)
 psd = "0.3"
 serde.workspace = true

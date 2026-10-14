@@ -172,7 +172,7 @@ pub fn sprite_sheet(doc: &Document, o: &ExportOpts, so: &SheetOpts, image_name: 
             let (open, close) = if so.format == AtlasFormat::JsonHash { ("{", "}") } else { ("[", "]") };
             let _ = write!(
                 atlas,
-                "{{\"frames\": {open}{}\n{close},\n\"meta\": {{\"app\":\"AnimationCraft\",\"version\":\"1.0\",\"image\":\"{image_name}\",\"format\":\"RGBA8888\",\"size\":{{\"w\":{sheet_w},\"h\":{sheet_h}}},\"scale\":\"{}\",\"frameRate\":{}}}\n}}\n",
+                "{{\"frames\": {open}{}\n{close},\n\"meta\": {{\"app\":\"Flare\",\"version\":\"1.0\",\"image\":\"{image_name}\",\"format\":\"RGBA8888\",\"size\":{{\"w\":{sheet_w},\"h\":{sheet_h}}},\"scale\":\"{}\",\"frameRate\":{}}}\n}}\n",
                 entries.join(","),
                 o.scale,
                 doc.fps
@@ -484,7 +484,7 @@ pub fn lottie(doc: &Document, o: &ExportOpts) -> (String, Vec<String>) {
         ));
     }
     let json = format!(
-        "{{\"v\":\"5.7.0\",\"fr\":{},\"ip\":0,\"op\":{},\"w\":{},\"h\":{},\"nm\":\"AnimationCraft\",\"ddd\":0,\"assets\":[{}],\"layers\":[{}],\"meta\":{{\"g\":\"AnimationCraft\"}}}}\n",
+        "{{\"v\":\"5.7.0\",\"fr\":{},\"ip\":0,\"op\":{},\"w\":{},\"h\":{},\"nm\":\"Flare\",\"ddd\":0,\"assets\":[{}],\"layers\":[{}],\"meta\":{{\"g\":\"Flare\"}}}}\n",
         f3(doc.fps),
         frames.len(),
         doc.width.round(),

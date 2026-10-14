@@ -1,11 +1,11 @@
-//! `.acx`: AnimationCraft's native document package.
+//! `.acx`: Flare's native document package.
 //!
 //! Like a `.fla`, it is a ZIP holding the document as separate parts, so
 //! media stays in its own format, big documents stay quick to read, and the
 //! parts can be inspected or diffed with ordinary tools:
 //!
 //! ```text
-//! mimetype                    "application/vnd.animationcraft.acx" (first, uncompressed)
+//! mimetype                    "application/vnd.flare.acx" (first, uncompressed)
 //! manifest.json               format version, generator, what is inside
 //! document.json               stage size, frame rate, colour, 3D, guides…
 //! scenes/001.json …           one timeline per scene, in playing order
@@ -29,7 +29,12 @@ use std::collections::BTreeMap;
 use std::io::{Cursor, Read, Write};
 use std::path::Path;
 
-pub const MIMETYPE: &str = "application/vnd.animationcraft.acx";
+pub const MIMETYPE: &str = "application/vnd.flare.acx";
+/// Packages saved before the app was renamed (AnimationCraft) still open.
+pub const LEGACY_MIMETYPE: &str = "application/vnd.animationcraft.acx";
+fn mimetype_ok(m: &[u8]) -> bool {
+    m == MIMETYPE.as_bytes() || m == LEGACY_MIMETYPE.as_bytes()
+}
 /// Major.minor of the package layout. Readers accept any minor of their major.
 pub const FORMAT_VERSION: (u32, u32) = (1, 0);
 pub const EXTENSION: &str = "acx";
@@ -121,9 +126,9 @@ pub fn parts(doc: &Document, thumbnail: Option<&[u8]>) -> Result<BTreeMap<String
         files.insert("thumbnail.png".into(), t.to_vec());
     }
     let manifest = Manifest {
-        format: "AnimationCraft document".into(),
+        format: "Flare document".into(),
         version: format!("{}.{}", FORMAT_VERSION.0, FORMAT_VERSION.1),
-        generator: format!("AnimationCraft {}", env!("CARGO_PKG_VERSION")),
+        generator: format!("Flare {}", env!("CARGO_PKG_VERSION")),
         scenes,
         symbols: doc.library.len(),
         bitmaps: doc.bitmaps.len(),
@@ -156,12 +161,12 @@ pub fn write(doc: &Document, thumbnail: Option<&[u8]>) -> Result<Vec<u8>, String
 
 /// True for bytes that look like an `.acx` package.
 pub fn is_package(bytes: &[u8]) -> bool {
-    bytes.len() > 38 && bytes.starts_with(b"PK\x03\x04") && bytes[30..38] == *b"mimetype" && bytes.windows(MIMETYPE.len()).take(200).any(|w| w == MIMETYPE.as_bytes())
+    bytes.len() > 38 && bytes.starts_with(b"PK\x03\x04") && bytes[30..38] == *b"mimetype" && (bytes.windows(MIMETYPE.len()).take(200).any(|w| w == MIMETYPE.as_bytes()) || bytes.windows(LEGACY_MIMETYPE.len()).take(200).any(|w| w == LEGACY_MIMETYPE.as_bytes()))
 }
 
 /// Read a package.
 pub fn read(bytes: &[u8]) -> Result<Loaded, String> {
-    let mut z = zip::ZipArchive::new(Cursor::new(bytes)).map_err(|e| format!("not an AnimationCraft package ({e})"))?;
+    let mut z = zip::ZipArchive::new(Cursor::new(bytes)).map_err(|e| format!("not a Flare package ({e})"))?;
     let mut files: BTreeMap<String, Vec<u8>> = BTreeMap::new();
     for i in 0..z.len() {
         let mut f = z.by_index(i).map_err(|e| e.to_string())?;
@@ -179,13 +184,13 @@ pub fn read(bytes: &[u8]) -> Result<Loaded, String> {
 /// Rebuild a document from package parts.
 pub fn from_parts(files: &BTreeMap<String, Vec<u8>>) -> Result<Loaded, String> {
     let get = |p: &str| files.get(p).ok_or_else(|| format!("the package has no {p}"));
-    if files.get("mimetype").map(|m| m.as_slice()) != Some(MIMETYPE.as_bytes()) {
-        return Err("not an AnimationCraft package (wrong or missing mimetype)".into());
+    if !files.get("mimetype").is_some_and(|m| mimetype_ok(m)) {
+        return Err("not a Flare package (wrong or missing mimetype)".into());
     }
     let manifest: Manifest = serde_json::from_slice(get("manifest.json")?).map_err(|e| format!("manifest.json: {e}"))?;
     let major: u32 = manifest.version.split('.').next().and_then(|v| v.parse().ok()).unwrap_or(0);
     if major > FORMAT_VERSION.0 {
-        return Err(format!("this document was made by a newer AnimationCraft (package version {}); please update", manifest.version));
+        return Err(format!("this document was made by a newer Flare (package version {}); please update", manifest.version));
     }
     let mut warnings = vec![];
     let mut settings: Value = serde_json::from_slice(get("document.json")?).map_err(|e| format!("document.json: {e}"))?;
@@ -307,10 +312,14 @@ mod tests {
         p.insert("plugins/future.json".into(), b"{}".to_vec());
         let l = from_parts(&p).unwrap();
         assert_eq!(l.warnings, ["ignored unknown part plugins/future.json"]);
+        // saved before the rename
+        let mut old = p.clone();
+        old.insert("mimetype".into(), LEGACY_MIMETYPE.as_bytes().to_vec());
+        assert!(from_parts(&old).is_ok());
         let mut m: Manifest = serde_json::from_slice(&p["manifest.json"]).unwrap();
         m.version = "2.0".into();
         p.insert("manifest.json".into(), serde_json::to_vec(&m).unwrap());
-        assert!(from_parts(&p).err().unwrap().contains("newer AnimationCraft"));
+        assert!(from_parts(&p).err().unwrap().contains("newer Flare"));
         p.insert("mimetype".into(), b"application/zip".to_vec());
         assert!(from_parts(&p).is_err());
     }

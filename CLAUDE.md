@@ -1,8 +1,18 @@
-# AnimationCraft — project brief
+# Flare (Rust) — project brief
 
 Open-source 2D animation authoring in Rust, modelled on the Adobe Animate
-(formerly Flash Professional) workflow. Read this file at the start of every
-session; record progress in `log/devlog.md`.
+(formerly Flash Professional) workflow. This is **the Rust conversion of Flare**
+(github.com/Flare-Animate/flare, an OpenToonz fork): the code base began as
+AnimationCraft, whose engine Flare's native Studio already uses, and Flare's
+features are rebuilt here until it replaces the C++ app. Repository:
+github.com/Flare-Animate/RustConversion-AnimateCraft. Read this file at the start
+of every session; record progress in `log/devlog.md`.
+
+Naming: the product is **Flare** (binaries `flare`, `flare-cli`; installer
+`Flare-<version>-setup.exe`). Crates keep the `ac-` prefix and documents the `.acx`
+format for now; old AnimationCraft packages, settings and script helper names
+still work. Icons: Flare's app icon and Flare's own tool icons (`assets/`), never
+Adobe artwork or Flare's Ghidra-derived theme materials.
 
 ## 1. Why now
 
@@ -17,10 +27,9 @@ session; record progress in `log/devlog.md`.
   browser under a source-available BSL licence. Its HN thread asked for a native
   app, Rust, merge-drawing, real tools beyond onion skin, and colour management.
 - ArtCraft (PhotoCraft, VectorCraft, FilmCraft, EffectCraft, SoundCraft, …) has
-  no animation app. AnimationCraft fills that gap and follows the same playbook:
-  native Rust, one command registry, CLI + agent control. Note "Craft" names and
-  logos are ArtCraft's trademarks: talk to that team before shipping under this
-  name, or pick our own.
+  no animation app. AnimationCraft filled that gap with the same playbook
+  (native Rust, one command registry, CLI + agent control); in October 2026 it
+  became the base of Flare's Rust conversion and took Flare's name.
 
 ## 2. What Adobe Animate is (feature map)
 

@@ -548,11 +548,11 @@ pub fn publish(doc: &Document, o: &Html5Opts) -> Files {
         extra.join(",")
     );
     data.push('\n');
-    let title = "AnimationCraft movie";
+    let title = "Flare movie";
     let mut files: Files = vec![];
     let html = |scripts: &str| {
         format!(
-            "<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n<meta name=\"generator\" content=\"AnimationCraft\">\n<title>{title}</title>\n<style>html,body{{margin:0;height:100%;background:#1e1e1e;display:flex;align-items:center;justify-content:center;overflow:hidden}}canvas{{display:block;max-width:100vw;max-height:100vh;width:auto;height:auto;image-rendering:auto}}</style>\n</head>\n<body>\n<canvas id=\"ac-stage\" width=\"{}\" height=\"{}\"></canvas>\n{scripts}</body>\n</html>\n",
+            "<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n<meta name=\"generator\" content=\"Flare\">\n<title>{title}</title>\n<style>html,body{{margin:0;height:100%;background:#1e1e1e;display:flex;align-items:center;justify-content:center;overflow:hidden}}canvas{{display:block;max-width:100vw;max-height:100vh;width:auto;height:auto;image-rendering:auto}}</style>\n</head>\n<body>\n<canvas id=\"ac-stage\" width=\"{}\" height=\"{}\"></canvas>\n{scripts}</body>\n</html>\n",
             doc.width.round() as u32,
             doc.height.round() as u32
         )
@@ -560,9 +560,9 @@ pub fn publish(doc: &Document, o: &Html5Opts) -> Files {
     if o.single_file {
         files.push(("index.html".into(), html(&format!("<script>\n{data}</script>\n<script>\n{RUNTIME}</script>\n")).into_bytes()));
     } else {
-        files.push(("index.html".into(), html("<script src=\"movie.js\"></script>\n<script src=\"animationcraft-runtime.js\"></script>\n").into_bytes()));
+        files.push(("index.html".into(), html("<script src=\"movie.js\"></script>\n<script src=\"flare-runtime.js\"></script>\n").into_bytes()));
         files.push(("movie.js".into(), data.into_bytes()));
-        files.push(("animationcraft-runtime.js".into(), RUNTIME.as_bytes().to_vec()));
+        files.push(("flare-runtime.js".into(), RUNTIME.as_bytes().to_vec()));
         for (name, bytes, _) in t.images {
             files.push((name, bytes));
         }

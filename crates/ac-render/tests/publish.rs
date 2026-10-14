@@ -28,7 +28,7 @@ fn doc() -> Document {
 fn html5_shares_static_content_and_carries_scripts() {
     let files = publish(&doc(), &Html5Opts { loop_play: true, ..Default::default() });
     let names: Vec<&str> = files.iter().map(|f| f.0.as_str()).collect();
-    assert_eq!(names, ["index.html", "movie.js", "animationcraft-runtime.js"]);
+    assert_eq!(names, ["index.html", "movie.js", "flare-runtime.js"]);
     let movie = String::from_utf8(files[1].1.clone()).unwrap();
     let json = movie.trim_start_matches("var AC_MOVIE=").trim_end().trim_end_matches(';');
     let m: serde_json::Value = serde_json::from_str(json).unwrap();
@@ -45,7 +45,7 @@ fn html5_shares_static_content_and_carries_scripts() {
     let single = publish(&doc(), &Html5Opts { single_file: true, ..Default::default() });
     assert_eq!(single.len(), 1);
     let page = String::from_utf8(single[0].1.clone()).unwrap();
-    assert!(page.contains("var AC_MOVIE=") && page.contains("AnimationCraft HTML5 Canvas runtime") && !page.contains("src=\"movie.js\""));
+    assert!(page.contains("var AC_MOVIE=") && page.contains("Flare HTML5 Canvas runtime") && !page.contains("src=\"movie.js\""));
 }
 
 #[test]

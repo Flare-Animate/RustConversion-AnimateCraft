@@ -1,6 +1,6 @@
 [package]
 name = "ac-xfl"
-description = "AnimationCraft: XFL / .fla (CS5+) import and export"
+description = "Flare: XFL / .fla (CS5+) import and export"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

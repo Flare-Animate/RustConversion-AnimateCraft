@@ -12,7 +12,7 @@ use std::fmt::Write as _;
 const GRAD: f32 = 819.2;
 /// Interoperability identifiers. The XFL namespace and the package mimetype
 /// are how the authoring tool recognises an XFL document; they are functional
-/// names, written only into .fla/XFL exports (never into AnimationCraft's own
+/// names, written only into .fla/XFL exports (never into Flare's own
 /// .acx files) and used for nothing else. See CONTRIBUTING.md.
 const NS: &str = r#"xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns="http://ns.adobe.com/xfl/2008/""#;
 
@@ -800,7 +800,7 @@ pub(crate) fn write(doc: &Document) -> (Package, Vec<String>) {
     }
 
     let mut x = format!(
-        "<DOMDocument {NS} width=\"{}\" height=\"{}\" frameRate=\"{}\" backgroundColor=\"{}\" currentTimeline=\"1\" xflVersion=\"2.97\" creatorInfo=\"AnimationCraft\" platform=\"{}\">\n",
+        "<DOMDocument {NS} width=\"{}\" height=\"{}\" frameRate=\"{}\" backgroundColor=\"{}\" currentTimeline=\"1\" xflVersion=\"2.97\" creatorInfo=\"Flare\" platform=\"{}\">\n",
         n(doc.width),
         n(doc.height),
         n(doc.fps),
