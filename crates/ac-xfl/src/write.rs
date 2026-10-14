@@ -89,7 +89,12 @@ impl W<'_> {
             FillKey::Grad(g) => {
                 let tag = if g.kind == GradientKind::Linear { "LinearGradient" } else { "RadialGradient" };
                 let m = g.matrix.concat(&Matrix::scale(1.0 / GRAD, 1.0 / GRAD));
-                let mut s = format!("{ind}<{tag}>\n{}", matrix_xml(&m, &format!("{ind}  ")));
+                let spread = match g.spread {
+                    Spread::Pad => "",
+                    Spread::Reflect => r#" spreadMethod="reflect""#,
+                    Spread::Repeat => r#" spreadMethod="repeat""#,
+                };
+                let mut s = format!("{ind}<{tag}{spread}>\n{}", matrix_xml(&m, &format!("{ind}  ")));
                 for (r, c) in &g.stops {
                     let _ = writeln!(s, "{ind}  <GradientEntry color=\"{}\"{} ratio=\"{}\"/>", c.to_hex(), alpha_attr(*c, "alpha"), n(*r));
                 }
@@ -118,6 +123,9 @@ impl W<'_> {
             Dash::Solid => ("SolidStroke", String::new()),
             Dash::Dashed => ("DashedStroke", format!(r#" dash1="{}" dash2="{}""#, n(st.dash_len), n(st.gap))),
             Dash::Dotted => ("DottedStroke", format!(r#" dotSpace="{}""#, n(st.gap))),
+            Dash::Ragged => ("RaggedStroke", String::new()),
+            Dash::Stipple => ("StippleStroke", String::new()),
+            Dash::Hatched => ("HatchedStroke", String::new()),
         };
         let mut caps_a = String::new();
         if caps != "round" {
@@ -190,10 +198,11 @@ impl W<'_> {
         let mut recs = vec![];
         let tp = |p: Pt| m.apply(p);
         for r in &c.fills {
-            let key = match (&r.gradient, r.fill) {
-                (Some(g), _) => FillKey::Grad(Gradient { matrix: m.concat(&g.matrix), ..g.clone() }),
-                (None, Some(c)) => FillKey::Solid(c),
-                (None, None) => continue,
+            let key = match (&r.bitmap, &r.gradient, r.fill) {
+                (Some(b), _, _) => FillKey::Bitmap(BitmapFill { bitmap: b.bitmap, matrix: m.concat(&b.matrix) }),
+                (None, Some(g), _) => FillKey::Grad(Gradient { matrix: m.concat(&g.matrix), ..g.clone() }),
+                (None, None, Some(c)) => FillKey::Solid(c),
+                (None, None, None) => continue,
             };
             let idx = match fills.iter().position(|f| *f == key) {
                 Some(i) => i,

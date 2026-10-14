@@ -61,6 +61,9 @@ for a in sys.argv[1:]:
         xtest.fake_input(d, X.KeyPress, d.keysym_to_keycode(XK.XK_Shift_L)); d.sync()
         click(*map(int,args))
         xtest.fake_input(d, X.KeyRelease, d.keysym_to_keycode(XK.XK_Shift_L)); d.sync()
+    elif op in ('hold', 'release'):
+        k = {'ctrl': XK.XK_Control_L, 'shift': XK.XK_Shift_L, 'alt': XK.XK_Alt_L}[args[0]]
+        xtest.fake_input(d, X.KeyPress if op == 'hold' else X.KeyRelease, d.keysym_to_keycode(k)); d.sync(); time.sleep(0.15)
     elif op=='sleep': time.sleep(float(args[0]))
     elif op=='mv': mv(*map(int,args)); time.sleep(0.2)
     elif op=='down': xtest.fake_input(d, X.ButtonPress, 1); d.sync(); time.sleep(0.3)

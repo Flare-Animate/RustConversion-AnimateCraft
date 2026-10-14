@@ -12,6 +12,7 @@ pub mod model;
 pub mod merge;
 pub mod rig;
 pub mod sound;
+pub mod strokes;
 pub mod motion;
 pub mod text;
 pub mod commands;

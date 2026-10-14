@@ -342,6 +342,27 @@ fn object_properties(app: &mut App, ui: &mut egui::Ui) {
                         }
                     }
                 });
+                if let Some(fl) = f.filter(|f| !f.fills.is_empty() && !app.ed.doc.bitmaps.is_empty()) {
+                    let cur_id = fl.fills.first().and_then(|r| r.bitmap).map(|b| b.bitmap);
+                    let cur = cur_id.and_then(|id| app.ed.doc.bitmap(id)).map(|a| a.name.clone()).unwrap_or_else(|| "None".into());
+                    let mut pick: Option<Option<ac_core::bitmap::BitmapId>> = None;
+                    ui.horizontal(|ui| {
+                        ui.label("Bitmap fill");
+                        egui::ComboBox::from_id_salt("merge-bmpfill").selected_text(cur).show_ui(ui, |ui| {
+                            if ui.selectable_label(cur_id.is_none(), "None").clicked() {
+                                pick = Some(None);
+                            }
+                            for b in &app.ed.doc.bitmaps {
+                                if ui.selectable_label(cur_id == Some(b.id), &b.name).clicked() {
+                                    pick = Some(Some(b.id));
+                                }
+                            }
+                        });
+                    });
+                    if let Some(choice) = pick {
+                        app.ed.merge_bitmap_fill(choice);
+                    }
+                }
                 if f.is_none() {
                     hint(ui, "Click a fill or line with the Selection tool to select it; drag an edge to bend it.");
                 }
@@ -424,6 +445,9 @@ fn object_properties(app: &mut App, ui: &mut egui::Ui) {
                             app.ed.modify_selected("Reset Width", |e| if let ElementKind::Shape(s) = &mut e.kind { s.width_profile = None });
                         }
                     });
+                }
+                if s.stroke.is_some() {
+                    width_profile_buttons(app, ui);
                 }
                 shape_extras(app, ui, s);
                 if let Some(w) = &s.warp {
@@ -648,6 +672,16 @@ fn gradient_editor(app: &mut App, ui: &mut egui::Ui, g: &Gradient) {
             app.set_tool(Tool::GradientTransform);
         }
     });
+    let mut spread = g.spread;
+    ui.horizontal(|ui| {
+        ui.label("Flow");
+        for s in ac_core::Spread::ALL {
+            ui.selectable_value(&mut spread, s, s.name()).on_hover_text("What the gradient does past its ends");
+        }
+    });
+    if spread != g.spread {
+        app.ed.modify_selected("Gradient Flow", move |e| if let ElementKind::Shape(sh) = &mut e.kind { if let Some(g) = &mut sh.gradient { g.spread = spread } });
+    }
     if let Some(label) = changed {
         new_stops.sort_by(|a, b| a.0.total_cmp(&b.0));
         app.ed.modify_selected(label, move |e| if let ElementKind::Shape(sh) = &mut e.kind { if let Some(g) = &mut sh.gradient { g.stops = new_stops.clone() } });
@@ -1363,6 +1397,24 @@ pub fn library_drag_ghost(app: &mut App, ctx: &egui::Context) {
     ctx.request_repaint();
 }
 
+/// Copy the selected shape's variable-width profile / paste it onto the selected shapes.
+fn width_profile_buttons(app: &mut App, ui: &mut egui::Ui) {
+    let current = app.ed.selection.iter().find_map(|s| match app.ed.element_at(*s).map(|e| e.kind) {
+        Some(ElementKind::Shape(sh)) if sh.stroke.is_some() => Some(sh.width_profile.clone()),
+        _ => None,
+    });
+    ui.horizontal(|ui| {
+        if ui.add_enabled(matches!(current, Some(Some(_))), egui::Button::new("Copy width profile").small()).clicked() {
+            app.width_clip = current.clone().flatten();
+            app.status = "Width profile copied".into();
+        }
+        if ui.add_enabled(app.width_clip.is_some() && current.is_some(), egui::Button::new("Paste width profile").small()).clicked() {
+            let prof = app.width_clip.clone();
+            app.ed.modify_selected("Paste Width Profile", move |e| if let ElementKind::Shape(s) = &mut e.kind { if s.stroke.is_some() { s.width_profile = prof.clone() } });
+        }
+    });
+}
+
 fn tool_properties(app: &mut App, ui: &mut egui::Ui) {
     let tool = app.tool;
     let info = tool.info();
@@ -1411,6 +1463,15 @@ fn tool_properties(app: &mut App, ui: &mut egui::Ui) {
             ui.add(egui::Slider::new(&mut app.topts.brush_size, 1.0..=200.0).text("Size"));
             ui.add(egui::Slider::new(&mut app.topts.brush_smooth, 0.0..=100.0).text("Smoothing"));
             ui.horizontal(|ui| {
+                ui.label("Brush shape");
+                let b = app.topts.brush_shape;
+                egui::ComboBox::from_id_salt("brush-shape").selected_text(b.name()).show_ui(ui, |ui| {
+                    for x in ac_core::merge::BrushShape::ALL {
+                        ui.selectable_value(&mut app.topts.brush_shape, x, x.name());
+                    }
+                });
+            });
+            ui.horizontal(|ui| {
                 ui.label("Brush mode");
                 let m = app.topts.brush_mode;
                 egui::ComboBox::from_id_salt("brush-mode").selected_text(m.name(false)).show_ui(ui, |ui| {
@@ -1441,6 +1502,11 @@ fn tool_properties(app: &mut App, ui: &mut egui::Ui) {
             });
             ui.checkbox(&mut app.topts.faucet, "Faucet").on_hover_text("Click a fill or line segment to delete all of it");
             hint(ui, "On merge shapes the eraser cuts into fills and lines; on drawing objects and symbols it deletes the whole object (Break Apart first to erase into it).");
+        }
+        Tool::MagicWand => {
+            section(ui, "Magic Wand");
+            ui.add(egui::Slider::new(&mut app.topts.wand_threshold, 0.0..=200.0).text("Threshold"));
+            hint(ui, "Break Apart a bitmap (Ctrl+B) first. The wand selects the connected area whose colour is within the threshold of the pixel you click; press Delete to cut it out.");
         }
         Tool::Text => {
             section(ui, "Character");
@@ -1509,7 +1575,8 @@ fn tool_properties(app: &mut App, ui: &mut egui::Ui) {
         }
         Tool::Width => {
             section(ui, "Width");
-            hint(ui, "Press on a shape's stroke and drag away from it (thicker) or towards it (thinner). Each drag adds a width point. Properties › Object › Reset width removes them.");
+            hint(ui, "Press on a shape's stroke and drag away from it (thicker) or towards it (thinner). Each drag adds a width point; Alt+click a point to delete it. Properties › Object › Reset width removes them all.");
+            width_profile_buttons(app, ui);
         }
         Tool::AssetWarp => {
             section(ui, "Asset Warp");
@@ -2091,10 +2158,10 @@ fn shape_extras(app: &mut App, ui: &mut egui::Ui, s: &ac_core::Shape) {
         let st = s.stroke_style;
         ui.horizontal(|ui| {
             let mut v = st;
-            egui::ComboBox::from_id_salt("dash").width(70.0).selected_text(match v.dash { Dash::Solid => "Solid", Dash::Dashed => "Dashed", Dash::Dotted => "Dotted" }).show_ui(ui, |ui| {
-                ui.selectable_value(&mut v.dash, Dash::Solid, "Solid");
-                ui.selectable_value(&mut v.dash, Dash::Dashed, "Dashed");
-                ui.selectable_value(&mut v.dash, Dash::Dotted, "Dotted");
+            egui::ComboBox::from_id_salt("dash").width(70.0).selected_text(v.dash.name()).show_ui(ui, |ui| {
+                for d in Dash::ALL {
+                    ui.selectable_value(&mut v.dash, d, d.name());
+                }
             }).response.on_hover_text("Stroke style");
             egui::ComboBox::from_id_salt("cap").width(64.0).selected_text(match v.cap { Cap::None => "No cap", Cap::Round => "Round", Cap::Square => "Square" }).show_ui(ui, |ui| {
                 ui.selectable_value(&mut v.cap, Cap::None, "None");

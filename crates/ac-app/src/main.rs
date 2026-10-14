@@ -93,6 +93,10 @@ pub struct App {
     pub(crate) topts: toolbar::ToolOpts,
     pub(crate) pen: Option<stage::PenState>,
     pub(crate) poly_lasso: Vec<Pt>,
+    /// Ctrl/Cmd held during the current stage press (Ctrl-drag adds a corner).
+    pub(crate) cmd_down: bool,
+    /// Copied variable-width profile (Width tool ▸ Copy width profile).
+    pub(crate) width_clip: Option<Vec<(f32, f32)>>,
     pub(crate) text_edit: Option<stage::TextEdit>,
     pub(crate) snap_guides: (Option<f32>, Option<f32>),
     pub(crate) props_tab: PropsTab,
@@ -185,6 +189,8 @@ impl App {
             topts: Default::default(),
             pen: None,
             poly_lasso: vec![],
+            cmd_down: false,
+            width_clip: None,
             text_edit: None,
             snap_guides: (None, None),
             props_tab: PropsTab::Frame,

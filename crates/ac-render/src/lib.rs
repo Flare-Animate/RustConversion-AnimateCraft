@@ -117,9 +117,14 @@ fn draw_item(pix: &mut sk::PixmapMut, it: &DrawItem, opts: &RenderOpts, masks: &
         let mut paint = sk::Paint { anti_alias: true, ..Default::default() };
         let stops: Vec<sk::GradientStop> = g.stops.iter().map(|(t, c)| sk::GradientStop::new(t.clamp(0.0, 1.0), shade(*c, alpha, tint))).collect();
         let gts = to_sk_transform(&g.matrix); // tiny-skia applies the fill transform to the shader too
+        let spread = match g.spread {
+            ac_core::Spread::Pad => sk::SpreadMode::Pad,
+            ac_core::Spread::Reflect => sk::SpreadMode::Reflect,
+            ac_core::Spread::Repeat => sk::SpreadMode::Repeat,
+        };
         let shader = match g.kind {
-            ac_core::GradientKind::Linear => sk::LinearGradient::new(sk::Point::from_xy(-1.0, 0.0), sk::Point::from_xy(1.0, 0.0), stops, sk::SpreadMode::Pad, gts),
-            ac_core::GradientKind::Radial => sk::RadialGradient::new(sk::Point::from_xy(0.0, 0.0), sk::Point::from_xy(0.0, 0.0), 1.0, stops, sk::SpreadMode::Pad, gts),
+            ac_core::GradientKind::Linear => sk::LinearGradient::new(sk::Point::from_xy(-1.0, 0.0), sk::Point::from_xy(1.0, 0.0), stops, spread, gts),
+            ac_core::GradientKind::Radial => sk::RadialGradient::new(sk::Point::from_xy(0.0, 0.0), sk::Point::from_xy(0.0, 0.0), 1.0, stops, spread, gts),
         };
         match shader {
             Some(sh) => {
@@ -162,7 +167,7 @@ fn sk_stroke(width: f32, st: &ac_core::StrokeStyle) -> sk::Stroke {
         Join::Bevel => sk::LineJoin::Bevel,
     };
     let dash = match st.dash {
-        Dash::Solid => None,
+        Dash::Solid | Dash::Ragged | Dash::Stipple | Dash::Hatched => None,
         Dash::Dashed => sk::StrokeDash::new(vec![(st.dash_len * w).max(0.5), (st.gap * w).max(0.5)], 0.0),
         Dash::Dotted => sk::StrokeDash::new(vec![0.01, (st.gap * w).max(w * 1.2)], 0.0),
     };
@@ -567,7 +572,12 @@ impl SvgWriter<'_> {
                     let gid = self.id("g");
                     let tag = if g.kind == ac_core::GradientKind::Linear { "linearGradient" } else { "radialGradient" };
                     let geo = if g.kind == ac_core::GradientKind::Linear { "x1=\"-1\" y1=\"0\" x2=\"1\" y2=\"0\"" } else { "cx=\"0\" cy=\"0\" r=\"1\"" };
-                    self.defs += &format!("<{tag} id=\"{gid}\" gradientUnits=\"userSpaceOnUse\" {geo} gradientTransform=\"{}\">", svg_matrix(&g.matrix));
+                    let spread = match g.spread {
+                        ac_core::Spread::Pad => "",
+                        ac_core::Spread::Reflect => " spreadMethod=\"reflect\"",
+                        ac_core::Spread::Repeat => " spreadMethod=\"repeat\"",
+                    };
+                    self.defs += &format!("<{tag} id=\"{gid}\" gradientUnits=\"userSpaceOnUse\" {geo}{spread} gradientTransform=\"{}\">", svg_matrix(&g.matrix));
                     for (t, c) in &g.stops {
                         let (h, a) = col(*c);
                         self.defs += &format!("<stop offset=\"{t:.3}\" stop-color=\"{h}\" stop-opacity=\"{a:.3}\"/>");
@@ -598,7 +608,7 @@ impl SvgWriter<'_> {
                             Join::Bevel => "bevel",
                         };
                         let dash = match st.dash {
-                            Dash::Solid => String::new(),
+                            Dash::Solid | Dash::Ragged | Dash::Stipple | Dash::Hatched => String::new(),
                             Dash::Dashed => format!(" stroke-dasharray=\"{} {}\"", st.dash_len * s.width, st.gap * s.width),
                             Dash::Dotted => format!(" stroke-dasharray=\"0.01 {}\"", (st.gap * s.width).max(s.width * 1.2)),
                         };

@@ -2,7 +2,7 @@
 //! document; outlines are produced at evaluation time, so it renders and
 //! exports exactly like shapes.
 
-use crate::geom::{pt, Path, Seg};
+use crate::geom::{pt, Path, Pt, Seg};
 use ab_glyph::{Font, FontRef, FontVec, OutlineCurve, ScaleFont};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -123,6 +123,44 @@ fn outline_with<F: Font>(font: &F, text: &str, size: f32, align: Align, letter_s
         }
     }
     Path { segs }
+}
+
+/// Top-left position of every visible character (Break Apart: one text
+/// object per letter), same layout as `text_path`.
+pub fn letter_positions(text: &str, size: f32, family: Option<&str>, face: FontFace, align: Align, letter_spacing: f32) -> Vec<(char, Pt)> {
+    match family.and_then(family_font) {
+        Some(f) => letters_with(&*f, text, size, align, letter_spacing),
+        None => letters_with(font(face), text, size, align, letter_spacing),
+    }
+}
+
+fn letters_with<F: Font>(font: &F, text: &str, size: f32, align: Align, letter_spacing: f32) -> Vec<(char, Pt)> {
+    let f = font.as_scaled(size.max(1.0));
+    let line_h = f.height() + f.line_gap();
+    let lines: Vec<&str> = text.split('\n').collect();
+    let widths: Vec<f32> = lines.iter().map(|l| line_width(&f, l, letter_spacing)).collect();
+    let max_w = widths.iter().cloned().fold(0.0, f32::max);
+    let mut out = vec![];
+    for (li, line) in lines.iter().enumerate() {
+        let mut x = match align {
+            Align::Left => 0.0,
+            Align::Center => (max_w - widths[li]) / 2.0,
+            Align::Right => max_w - widths[li],
+        };
+        let mut prev: Option<ab_glyph::GlyphId> = None;
+        for ch in line.chars() {
+            let id = f.glyph_id(ch);
+            if let Some(p) = prev {
+                x += f.kern(p, id);
+            }
+            if !ch.is_whitespace() {
+                out.push((ch, pt(x, li as f32 * line_h)));
+            }
+            x += f.h_advance(id) + letter_spacing;
+            prev = Some(id);
+        }
+    }
+    out
 }
 
 fn line_width<F: Font, S: ScaleFont<F>>(f: &S, line: &str, spacing: f32) -> f32 {

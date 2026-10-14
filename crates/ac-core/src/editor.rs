@@ -1355,16 +1355,54 @@ impl Editor {
         let Some(el) = self.element_at(s) else { return };
         if matches!(el.kind, ElementKind::Shape(_)) && self.layer_editable(s.layer) {
             // drawing objects (and text broken twice) become merge shape
-            let shapes: Vec<Selection> = self.selection.iter().rev().copied().filter(|x| matches!(self.element_at(*x).map(|e| e.kind), Some(ElementKind::Shape(_)))).collect();
+            let shapes: Vec<Selection> = self.selection.iter().copied().filter(|x| matches!(self.element_at(*x).map(|e| e.kind), Some(ElementKind::Shape(_)))).collect();
             let mark = self.undo_depth();
-            for x in shapes {
-                self.shape_to_merge(x);
-            }
+            self.shapes_to_merge(shapes, &mut []);
             self.squash_undo(mark, "Break Apart");
             return;
         }
         if matches!(el.kind, ElementKind::Group(_)) {
             self.ungroup_selected();
+            return;
+        }
+        if !self.layer_editable(s.layer) {
+            return;
+        }
+        // text: several letters → one text object per letter; one letter → shapes.
+        // bitmap → a merge-shape rectangle filled with the bitmap.
+        if matches!(el.kind, ElementKind::Text(_) | ElementKind::Bitmap(_)) {
+            let mut targets: Vec<Selection> = self.selection.iter().copied().filter(|x| x.layer == s.layer && matches!(self.element_at(*x).map(|e| e.kind), Some(ElementKind::Text(_) | ElementKind::Bitmap(_)))).collect();
+            targets.sort_by_key(|x| std::cmp::Reverse(x.element));
+            let mark = self.undo_depth();
+            let mut new_sel: Vec<Selection> = vec![];
+            let mut to_merge: Vec<Selection> = vec![];
+            for x in targets {
+                let Some(el) = self.element_at(x) else { continue };
+                let parts = self.break_parts(&el);
+                if parts.is_empty() {
+                    continue;
+                }
+                let n = parts.len();
+                let shape = letters_is_shape(&parts);
+                self.replace_with_parts(x, parts, "Break Apart");
+                // earlier results sit above this one: shift them
+                for v in new_sel.iter_mut().chain(to_merge.iter_mut()) {
+                    v.element += n - 1;
+                }
+                if shape {
+                    to_merge.push(x);
+                } else {
+                    new_sel.extend((x.element..x.element + n).map(|element| Selection { layer: x.layer, element }));
+                }
+            }
+            // single letters and bitmaps join the layer's merge shape, as in Animate
+            let merged = !to_merge.is_empty();
+            self.shapes_to_merge(to_merge, &mut new_sel);
+            if !merged {
+                new_sel.sort();
+                self.selection = new_sel;
+            }
+            self.squash_undo(mark, "Break Apart");
             return;
         }
         let ElementKind::Instance(inst) = &el.kind else { return };
@@ -1383,6 +1421,48 @@ impl Editor {
             return;
         }
         self.checkpoint("Break Apart");
+        let Some(start) = self.target_keyframe(s.layer, false) else { return };
+        let els = &mut self.timeline_mut().layers[s.layer].keyframes.get_mut(&start).unwrap().elements;
+        if s.element >= els.len() {
+            return;
+        }
+        els.remove(s.element);
+        let n = parts.len();
+        for (i, p) in parts.into_iter().enumerate() {
+            els.insert(s.element + i, p);
+        }
+        let at = s.element;
+        self.remap_bones(s.layer, |i| if i == at { None } else if i > at { Some(i + n - 1) } else { Some(i) });
+        self.selection = (s.element..s.element + n).map(|element| Selection { layer: s.layer, element }).collect();
+    }
+
+    /// What Break Apart turns a text or bitmap object into.
+    fn break_parts(&self, el: &Element) -> Vec<Element> {
+        match &el.kind {
+            ElementKind::Text(t) => {
+                let letters = crate::text::letter_positions(&t.text, t.size, t.family.as_deref(), t.font, t.align, t.letter_spacing);
+                if letters.len() > 1 {
+                    letters
+                        .into_iter()
+                        .map(|(ch, at)| Element { kind: ElementKind::Text(TextEl { text: ch.to_string(), align: crate::text::Align::Left, ..t.clone() }), matrix: el.matrix.concat(&Matrix::translate(at.x, at.y)), name: String::new(), ..el.clone() })
+                        .collect()
+                } else {
+                    vec![Element { kind: ElementKind::Shape(Shape::new(t.outline(), Some(t.color), None)), name: String::new(), ..el.clone() }]
+                }
+            }
+            ElementKind::Bitmap(b) => {
+                let Some(asset) = self.doc.bitmap(b.bitmap) else { return vec![] };
+                let mut sh = Shape::new(Path::rect(0.0, 0.0, asset.width as f32, asset.height as f32), None, None);
+                sh.bitmap_fill = Some(BitmapFill { bitmap: b.bitmap, matrix: Matrix::IDENTITY });
+                vec![Element { kind: ElementKind::Shape(sh), name: String::new(), ..el.clone() }]
+            }
+            _ => vec![],
+        }
+    }
+
+    /// Replace the object at `s` by `parts` (one undo step), selecting them.
+    fn replace_with_parts(&mut self, s: Selection, parts: Vec<Element>, label: &str) {
+        self.checkpoint(label);
         let Some(start) = self.target_keyframe(s.layer, false) else { return };
         let els = &mut self.timeline_mut().layers[s.layer].keyframes.get_mut(&start).unwrap().elements;
         if s.element >= els.len() {
@@ -1964,6 +2044,30 @@ impl Editor {
         self.frame_sel = None;
     }
     /// Marquee / lasso over merge shapes: cuts out what is inside and selects it.
+    /// Magic Wand (Lasso tool slot): select the similar-coloured part of a
+    /// broken-apart bitmap under `p` (stage coordinates). `threshold` 0–200.
+    pub fn magic_wand(&mut self, p: Pt, threshold: f32, add: bool) -> bool {
+        for li in 0..self.timeline().layers.len() {
+            if !self.layer_editable(li) {
+                continue;
+            }
+            let Some(c) = self.canvas(li) else { continue };
+            let lp = self.canvas_inv(li).apply(p);
+            let Some(r) = c.fill_at(lp).map(|i| &c.fills[i]) else { continue };
+            let Some(b) = r.bitmap else { continue };
+            let Some(img) = self.doc.bitmap(b.bitmap).and_then(|a| a.image()) else { continue };
+            let Some(area) = c.magic_wand_area(lp, &img, threshold.clamp(0.0, 255.0)) else { continue };
+            let m = self.canvas_inv(li).invert().unwrap_or(Matrix::IDENTITY);
+            let world: Vec<Vec<Pt>> = area.iter().map(|c| c.iter().map(|x| m.apply(*x)).collect()).collect();
+            if !add {
+                self.commit_floats();
+                self.selection.clear();
+            }
+            return self.merge_select_area(&world, true);
+        }
+        false
+    }
+
     pub fn merge_select_area(&mut self, area: &[Vec<Pt>], add: bool) -> bool {
         let mut any = false;
         for li in 0..self.timeline().layers.len() {
@@ -2031,6 +2135,33 @@ impl Editor {
             }
         }
     }
+    /// Bitmap-fill the fills of the floating merge selection (None = back to
+    /// the first colour). The bitmap tiles from the selection's top-left.
+    pub fn merge_bitmap_fill(&mut self, bitmap: Option<crate::bitmap::BitmapId>) -> bool {
+        let layers: Vec<usize> = self.selection.iter().map(|s| s.layer).filter(|l| self.canvas(*l).is_some_and(|c| c.float.is_some())).collect();
+        if layers.is_empty() {
+            return false;
+        }
+        self.checkpoint("Bitmap Fill");
+        for li in layers {
+            let Some((key, ei)) = self.canvas_at(li) else { continue };
+            let Some(c) = self.canvas_mut(li, key, ei) else { continue };
+            let Some(f) = c.float.as_mut() else { continue };
+            let all: Vec<crate::merge::Part> = (0..f.fills.len()).map(crate::merge::Part::Fill).collect();
+            match bitmap {
+                Some(b) => {
+                    let o = f.bounds().map(|(lo, _)| lo).unwrap_or_default();
+                    f.set_bitmap_fill(&all, BitmapFill { bitmap: b, matrix: Matrix::translate(o.x, o.y) });
+                }
+                None => {
+                    let c0 = f.fills.first().and_then(|r| r.fill);
+                    f.set_fill(&all, c0, None);
+                }
+            }
+        }
+        true
+    }
+
     /// The floating merge selection (for Properties): (layer, piece).
     pub fn merge_float(&self) -> Option<(usize, &crate::merge::MergeShape)> {
         self.selection.iter().find_map(|s| self.canvas(s.layer).and_then(|c| c.float.as_deref()).map(|f| (s.layer, f)))
@@ -2128,11 +2259,37 @@ impl Editor {
     }
 
     /// Break Apart on a drawing object: it becomes part of the layer's merge shape.
+    /// Move several drawing objects (one layer per call site) into their
+    /// layers' merge shapes; `keep` are other selections on those layers whose
+    /// indices are fixed up as objects are removed and the shape is created.
+    fn shapes_to_merge(&mut self, mut sels: Vec<Selection>, keep: &mut [Selection]) {
+        sels.sort_by_key(|x| std::cmp::Reverse(x.element));
+        let layers: std::collections::BTreeSet<usize> = sels.iter().map(|x| x.layer).collect();
+        for li in layers {
+            if self.canvas_at(li).is_none() && self.layer_editable(li) {
+                // create the layer's shape first (it goes to the bottom), so indices stay valid
+                self.checkpoint("Break Apart");
+                if self.canvas_for_drawing(li).is_some() {
+                    for v in sels.iter_mut().chain(keep.iter_mut()).filter(|v| v.layer == li) {
+                        v.element += 1;
+                    }
+                }
+            }
+        }
+        for x in sels {
+            self.shape_to_merge(x);
+            for v in keep.iter_mut().filter(|v| v.layer == x.layer && v.element > x.element) {
+                v.element -= 1;
+            }
+        }
+    }
+
     fn shape_to_merge(&mut self, s: Selection) -> bool {
         let Some(el) = self.element_at(s) else { return false };
         let ElementKind::Shape(sh) = &el.kind else { return false };
         let path = sh.path.transformed(&el.matrix);
-        let (fill, grad, stroke) = (sh.fill, sh.gradient.clone(), sh.stroke);
+        let (fill, grad, stroke, bitmap) = (sh.fill, sh.gradient.clone(), sh.stroke, sh.bitmap_fill);
+        let el_m = el.matrix;
         self.checkpoint("Break Apart");
         let Some(key) = self.target_keyframe(s.layer, false) else { return false };
         self.timeline_mut().layers[s.layer].keyframes.get_mut(&key).unwrap().elements.remove(s.element);
@@ -2142,10 +2299,25 @@ impl Editor {
         let inv = self.canvas_inv(li);
         let has = self.canvas_at(li).is_some();
         let Some((key, ei)) = self.canvas_for_drawing(li) else { return false };
-        let local = path.transformed(&if has { inv } else { Matrix::IDENTITY });
+        let to_local = if has { inv } else { Matrix::IDENTITY };
+        let local = path.transformed(&to_local);
+        // paint placed in the object's space moves into the shape's space
+        let grad = grad.map(|g| Gradient { matrix: to_local.concat(&el_m).concat(&g.matrix), ..g });
+        let bitmap = bitmap.map(|b| BitmapFill { matrix: to_local.concat(&el_m).concat(&b.matrix), ..b });
         if let Some(c) = self.canvas_mut(li, key, ei) {
             c.commit_float();
-            c.add_path(&local, fill, grad, stroke);
+            match bitmap {
+                Some(b) => {
+                    let paint = crate::merge::FillRegion { fill, gradient: None, bitmap: Some(b), contours: vec![] };
+                    c.add_region(&crate::merge::path_polygons(&local), &paint, true);
+                    if let Some(st) = stroke {
+                        for (pts, closed) in crate::merge::path_polylines(&local) {
+                            c.add_stroke(&pts, closed, st);
+                        }
+                    }
+                }
+                None => c.add_path(&local, fill, grad, stroke),
+            }
         }
         self.selection.clear();
         true
@@ -2278,8 +2450,9 @@ impl Editor {
         });
     }
 
-    /// Start bending an edge or dragging a corner of a merge shape at `p`.
-    pub fn merge_begin_bend(&self, p: Pt, tol: f32) -> Option<(usize, u32, usize, crate::merge::Bend, Matrix)> {
+    /// Start bending an edge or dragging a corner of a merge shape at `p`;
+    /// `sharp` (Ctrl-drag) adds a corner on the edge instead of curving it.
+    pub fn merge_begin_bend(&self, p: Pt, tol: f32, sharp: bool) -> Option<(usize, u32, usize, crate::merge::Bend, Matrix)> {
         for li in 0..self.timeline().layers.len() {
             if !self.layer_editable(li) {
                 continue;
@@ -2287,7 +2460,7 @@ impl Editor {
             let Some((key, ei)) = self.canvas_at(li) else { continue };
             let inv = self.canvas_inv(li);
             let c = self.canvas(li)?;
-            if let Some(b) = c.begin_bend(inv.apply(p), tol) {
+            if let Some(b) = c.begin_bend_ex(inv.apply(p), tol, sharp) {
                 return Some((li, key, ei, b, inv));
             }
         }
@@ -3148,4 +3321,8 @@ pub enum LayerFlag {
     Visible,
     Locked,
     Outline,
+}
+
+fn letters_is_shape(parts: &[Element]) -> bool {
+    parts.len() == 1 && matches!(parts[0].kind, ElementKind::Shape(_))
 }

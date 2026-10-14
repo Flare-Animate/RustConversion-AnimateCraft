@@ -77,6 +77,7 @@ cmds! {
     "select.at", "x, y, add?", "Select the topmost object at a point";
     "select.rect", "x, y, w, h, add?", "Select objects fully inside a box";
     "select.element", "layer, index (0-based, bottom first), add?", "Select one object by layer and stacking index";
+    "select.magic_wand", "x, y, threshold? (20), add?", "Magic Wand: select the similar-coloured part of a broken-apart bitmap";
     "frame.info", "layer?, frame?", "The keyframe span at the target: start, duration, label, tween, script, sound and its objects";
     "symbol.new", "name, kind? ('graphic'|'movieclip'|'button')", "Ctrl+F8: new empty symbol, opened for editing; returns its id";
     "selection.info", "", "Selected objects with kind, name and bounds";
@@ -92,7 +93,7 @@ cmds! {
     "selection.skew", "h? (deg), v? (deg)", "Skew horizontally / vertically around the selection centre";
     "selection.set_3d", "rx?, ry?, rz? (deg), z?", "3D rotation and depth (perspective-projected)";
     "selection.distort", "corners [[x,y] x4: TL, TR, BR, BL]", "Distort shapes onto a quadrilateral";
-    "selection.set_gradient", "kind ('linear'|'radial'|'none'), colors [\"#RRGGBB\"...]", "Gradient fill on selected shapes";
+    "selection.set_gradient", "kind ('linear'|'radial'|'none'), colors [\"#RRGGBB\"...], flow? ('extend'|'reflect'|'repeat')", "Gradient fill on selected shapes";
     "bone.add", "x1, y1, x2, y2", "Bone from the object at (x1,y1) to the object at (x2,y2) on the current layer";
     "bone.list", "layer?", "Bones on a layer";
     "bone.clear", "layer?", "Remove all bones on a layer";
@@ -110,8 +111,8 @@ cmds! {
     "merge.to_object", "", "Turn the floating merge selection into a drawing object";
     "selection.combine", "op ('union'|'intersect'|'punch'|'crop')", "Modify ▸ Combine Objects on the selected drawing objects";
     "selection.shape", "op ('smooth'|'straighten'|'optimize')", "Modify ▸ Shape cleanup on drawing objects or a merge selection";
-    "selection.stroke_style", "dash? ('solid'|'dashed'|'dotted'), cap? ('none'|'round'|'square'), join? ('miter'|'round'|'bevel'), dash_len?, gap?", "Stroke style of selected drawing objects";
-    "selection.bitmap_fill", "bitmap (name or id, null = none)", "Fill selected drawing objects with a library bitmap";
+    "selection.stroke_style", "dash? ('solid'|'dashed'|'dotted'|'ragged'|'stipple'|'hatched'), cap? ('none'|'round'|'square'), join? ('miter'|'round'|'bevel'), dash_len?, gap?", "Stroke style of selected drawing objects";
+    "selection.bitmap_fill", "bitmap (name or id, null = none)", "Fill selected drawing objects, or the merge-shape selection, with a library bitmap";
     "draw.rect_primitive", "x, y, w, h, radius? or radii [tl,tr,br,bl], fill?, stroke?", "Rectangle Primitive (corner radii stay editable)";
     "draw.oval_primitive", "x, y, w, h, start?, end?, inner? (%), fill?, stroke?", "Oval Primitive (angles and inner radius stay editable)";
     "shape_bone.add", "x1, y1, x2, y2", "Bone inside the drawing object at (x1,y1), from (x1,y1) to (x2,y2); chains onto a bone ending at (x1,y1)";
@@ -815,6 +816,7 @@ pub fn execute(ed: &mut Editor, id: &str, a: &Value) -> Result<Value, String> {
             ed.select_in_rect(pt(x, y), pt(x + req(a, "w")?, y + req(a, "h")?), boolean(a, "add").unwrap_or(false));
             Ok(json!(ed.selection.len()))
         }
+        "select.magic_wand" => Ok(json!(ed.magic_wand(pt(req(a, "x")?, req(a, "y")?), num(a, "threshold").unwrap_or(20.0), boolean(a, "add").unwrap_or(false)))),
         "select.element" => {
             let li = layer_arg(ed, a, "layer")?.ok_or("missing 'layer'")?;
             let idx = num(a, "index").ok_or("missing 'index'")? as usize;
@@ -1046,9 +1048,15 @@ pub fn execute(ed: &mut Editor, id: &str, a: &Value) -> Result<Value, String> {
             }
             let n = colors.len();
             let stops: Vec<(f32, Color)> = colors.into_iter().enumerate().map(|(i, c)| (i as f32 / (n - 1).max(1) as f32, c)).collect();
+            let spread = match string(a, "flow").unwrap_or("extend") {
+                "extend" | "pad" => Spread::Pad,
+                "reflect" => Spread::Reflect,
+                "repeat" => Spread::Repeat,
+                f => return Err(format!("unknown flow '{f}' (extend, reflect, repeat)")),
+            };
             ed.modify_selected("Gradient", |e| {
                 if let ElementKind::Shape(sh) = &mut e.kind {
-                    sh.gradient = kind.and_then(|k| sh.path.bounds().map(|(lo, hi)| Gradient::fit(k, stops.clone(), lo, hi)));
+                    sh.gradient = kind.and_then(|k| sh.path.bounds().map(|(lo, hi)| Gradient { spread, ..Gradient::fit(k, stops.clone(), lo, hi) }));
                 }
             });
             Ok(Value::Null)
@@ -1208,6 +1216,9 @@ pub fn execute(ed: &mut Editor, id: &str, a: &Value) -> Result<Value, String> {
                         Some("dashed") => st.dash = Dash::Dashed,
                         Some("dotted") => st.dash = Dash::Dotted,
                         Some("solid") => st.dash = Dash::Solid,
+                        Some("ragged") => st.dash = Dash::Ragged,
+                        Some("stipple") => st.dash = Dash::Stipple,
+                        Some("hatched") => st.dash = Dash::Hatched,
                         _ => {}
                     }
                     match cap.as_deref() {
@@ -1239,6 +1250,9 @@ pub fn execute(ed: &mut Editor, id: &str, a: &Value) -> Result<Value, String> {
                 Some(Value::String(s)) => Some(ed.doc.bitmaps.iter().find(|b| b.name == *s).map(|b| b.id).ok_or_else(|| format!("no bitmap named '{s}'"))?),
                 _ => return Err("bitmap must be a name, id or null".into()),
             };
+            if ed.merge_bitmap_fill(id) {
+                return Ok(Value::Null);
+            }
             ed.modify_selected("Bitmap Fill", move |e| {
                 if let ElementKind::Shape(sh) = &mut e.kind {
                     let o = sh.path.bounds().map(|(lo, _)| lo).unwrap_or_default();

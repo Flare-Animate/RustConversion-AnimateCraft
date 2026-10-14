@@ -101,6 +101,26 @@ pub enum Dash {
     Solid,
     Dashed,
     Dotted,
+    /// Wobbly, hand-drawn line.
+    Ragged,
+    /// Scattered dots across the stroke's width.
+    Stipple,
+    /// Short strokes across the line.
+    Hatched,
+}
+
+impl Dash {
+    pub const ALL: [Dash; 6] = [Dash::Solid, Dash::Dashed, Dash::Dotted, Dash::Ragged, Dash::Stipple, Dash::Hatched];
+    pub fn name(self) -> &'static str {
+        match self {
+            Dash::Solid => "Solid",
+            Dash::Dashed => "Dashed",
+            Dash::Dotted => "Dotted",
+            Dash::Ragged => "Ragged",
+            Dash::Stipple => "Stipple",
+            Dash::Hatched => "Hatched",
+        }
+    }
 }
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Cap {
@@ -172,6 +192,33 @@ pub struct Gradient {
     pub kind: GradientKind,
     pub stops: Vec<(f32, Color)>,
     pub matrix: Matrix,
+    /// Color panel ▸ Flow: what happens past the ends.
+    #[serde(default, skip_serializing_if = "Spread::is_pad")]
+    pub spread: Spread,
+}
+
+/// Gradient overflow (Animate's Extend / Reflect / Repeat).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum Spread {
+    /// Extend the end colours.
+    #[default]
+    Pad,
+    Reflect,
+    Repeat,
+}
+
+impl Spread {
+    pub const ALL: [Spread; 3] = [Spread::Pad, Spread::Reflect, Spread::Repeat];
+    fn is_pad(&self) -> bool {
+        *self == Spread::Pad
+    }
+    pub fn name(self) -> &'static str {
+        match self {
+            Spread::Pad => "Extend",
+            Spread::Reflect => "Reflect",
+            Spread::Repeat => "Repeat",
+        }
+    }
 }
 
 impl Gradient {
@@ -186,7 +233,7 @@ impl Gradient {
                 Matrix::scale(r, r)
             }
         };
-        Gradient { kind, stops, matrix: Matrix::translate(c.x, c.y).concat(&s) }
+        Gradient { kind, stops, matrix: Matrix::translate(c.x, c.y).concat(&s), spread: Spread::Pad }
     }
     pub fn lerp(&self, o: &Gradient, t: f32) -> Gradient {
         if self.kind != o.kind || self.stops.len() != o.stops.len() {
@@ -196,6 +243,7 @@ impl Gradient {
             kind: self.kind,
             stops: self.stops.iter().zip(&o.stops).map(|(a, b)| (a.0 + (b.0 - a.0) * t, a.1.lerp(b.1, t))).collect(),
             matrix: self.matrix.interpolate(&o.matrix, t, 0),
+            spread: self.spread,
         }
     }
 }
@@ -1120,12 +1168,24 @@ pub fn eval_element(ctx: &EvalCtx, el: &Element, parent: &Matrix, alpha: f32, lo
                 }
                 _ => s,
             };
-            shape_items(s, m, a, el.tint, outline, out);
+            let art = crate::strokes::is_artistic(s.stroke_style.dash) && s.stroke.is_some() && s.width_profile.is_none();
+            if art {
+                shape_items(&Shape { stroke: None, ..s.clone() }, m, a, el.tint, outline, out);
+            } else {
+                shape_items(s, m, a, el.tint, outline, out);
+            }
             let pattern = s.bitmap_fill.and_then(|b| ctx.doc.bitmap(b.bitmap).and_then(|asset| asset.image()).map(|img| (img, b.matrix)));
             for it in &mut out[first..] {
                 it.stroke_style = s.stroke_style;
                 if it.fill.is_some() || it.gradient.is_some() {
                     it.pattern = pattern.clone();
+                }
+            }
+            if art {
+                // ragged / stipple / hatched: generated geometry, drawn solid
+                let solid = StrokeStyle { dash: Dash::Solid, ..s.stroke_style };
+                for (path, fill, stroke) in crate::strokes::artistic(&s.path, s.stroke.unwrap(), s.stroke_style.dash) {
+                    out.push(DrawItem { fill, stroke, alpha: a, tint: el.tint, outline, stroke_style: solid, ..DrawItem::new(path, m) });
                 }
             }
         }
@@ -1143,7 +1203,10 @@ pub fn eval_element(ctx: &EvalCtx, el: &Element, parent: &Matrix, alpha: f32, lo
         ElementKind::Canvas(c) => {
             for part in std::iter::once(c).chain(c.float.as_deref()) {
                 for r in &part.fills {
-                    out.push(DrawItem { fill: r.fill, gradient: r.gradient.clone(), alpha: a, tint: el.tint, outline, ..DrawItem::new(r.path(), m) });
+                    let pattern = r.bitmap.and_then(|b| ctx.doc.bitmap(b.bitmap).and_then(|asset| asset.image()).map(|img| (img, b.matrix)));
+                    // a bitmap-filled region still needs a fill to be drawn (grey if the bitmap is missing)
+                    let fill = if r.bitmap.is_some() { r.fill.or(Some(Color::rgb(128, 128, 128))) } else { r.fill };
+                    out.push(DrawItem { fill, gradient: r.gradient.clone(), pattern, alpha: a, tint: el.tint, outline, ..DrawItem::new(r.path(), m) });
                 }
                 for st in &part.strokes {
                     out.push(DrawItem { stroke: Some(st.stroke), alpha: a, tint: el.tint, outline, ..DrawItem::new(st.path(), m) });

@@ -194,3 +194,46 @@ fn dropping_layers_into_folders() {
     assert_eq!(ed.timeline().layers[2].parent, Some(1));
     assert_eq!(ed.timeline().layers[3].parent, Some(1));
 }
+
+#[test]
+fn gradient_flow_extends_reflects_and_repeats() {
+    // a black→white linear gradient over x 0..50 on a 200 px wide rectangle
+    let mk = |spread: Spread| {
+        let mut sh = Shape::new(Path::rect(0.0, 0.0, 200.0, 20.0), None, None);
+        sh.gradient = Some(Gradient { spread, ..Gradient::fit(GradientKind::Linear, vec![(0.0, Color::rgb(0, 0, 0)), (1.0, Color::rgb(255, 255, 255))], pt(0.0, 0.0), pt(50.0, 20.0)) });
+        doc_with(vec![layer("g", vec![Element::shape("", sh)])])
+    };
+    // at x = 60 (just past the end): extend = white, repeat = dark again, reflect = light
+    let e = px(&mk(Spread::Pad), 0, 60, 10)[0];
+    let r = px(&mk(Spread::Repeat), 0, 60, 10)[0];
+    let f = px(&mk(Spread::Reflect), 0, 60, 10)[0];
+    assert!(e > 245, "extend {e}");
+    assert!(r < 60, "repeat {r}");
+    assert!(f > 190 && f < 245, "reflect {f}");
+}
+
+#[test]
+fn artistic_strokes_render_as_geometry() {
+    let ink = |dash: Dash| {
+        let mut sh = Shape::new(Path { segs: vec![Seg::M(pt(20.0, 100.0)), Seg::L(pt(180.0, 100.0))] }, None, Some(Stroke { color: Color::rgb(0, 0, 0), width: 6.0 }));
+        sh.stroke_style.dash = dash;
+        let doc = doc_with(vec![layer("s", vec![Element::shape("", sh)])]);
+        let img = render_frame(&doc, 0, 1.0);
+        let mut n = 0;
+        for y in 85..116 {
+            for x in 0..200 {
+                let p = img.pixel(x, y).unwrap().demultiply();
+                if p.alpha() > 0 && p.red() < 128 {
+                    n += 1;
+                }
+            }
+        }
+        n
+    };
+    let solid = ink(Dash::Solid);
+    assert!(solid > 800, "solid {solid}");
+    for d in [Dash::Ragged, Dash::Stipple, Dash::Hatched] {
+        let n = ink(d);
+        assert!(n > solid / 10 && n != solid, "{d:?}: {n} px vs solid {solid}");
+    }
+}

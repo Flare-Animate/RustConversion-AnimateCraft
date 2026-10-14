@@ -104,3 +104,16 @@
 - Lottie: masks become alpha track mattes (checked in lottie-web).
 - Convert to Symbol no longer names the new instance after the symbol (Animate leaves it blank).
 - Tests: 111. Xvfb: held playback, Sound ▸ Effect, the Lip Syncing picker + Lip Sync on a mouth symbol.
+
+## 2026-10-14 — Closing Phase 1–4 gaps, batch B (Phase 3 drawing)
+- Gradient Flow (Extend / Reflect / Repeat) in the gradient editor, `set_gradient flow:`, renderer, SVG (`spreadMethod`), HTML5 (stops unrolled over 12 periods), `.fla` read/write; SVG import keeps it.
+- Artistic stroke styles Ragged, Stipple and Hatched (`ac_core::strokes`): seeded geometry generated at evaluation, so every renderer/exporter draws them the same; `.fla` RaggedStroke/StippleStroke/HatchedStroke.
+- Bitmap fills on merge shapes: Properties ▸ Bitmap fill on a selected fill, merge-region paint carries the bitmap (same bitmap merges, cuts/transforms keep it), Gradient Transform edits its matrix, `selection.bitmap_fill` works on merge selections.
+- Break Apart on text (several letters → one text object per letter; one letter → its outline joins the merge shape) and on bitmaps (→ a merge-shape rectangle with a bitmap fill). Works on several selected objects in one undo step; fixed index shifting when Break Apart creates the layer's merge shape (also affected breaking apart several drawing objects).
+- Magic Wand (Lasso flyout, threshold in Tool properties, `select.magic_wand`): tolerance flood fill on the broken-apart bitmap, the area becomes a floating merge selection (Delete cuts it out).
+- Paint Brush shapes: Round, Oval, Square, Flat horizontal/vertical, Slant / and \ (tip swept along the stroke as a Minkowski sum); the cursor shows the tip.
+- Ctrl-drag on an edge with the Selection tool adds a corner (straight falloff to the neighbouring corners).
+- Width tool: Alt+click deletes a width point; Copy/Paste width profile (Tool properties and Object properties).
+- Fix: dropping a lifted fill back (deselect) no longer erases the lines on its own boundary — stroke cutting now keeps segments that lie on the cut area's edge.
+- Tests: 120 (phase3_gaps.rs: break apart text/bitmap + wand, bitmap fills merging, brush shapes, Ctrl-drag corner, lift keeps outline; artistic strokes render). Xvfb: Magic Wand on a broken-apart two-colour bitmap + Delete, slanted brush stroke, Ctrl-drag corner, width point delete, profile copy/paste.
+- Still open: the Width tool on merge-shape lines (drawing objects only), library "Uses" doesn't count bitmap fills.

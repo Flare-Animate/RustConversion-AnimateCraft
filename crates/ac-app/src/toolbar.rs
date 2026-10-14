@@ -19,6 +19,7 @@ pub enum Tool {
     Translate3D,
     Lasso,
     PolyLasso,
+    MagicWand,
     Pen,
     AddAnchor,
     DeleteAnchor,
@@ -77,6 +78,7 @@ impl Tool {
             Tool::Translate3D => t("3D Translation", Some(G), false, "Move in 3D: red arrow = X, green arrow = Y, centre dot = depth (Z)"),
             Tool::Lasso => t("Lasso", Some(L), false, "Draw a freehand loop to select the objects inside it"),
             Tool::PolyLasso => t("Polygon Lasso", None, false, "Click corners of a selection polygon; double-click to finish"),
+            Tool::MagicWand => t("Magic Wand", None, false, "Click a broken-apart bitmap to select the area of similar colour (Shift adds). Threshold in Tool properties"),
             Tool::Pen => t("Pen", Some(P), false, "Click for corners, drag for curves; click the first point to close; Enter finishes"),
             Tool::AddAnchor => t("Add Anchor Point", Some(Equals), false, "Click a shape's outline to add a point"),
             Tool::DeleteAnchor => t("Delete Anchor Point", Some(Minus), false, "Click a point to remove it"),
@@ -131,7 +133,7 @@ impl Tool {
 
 /// Toolbar layout: sections → slots (flyout groups) → tools. Animate order.
 pub const SECTIONS: &[&[&[Tool]]] = &[
-    &[&[Tool::Select], &[Tool::Subselect], &[Tool::FreeTransform, Tool::GradientTransform], &[Tool::Rotate3D, Tool::Translate3D], &[Tool::Lasso, Tool::PolyLasso]],
+    &[&[Tool::Select], &[Tool::Subselect], &[Tool::FreeTransform, Tool::GradientTransform], &[Tool::Rotate3D, Tool::Translate3D], &[Tool::Lasso, Tool::PolyLasso, Tool::MagicWand]],
     &[&[Tool::Pen, Tool::AddAnchor, Tool::DeleteAnchor, Tool::ConvertAnchor], &[Tool::Text], &[Tool::Line], &[Tool::Rect, Tool::RectPrimitive, Tool::Oval, Tool::OvalPrimitive, Tool::PolyStar]],
     &[&[Tool::Brush, Tool::FluidBrush, Tool::Pencil], &[Tool::Width], &[Tool::Bone, Tool::Bind], &[Tool::AssetWarp], &[Tool::Bucket, Tool::InkBottle], &[Tool::Eyedropper], &[Tool::Eraser]],
     &[&[Tool::Camera], &[Tool::Hand, Tool::RotateView], &[Tool::Zoom]],
@@ -171,6 +173,9 @@ pub struct ToolOpts {
     pub pencil_mode: PencilMode,
     pub brush_size: f32,
     pub brush_smooth: f32,
+    pub brush_shape: ac_core::merge::BrushShape,
+    /// Magic Wand colour tolerance (0–200, Animate's default 10).
+    pub wand_threshold: f32,
     pub eraser_size: f32,
     pub ft_mode: FtMode,
     pub fluid_size: f32,
@@ -214,6 +219,8 @@ impl Default for ToolOpts {
             pencil_mode: PencilMode::Smooth,
             brush_size: 10.0,
             brush_smooth: 50.0,
+            brush_shape: Default::default(),
+            wand_threshold: 10.0,
             eraser_size: 12.0,
             ft_mode: FtMode::Normal,
             fluid_size: 14.0,
@@ -466,6 +473,14 @@ pub fn draw_icon(p: &egui::Painter, r: Rect, t: Tool, col: Color32) {
             let pts: Vec<_> = (0..=20).map(|i| { let a = i as f32 / 20.0 * 5.6; c + vec2(a.cos() * 8.0, a.sin() * 5.0 - 2.0) }).collect();
             p.add(egui::Shape::line(pts, s));
             p.line_segment([c + vec2(6.0, 1.0), c + vec2(4.0, 9.0)], s);
+        }
+        Tool::MagicWand => {
+            p.line_segment([c + vec2(-8.0, 8.0), c + vec2(3.0, -3.0)], Stroke::new(2.2_f32, col));
+            for (d, r) in [(vec2(6.0, -6.0), 3.5_f32), (vec2(-2.0, -8.0), 1.8), (vec2(8.0, 2.0), 1.8)] {
+                let q = c + d;
+                p.line_segment([q - vec2(r, 0.0), q + vec2(r, 0.0)], thin);
+                p.line_segment([q - vec2(0.0, r), q + vec2(0.0, r)], thin);
+            }
         }
         Tool::PolyLasso => {
             p.add(egui::Shape::closed_line(vec![c + vec2(-8.0, -4.0), c + vec2(0.0, -8.0), c + vec2(8.0, -2.0), c + vec2(3.0, 6.0), c + vec2(-6.0, 4.0)], s));

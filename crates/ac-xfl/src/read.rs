@@ -79,10 +79,19 @@ impl Reader<'_> {
             k @ ("LinearGradient" | "RadialGradient") => {
                 let m = matrix_of(g).concat(&Matrix::scale(GRAD, GRAD));
                 let stops = kids(g, "GradientEntry").map(|e| (f(e, "ratio", 0.0).clamp(0.0, 1.0), color(e, "color", "alpha", Color::rgb(0, 0, 0)))).collect();
-                if g.attribute("spreadMethod").is_some_and(|s| s != "extend") || g.attribute("focalPointRatio").is_some_and(|v| v != "0") {
-                    self.warn.push("gradient spread/focal point not supported: drawn as a plain gradient".into());
+                if g.attribute("focalPointRatio").is_some_and(|v| v != "0") {
+                    self.warn.push("gradient focal point not supported: drawn centred".into());
                 }
-                Fill::Gradient(Gradient { kind: if k == "LinearGradient" { GradientKind::Linear } else { GradientKind::Radial }, stops, matrix: m })
+                Fill::Gradient(Gradient {
+                    kind: if k == "LinearGradient" { GradientKind::Linear } else { GradientKind::Radial },
+                    stops,
+                    matrix: m,
+                    spread: match g.attribute("spreadMethod") {
+                        Some("reflect") => Spread::Reflect,
+                        Some("repeat") => Spread::Repeat,
+                        _ => Spread::Pad,
+                    },
+                })
             }
             "BitmapFill" => {
                 let name = g.attribute("bitmapPath").unwrap_or("");
@@ -137,6 +146,9 @@ impl Reader<'_> {
                 st.dash = Dash::Dotted;
                 st.gap = f(s, "dotSpace", 3.0).max(0.5);
             }
+            "RaggedStroke" => st.dash = Dash::Ragged,
+            "StippleStroke" => st.dash = Dash::Stipple,
+            "HatchedStroke" => st.dash = Dash::Hatched,
             other => self.warn.push(format!("{other} drawn as a solid line")),
         }
         let width = if s.attribute("solidStyle") == Some("hairline") { 1.0 } else { f(s, "weight", 1.0) };
@@ -190,9 +202,8 @@ impl Reader<'_> {
         v
     }
 
-    /// A raw shape (merge drawing) → added into `canvas`; bitmap-filled
-    /// regions come back as separate objects.
-    fn raw_shape(&mut self, n: Node, canvas: &mut MergeShape, extra: &mut Vec<Element>) {
+    /// A raw shape (merge drawing) → added into `canvas`.
+    fn raw_shape(&mut self, n: Node, canvas: &mut MergeShape) {
         let m = matrix_of(n);
         let (fills, strokes, mut recs) = self.shape_parts(n);
         if m != Matrix::IDENTITY {
@@ -212,10 +223,9 @@ impl Reader<'_> {
             let chains = edges::chain(&pcs);
             match &fills[&k] {
                 Fill::Bitmap(bf) => {
-                    let path = edges::chains_path(&chains);
-                    let mut sh = Shape::new(path, None, None);
-                    sh.bitmap_fill = Some(BitmapFill { bitmap: bf.bitmap, matrix: m.concat(&bf.matrix) });
-                    extra.push(el("", Matrix::IDENTITY, ElementKind::Shape(sh)));
+                    let polys: Vec<Vec<Pt>> = chains.iter().map(|(c, closed)| edges::chain_points(c, *closed)).filter(|p| p.len() >= 3).collect();
+                    let paint = ac_core::merge::FillRegion { fill: None, gradient: None, bitmap: Some(BitmapFill { bitmap: bf.bitmap, matrix: m.concat(&bf.matrix) }), contours: vec![] };
+                    canvas.add_region(&polys, &paint, false);
                 }
                 fl => {
                     let polys: Vec<Vec<Pt>> = chains.iter().map(|(c, closed)| edges::chain_points(c, *closed)).filter(|p| p.len() >= 3).collect();
@@ -424,10 +434,9 @@ impl Reader<'_> {
     /// The elements of a frame (or group members), bottom first.
     fn elements(&mut self, parent: Node, out: &mut Vec<Element>) {
         let mut canvas = MergeShape::default();
-        let mut extra = vec![];
         for n in elems(parent) {
             match n.tag_name().name() {
-                "DOMShape" if !flag(n, "isDrawingObject") => self.raw_shape(n, &mut canvas, &mut extra),
+                "DOMShape" if !flag(n, "isDrawingObject") => self.raw_shape(n, &mut canvas),
                 "DOMShape" => out.extend(self.drawing_object(n)),
                 "DOMRectangleObject" => out.push(self.primitive(n, false)),
                 "DOMOvalObject" => out.push(self.primitive(n, true)),
@@ -476,10 +485,7 @@ impl Reader<'_> {
         if !canvas.is_empty() {
             out.insert(0, el("", Matrix::IDENTITY, ElementKind::Canvas(canvas)));
         }
-        let at = if out.first().is_some_and(|e| matches!(e.kind, ElementKind::Canvas(_))) { 1 } else { 0 };
-        for (i, e) in extra.into_iter().enumerate() {
-            out.insert(at + i, e);
-        }
+
     }
 
     fn custom_ease(n: Node) -> Option<Ease> {

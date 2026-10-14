@@ -499,7 +499,16 @@ fn lasso_select(app: &mut App, poly: &[Pt], add: bool) {
 }
 
 /// Paint Brush: turn a smoothed centre line into a filled outline.
-fn brush_outline(pts: &[Pt], size: f32, smooth: f32) -> Option<Path> {
+fn brush_outline(pts: &[Pt], size: f32, smooth: f32, shape: ac_core::merge::BrushShape) -> Option<Path> {
+    if shape != ac_core::merge::BrushShape::Round {
+        let centre: Vec<Pt> = if pts.len() == 1 {
+            pts.to_vec()
+        } else {
+            Path::smooth_polyline(pts, 0.3 + smooth / 100.0 * 3.0).flatten(8).into_iter().flat_map(|(c, _)| c).collect()
+        };
+        let polys = ac_core::merge::nib_outline(&centre, &shape.nib(size.max(0.5)));
+        return (!polys.is_empty()).then(|| ac_core::merge::polys_path(&polys));
+    }
     if pts.len() == 1 {
         return Some(Path::ellipse(pts[0].x, pts[0].y, size / 2.0, size / 2.0));
     }
@@ -716,6 +725,7 @@ fn stage_input(app: &mut App, ui: &egui::Ui, rect: Rect, resp: &egui::Response) 
         }
     }
     let (space, shift, alt) = ui.input(|i| (i.key_down(Key::Space), i.modifiers.shift, i.modifiers.alt));
+    app.cmd_down = ui.input(|i| i.modifiers.command);
     let tool = if space { Tool::Hand } else { app.tool };
 
     // Pen: Enter finishes an open path, Escape too.
@@ -975,6 +985,13 @@ fn press(app: &mut App, rect: Rect, tool: Tool, origin: Pos2, p0: Pt, shift: boo
             pen.dragging = true;
         }
         Tool::Lasso => app.drag = Drag::Freehand { pts: vec![p0] },
+        Tool::MagicWand => {
+            if app.ed.magic_wand(p0, app.topts.wand_threshold, shift) {
+                app.status = "Magic Wand: area selected (Delete removes it)".into();
+            } else {
+                app.status = "Magic Wand works on broken-apart bitmaps (select a bitmap, Ctrl+B)".into();
+            }
+        }
         Tool::PolyLasso => {
             if app.poly_lasso.len() >= 3 && app.to_screen(rect, app.poly_lasso[0]).distance(origin) < 8.0 {
                 let poly = std::mem::take(&mut app.poly_lasso);
@@ -1131,6 +1148,25 @@ fn press(app: &mut App, rect: Rect, tool: Tool, origin: Pos2, p0: Pt, shift: boo
             }
         }
         Tool::Width => {
+            if alt {
+                if let Some((sel, i)) = width_point_at(app, rect, origin) {
+                    app.ed.selection = vec![sel];
+                    app.ed.modify_selected("Delete Width Point", move |e| {
+                        if let ElementKind::Shape(sh) = &mut e.kind {
+                            if let Some(prof) = &mut sh.width_profile {
+                                prof.remove(i);
+                                if prof.iter().all(|w| (w.1 - 1.0).abs() < 1e-3) {
+                                    sh.width_profile = None;
+                                }
+                            }
+                        }
+                    });
+                    app.status = "Width point deleted".into();
+                } else {
+                    app.status = "Width: Alt+click a width point (pink dot) to delete it.".into();
+                }
+                return;
+            }
             let found = stroked_shape_at(app, p0);
             match found {
                 Some((s, t)) => {
@@ -1175,7 +1211,7 @@ fn merge_press(app: &mut App, p0: Pt, shift: bool) -> bool {
     let tol = 4.0 / app.zoom;
     let Some((li, part, in_float)) = app.ed.merge_part_at(p0, 1.0 / app.zoom) else {
         // not over a fill: still maybe near an edge (strokes are thin)
-        if let Some((layer, key, ei, bend, inv)) = (!shift).then(|| app.ed.merge_begin_bend(p0, tol)).flatten() {
+        if let Some((layer, key, ei, bend, inv)) = (!shift).then(|| app.ed.merge_begin_bend(p0, tol, app.cmd_down)).flatten() {
             app.drag = Drag::Bend { layer, key, ei, bend: Box::new(bend), inv, from: p0, part: None, started: false };
             return true;
         }
@@ -1191,7 +1227,7 @@ fn merge_press(app: &mut App, p0: Pt, shift: bool) -> bool {
         return true;
     }
     if !shift {
-        if let Some((layer, key, ei, bend, inv)) = app.ed.merge_begin_bend(p0, tol) {
+        if let Some((layer, key, ei, bend, inv)) = app.ed.merge_begin_bend(p0, tol, app.cmd_down) {
             app.drag = Drag::Bend { layer, key, ei, bend: Box::new(bend), inv, from: p0, part, started: false };
             return true;
         }
@@ -1240,6 +1276,30 @@ fn select_press(app: &mut App, p0: Pt, shift: bool) {
 }
 
 /// Width tool target: a stroked shape whose outline is near `p` → (shape, position along it).
+/// An interior width point of a selected shape near the screen position `at`: (shape, index).
+fn width_point_at(app: &App, rect: Rect, at: Pos2) -> Option<(Selection, usize)> {
+    let mut cands = app.ed.selection.clone();
+    if let Some((s, _)) = stroked_shape_at(app, app.to_doc(rect, at)) {
+        cands.push(s);
+    }
+    for s in cands {
+        let Some(el) = app.ed.element_at(s) else { continue };
+        let ElementKind::Shape(sh) = &el.kind else { continue };
+        let Some(prof) = &sh.width_profile else { continue };
+        for (i, (t, _)) in prof.iter().enumerate() {
+            if *t <= 1e-4 || *t >= 1.0 - 1e-4 {
+                continue;
+            }
+            if let Some(q) = deform::point_at(&sh.path, *t) {
+                if app.to_screen(rect, el.matrix.apply(q)).distance(at) < 8.0 {
+                    return Some((s, i));
+                }
+            }
+        }
+    }
+    None
+}
+
 fn stroked_shape_at(app: &App, p: Pt) -> Option<(Selection, f32)> {
     let mut cands: Vec<Selection> = app.ed.selection.clone();
     if let Some(h) = app.ed.hit_test(p) {
@@ -1321,18 +1381,31 @@ fn warp_press(app: &mut App, p0: Pt, alt: bool) {
     app.status = "Pin added. Drag a pin to bend the shape; Alt+click a pin to remove it.".into();
 }
 
-/// Gradient handles (world): centre, x-handle, y-handle.
+/// Bitmap-fill handles sit this many bitmap pixels from the tile origin.
+const BMP_UNIT: f32 = 48.0;
+
+/// Gradient (or bitmap fill) handles (world): centre, x-handle, y-handle.
 fn gradient_handles(el: &Element) -> Option<[Pt; 3]> {
     let ElementKind::Shape(sh) = &el.kind else { return None };
-    let g = sh.gradient.as_ref()?;
-    let w = el.matrix.concat(&g.matrix);
-    Some([w.apply(pt(0.0, 0.0)), w.apply(pt(1.0, 0.0)), w.apply(pt(0.0, 1.0))])
+    let (m, u) = match (&sh.gradient, &sh.bitmap_fill) {
+        (Some(g), _) => (g.matrix, 1.0),
+        (None, Some(b)) => (b.matrix, BMP_UNIT),
+        _ => return None,
+    };
+    let w = el.matrix.concat(&m);
+    Some([w.apply(pt(0.0, 0.0)), w.apply(pt(u, 0.0)), w.apply(pt(0.0, u))])
+}
+
+/// Gradient Transform shows the third (height) handle for radial gradients
+/// and bitmap fills.
+fn two_axis(el: &Element) -> bool {
+    matches!(&el.kind, ElementKind::Shape(sh) if sh.gradient.as_ref().map(|g| g.kind == ac_core::GradientKind::Radial).unwrap_or(sh.bitmap_fill.is_some()))
 }
 
 fn gradient_press(app: &mut App, rect: Rect, origin: Pos2, p0: Pt) {
     for s in app.ed.selection.clone() {
         let Some(el) = app.ed.element_at(s) else { continue };
-        let radial = matches!(&el.kind, ElementKind::Shape(sh) if sh.gradient.as_ref().map(|g| g.kind == ac_core::GradientKind::Radial).unwrap_or(false));
+        let radial = two_axis(&el);
         if let Some(hs) = gradient_handles(&el) {
             for (i, h) in hs.iter().enumerate() {
                 if i == 2 && !radial {
@@ -1353,7 +1426,7 @@ fn gradient_press(app: &mut App, rect: Rect, origin: Pos2, p0: Pt) {
         Some(h) => {
             app.ed.select(Some(h), false);
             let has = app.ed.element_at(h).map(|e| gradient_handles(&e).is_some()).unwrap_or(false);
-            app.status = if has { "Drag the centre to move the gradient, the square handle to rotate/stretch it, the round one (radial) to change its height.".into() } else { "This object has no gradient fill. Set Fill › Linear or Radial in Properties first.".into() };
+            app.status = if has { "Drag the centre to move the gradient or bitmap fill, the square handle to rotate/stretch it, the round one to change its height.".into() } else { "This object has no gradient or bitmap fill. Set one in Properties first.".into() };
         }
         None => app.ed.select(None, false),
     }
@@ -1576,8 +1649,14 @@ fn drag(app: &mut App, ui: &egui::Ui, rect: Rect, pos: Pos2, p: Pt, shift: bool,
             app.ed.selection = vec![sel];
             app.ed.modify_selected_continuous(|e| {
                 let ElementKind::Shape(sh) = &mut e.kind else { return };
-                let Some(g) = &mut sh.gradient else { return };
-                let m = &mut g.matrix;
+                let linear = sh.gradient.as_ref().map(|g| g.kind == ac_core::GradientKind::Linear).unwrap_or(false);
+                // bitmap fills: the handles sit BMP_UNIT pixels out, so scale the vectors back
+                let (m, unit) = match (&mut sh.gradient, &mut sh.bitmap_fill) {
+                    (Some(g), _) => (&mut g.matrix, 1.0),
+                    (None, Some(b)) => (&mut b.matrix, BMP_UNIT),
+                    _ => return,
+                };
+                let lp = if handle == 0 { lp } else { pt(m.tx + (lp.x - m.tx) / unit, m.ty + (lp.y - m.ty) / unit) };
                 match handle {
                     0 => {
                         m.tx = lp.x;
@@ -1587,7 +1666,7 @@ fn drag(app: &mut App, ui: &egui::Ui, rect: Rect, pos: Pos2, p: Pt, shift: bool,
                         let u = pt(lp.x - m.tx, lp.y - m.ty);
                         let len = (u.x * u.x + u.y * u.y).sqrt().max(0.5);
                         let len2 = (m.c * m.c + m.d * m.d).sqrt();
-                        let len2 = if g.kind == ac_core::GradientKind::Linear { len } else { len2 };
+                        let len2 = if linear { len } else { len2 };
                         m.a = u.x;
                         m.b = u.y;
                         m.c = -u.y / len * len2;
@@ -1864,7 +1943,7 @@ fn release(app: &mut App, rect: Rect, p: Pt, shift: bool, alt: bool) {
                 }
             }
             Tool::Brush => {
-                if let Some(path) = brush_outline(&pts, app.topts.brush_size, app.topts.brush_smooth) {
+                if let Some(path) = brush_outline(&pts, app.topts.brush_size, app.topts.brush_smooth, app.topts.brush_shape) {
                     let shape = app.make_shape(path, Some(from32(app.fill)), None);
                     let mode = app.topts.brush_mode;
                     let ok = if app.topts.object_draw || shape.gradient.is_some() || mode == ac_core::merge::PaintMode::Normal {
@@ -2324,7 +2403,7 @@ fn overlays(app: &App, ui: &egui::Ui, rect: Rect) {
             for s in &app.ed.selection {
                 let Some(el) = app.ed.element_at(*s) else { continue };
                 let Some([c, hx, hy]) = gradient_handles(&el) else { continue };
-                let radial = matches!(&el.kind, ElementKind::Shape(sh) if sh.gradient.as_ref().map(|g| g.kind == ac_core::GradientKind::Radial).unwrap_or(false));
+                let radial = two_axis(&el);
                 let (sc, sx, sy) = (app.to_screen(rect, c), app.to_screen(rect, hx), app.to_screen(rect, hy));
                 let thin = EStroke::new(1.0_f32, Color32::WHITE);
                 if radial {
@@ -2517,7 +2596,15 @@ fn overlays(app: &App, ui: &egui::Ui, rect: Rect) {
             }
             Tool::Brush | Tool::FluidBrush if matches!(app.drag, Drag::None) => {
                 let size = if app.tool == Tool::Brush { app.topts.brush_size } else { app.topts.fluid_size };
-                painter.circle_stroke(h, size / 2.0 * app.zoom, EStroke::new(1.0_f32, Color32::from_gray(200)));
+                let st = EStroke::new(1.0_f32, Color32::from_gray(200));
+                if app.tool == Tool::Brush && app.topts.brush_shape != ac_core::merge::BrushShape::Round {
+                    // the tip as drawn (stage space, so it follows zoom and view rotation)
+                    let c = app.to_doc(rect, h);
+                    let pts: Vec<Pos2> = app.topts.brush_shape.nib(size).iter().map(|n| app.to_screen(rect, pt(c.x + n.x, c.y + n.y))).collect();
+                    painter.add(egui::Shape::closed_line(pts, st));
+                } else {
+                    painter.circle_stroke(h, size / 2.0 * app.zoom, st);
+                }
             }
             _ => {}
         }

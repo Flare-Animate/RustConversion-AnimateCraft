@@ -174,7 +174,8 @@
       var p2 = new Path2D();
       p2.addPath(p, gm.inverse());
       c.setTransform(T.multiply(gm));
-      var gr = it.g.k === 0 ? c.createLinearGradient(-1, 0, 1, 0) : c.createRadialGradient(0, 0, 0, 0, 0, 1);
+      var ex = it.g.x || 1;
+      var gr = it.g.k === 0 ? c.createLinearGradient(-ex, 0, ex, 0) : c.createRadialGradient(0, 0, 0, 0, 0, ex);
       it.g.s.forEach(function (s) { gr.addColorStop(Math.min(1, Math.max(0, s[0])), s[1]); });
       c.fillStyle = gr;
       c.fill(p2, "evenodd");

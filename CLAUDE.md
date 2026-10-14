@@ -67,11 +67,13 @@ Status: ✅ in the demo · 🟡 partial · ⬜ planned
   (Union/Intersect/Punch/Crop); Smooth/Straighten/Optimize; Rectangle/Oval
   Primitives; dashed/dotted strokes with caps/joins; bitmap fills; shape bones
   (Bone tool inside a shape) + Bind tool
-- ⬜ Toolbar gaps: Art/Pattern brushes, pressure/tilt, **Magic Wand**, ragged/
-  hatched strokes, Ctrl-drag to add a corner, deleting single width points, Asset
-  Warp on symbols/bitmaps, camera colour filters and layer depth
+- ✅ Magic Wand, brush shapes, Ragged/Stipple/Hatched strokes, gradient flow
+  (Extend/Reflect/Repeat), Ctrl-drag to add a corner, Width point delete + profile
+  copy/paste, Break Apart on text and bitmaps, bitmap fills on merge shapes
+- ⬜ Toolbar gaps: Art/Pattern brushes, pressure/tilt, Width tool on merge lines,
+  Asset Warp on symbols/bitmaps, camera colour filters and layer depth
 - ✅ Groups, bitmaps (PNG/JPG/GIF/BMP, animated GIF, sequences), SVG import, system fonts
-- ⬜ Bitmap fills, dynamic/input text
+- ⬜ Dynamic/input text
 
 **Timeline**
 - ✅ Layers (visible / lock / outline, colour), frames, keyframes, blank keyframes,

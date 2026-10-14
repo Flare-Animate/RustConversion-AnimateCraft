@@ -226,8 +226,30 @@ impl Tables {
                 let _ = write!(s, ",\"a\":{}", n(a));
             }
         } else if let Some(g) = &it.gradient {
-            let stops: Vec<String> = g.stops.iter().map(|(t, c)| format!("[{},{}]", n(*t), rgba(*c, a, it.tint, it.cx))).collect();
-            let _ = write!(s, ",\"g\":{{\"k\":{},\"m\":{},\"s\":[{}]}}", if g.kind == GradientKind::Linear { 0 } else { 1 }, nm(&g.matrix), stops.join(","));
+            // canvas gradients only extend: repeat/reflect are unrolled over a wide range
+            let (stops, extent) = match g.spread {
+                Spread::Pad => (g.stops.iter().map(|(t, c)| format!("[{},{}]", n(*t), rgba(*c, a, it.tint, it.cx))).collect::<Vec<_>>(), 1.0),
+                spread => {
+                    let periods: i32 = 12;
+                    let linear = g.kind == GradientKind::Linear;
+                    let extent = if linear { 1.0 + 2.0 * periods as f32 } else { 1.0 + periods as f32 };
+                    let mut v = vec![];
+                    let ks: Vec<i32> = if linear { (-periods..=periods).collect() } else { (0..=periods).collect() };
+                    for k in ks {
+                        let flip = spread == Spread::Reflect && k.rem_euclid(2) == 1;
+                        let mut st: Vec<(f32, Color)> = g.stops.iter().map(|(t, c)| (if flip { 1.0 - t } else { *t }, *c)).collect();
+                        st.sort_by(|x, y| x.0.partial_cmp(&y.0).unwrap());
+                        for (t, c) in st {
+                            let x = if linear { -1.0 + 2.0 * k as f32 + 2.0 * t } else { k as f32 + t };
+                            let u = if linear { (x + extent) / (2.0 * extent) } else { x / extent };
+                            v.push(format!("[{},{}]", (u.clamp(0.0, 1.0) * 1e5).round() / 1e5, rgba(c, a, it.tint, it.cx)));
+                        }
+                    }
+                    (v, extent)
+                }
+            };
+            let ext = if extent != 1.0 { format!(",\"x\":{}", n(extent)) } else { String::new() };
+            let _ = write!(s, ",\"g\":{{\"k\":{},\"m\":{},\"s\":[{}]{ext}}}", if g.kind == GradientKind::Linear { 0 } else { 1 }, nm(&g.matrix), stops.join(","));
         } else if let Some(f) = it.fill {
             let _ = write!(s, ",\"f\":{}", rgba(f, a, it.tint, it.cx));
         }
@@ -250,7 +272,7 @@ impl Tables {
                 }
                 let w = st.width.max(0.1);
                 match ss.dash {
-                    Dash::Solid => {}
+                    Dash::Solid | Dash::Ragged | Dash::Stipple | Dash::Hatched => {}
                     Dash::Dashed => {
                         let _ = write!(s, ",\"d\":[{},{}]", n((ss.dash_len * w).max(0.5)), n((ss.gap * w).max(0.5)));
                     }
