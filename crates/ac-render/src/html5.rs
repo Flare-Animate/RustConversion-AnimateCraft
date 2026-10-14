@@ -306,6 +306,8 @@ fn mime_of(data: &[u8]) -> &'static str {
         "audio/ogg"
     } else if data.starts_with(b"fLaC") {
         "audio/flac"
+    } else if data.starts_with(b"FORM") {
+        "audio/aiff"
     } else {
         "audio/mpeg"
     }
@@ -319,13 +321,33 @@ pub fn publish(doc: &Document, o: &Html5Opts) -> Files {
     let mut t = Tables { paths: vec![], path_ix: HashMap::new(), items: vec![], item_ix: HashMap::new(), fx: vec![], fx_ix: HashMap::new(), clips: vec![], clip_ix: HashMap::new(), images: vec![], image_ix: HashMap::new() };
     let mut frames = vec![];
     let mut extra = vec![]; // per frame: buttons + named instances + scripts + sounds
+    // A script can hold the main timeline while movie clips keep playing:
+    // frames that can be held store one list per movie-clip clock phase.
+    let can_hold = doc.scenes().chain(doc.library.iter().map(|s| &s.timeline)).flat_map(|t| &t.layers).flat_map(|l| l.keyframes.values()).any(|k| k.script.as_deref().is_some_and(|s| s.contains("stop") || s.contains("gotoAndStop")));
+    let mut variant_budget: usize = 20_000;
+    fn gcd(a: u32, b: u32) -> u32 {
+        if b == 0 { a } else { gcd(b, a % b) }
+    }
     for f in f0..=f1 {
         let items = evaluate_scene(doc, f);
         frames.push(t.list(&items, 0));
+        let mut variants = String::new();
+        if can_hold {
+            let lens = doc.movie_clip_lengths(f);
+            let period = lens.iter().fold(1u32, |a, &b| (a / gcd(a, b)).saturating_mul(b));
+            if period > 1 && period <= 240 && (period as usize) <= variant_budget {
+                variant_budget -= period as usize;
+                let lists: Vec<String> = (0..period).map(|p| t.list(&evaluate_scene_clock(doc, f, p), 0)).collect();
+                variants = format!("\"v\":[{}]", lists.join(","));
+            }
+        }
         let (si, local) = doc.locate_frame(f);
         let scene = doc.scene_at(si).unwrap_or(&doc.scene);
         let view = camera_view(doc, scene, local);
         let mut parts = vec![];
+        if !variants.is_empty() {
+            parts.push(variants);
+        }
         // buttons: Over / Down states and the hit area
         let mut buttons = vec![];
         let mut named = vec![];
@@ -376,17 +398,19 @@ pub fn publish(doc: &Document, o: &Html5Opts) -> Files {
         }
         // keyframe scripts and sounds that start here
         let mut scripts = vec![];
-        let mut sounds = vec![];
+        let sounds: Vec<String> = ac_core::sound::frame_sounds(doc, f)
+            .into_iter()
+            .filter_map(|cue| {
+                let fs = cue.sound;
+                let ix = doc.sounds.iter().position(|s| s.id == fs.sound)?;
+                let fx = if fs.effect == ac_core::sound::SoundEffect::None { String::new() } else { format!(",\"fx\":\"{:?}\"", fs.effect) };
+                Some(format!("{{\"s\":{ix},\"y\":\"{}\",\"r\":{},\"l\":{},\"e\":{}{fx}}}", fs.sync.name().to_lowercase(), fs.repeat.max(1), fs.forever, cue.stream_end.saturating_sub(f0)))
+            })
+            .collect();
         for l in &scene.layers {
             if let Some(k) = l.keyframes.get(&local) {
                 if let Some(sc) = k.script.as_ref().filter(|s| !s.trim().is_empty()) {
                     scripts.push(js_str(sc));
-                }
-                if let (Some(fs), false) = (&k.sound, matches!(l.kind, LayerKind::Guide | LayerKind::Folder | LayerKind::Camera)) {
-                    if let Some(ix) = doc.sounds.iter().position(|s| s.id == fs.sound) {
-                        let end = doc.scene_start(si) + l.span_end(local);
-                        sounds.push(format!("{{\"s\":{ix},\"y\":\"{}\",\"r\":{},\"l\":{},\"e\":{}}}", fs.sync.name().to_lowercase(), fs.repeat.max(1), fs.forever, end.saturating_sub(f0)));
-                    }
                 }
             }
         }

@@ -49,6 +49,9 @@ cmds! {
     "timeline.set_label", "label, layer?, frame?", "Frame label on the keyframe at the target";
     "timeline.set_script", "script, layer?, frame?", "Frame script (JavaScript) on the keyframe at the target";
     "timeline.move_frames", "by, layer?, frame?, to_frame?", "Drag frames left/right";
+    "timeline.copy_frames", "layer?, frame?, to_layer?, to_frame?", "Copy Frames (Ctrl+Alt+C)";
+    "timeline.cut_frames", "layer?, frame?, to_layer?, to_frame?", "Cut Frames (Ctrl+Alt+X)";
+    "timeline.paste_frames", "layer?, frame?", "Paste Frames (Ctrl+Alt+V) at the target";
     "layer.list", "", "All layers with flags and frame counts";
     "layer.add", "name?", "New layer above the current one; returns its number";
     "layer.delete", "layer?", "Delete a layer";
@@ -123,7 +126,7 @@ cmds! {
     "selection.set_blend", "mode ('normal'|'multiply'|'screen'|…)", "Blend mode";
     "import.image", "path (PNG), x?, y?, place? (true)", "Import a PNG into the library (and place it)";
     "import.sound", "path (WAV/MP3/OGG/FLAC), name?", "Import a sound into the library; returns its id";
-    "timeline.set_sound", "sound (name or id; null = none), sync? ('event'|'start'|'stop'|'stream'), repeat? (1), loop? (false), layer?, frame?", "Properties ▸ Sound on the keyframe at the target";
+    "timeline.set_sound", "sound (name or id; null = none), sync? ('event'|'start'|'stop'|'stream'), repeat? (1), loop? (false), effect? ('none'|'left channel'|'right channel'|'fade to right'|'fade to left'|'fade in'|'fade out'), layer?, frame?", "Properties ▸ Sound on the keyframe at the target";
     "sound.list", "", "Library sounds with length (seconds, when this build can decode them)";
     "sound.delete", "sound (name or id)", "Delete a library sound (and its keyframe uses)";
     "lipsync.apply", "audio_layer, map? {\"Neutral\": frame, \"MBP\": frame, \"Ai\", \"E\", \"O\", \"U\", \"FV\", \"L\", \"WQ\", \"etc\"} (1-based frames of the mouth symbol)", "Auto Lip-Sync the selected mouth instance to the sound on audio_layer; returns keyframes made";
@@ -539,6 +542,26 @@ pub fn execute(ed: &mut Editor, id: &str, a: &Value) -> Result<Value, String> {
                 return Err("no motion tween at the target".into());
             }
             ed.edit_motion(Some("Property Ease"), |m, _| m.set_ease(p, ease));
+            Ok(Value::Null)
+        }
+        "timeline.copy_frames" | "timeline.cut_frames" => {
+            target(ed, a)?;
+            if ed.frame_sel.is_none() {
+                ed.select_frames(FrameSel::cell(ed.layer, ed.frame));
+            }
+            if id == "timeline.copy_frames" {
+                ed.copy_frames();
+            } else {
+                ed.cut_frames();
+            }
+            Ok(Value::Null)
+        }
+        "timeline.paste_frames" => {
+            target(ed, a)?;
+            if ed.frame_sel.is_none() {
+                ed.select_frames(FrameSel::cell(ed.layer, ed.frame));
+            }
+            ed.paste_frames();
             Ok(Value::Null)
         }
         "timeline.set_label" => {
@@ -1270,7 +1293,7 @@ pub fn execute(ed: &mut Editor, id: &str, a: &Value) -> Result<Value, String> {
             let name = string(a, "name").map(|s| s.to_string()).unwrap_or_else(|| std::path::Path::new(path).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or("Sound".into()));
             let probe = crate::sound::SoundAsset { id: 0, name: name.clone(), data: bytes };
             if crate::sound::has_decoder() && crate::sound::seconds(&probe).is_none() {
-                return Err(format!("{path}: not a sound this build can read (WAV, MP3, OGG Vorbis, FLAC)"));
+                return Err(format!("{path}: not a sound this build can read (WAV, MP3, OGG Vorbis, FLAC, AIFF)"));
             }
             Ok(json!(ed.add_sound(&name, probe.data)))
         }
@@ -1289,6 +1312,9 @@ pub fn execute(ed: &mut Editor, id: &str, a: &Value) -> Result<Value, String> {
                     }
                     fs.repeat = num(a, "repeat").map(|v| v.max(1.0) as u32).unwrap_or(1);
                     fs.forever = boolean(a, "loop").unwrap_or(false);
+                    if let Some(e) = string(a, "effect") {
+                        fs.effect = crate::sound::SoundEffect::from_name(e).ok_or_else(|| format!("unknown effect '{e}'"))?;
+                    }
                     Some(fs)
                 }
             };

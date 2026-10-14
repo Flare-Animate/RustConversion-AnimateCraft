@@ -83,8 +83,9 @@ impl ScriptingState {
 
 pub fn request_run(app: &mut App, p: Pending) {
     let external = match &p {
-        Pending::Code(l, _) => !matches!(l, Language::Js | Language::Jsfl),
-        Pending::File(f) => f.extension().map(|e| e != "js" && e != "jsfl").unwrap_or(true),
+        // JSFL can read and write files (FLfile), so it asks first like external languages
+        Pending::Code(l, _) => *l != Language::Js,
+        Pending::File(f) => f.extension().map(|e| e != "js").unwrap_or(true),
     };
     if external && !app.scripting.trust_external {
         app.scripting.confirm = Some(p);
@@ -174,11 +175,12 @@ pub fn enter_frame(app: &mut App) {
                     }
                     for a in actions {
                         match a {
-                            PlayAction::Stop => app.playing = false,
-                            PlayAction::Play => app.playing = true,
+                            // stop() holds the main timeline; movie clips keep playing
+                            PlayAction::Stop => app.halted = true,
+                            PlayAction::Play => app.halted = false,
                             PlayAction::Goto { frame, play } => {
                                 app.ed.frame = frame;
-                                app.playing = play;
+                                app.halted = !play;
                                 jumped = frame != f;
                             }
                         }

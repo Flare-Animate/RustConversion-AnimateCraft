@@ -62,6 +62,9 @@ pub struct Editor {
     /// Enable Simple Buttons: the button instance (layer, element) under the
     /// pointer and the frame it shows (1 = Over, 2 = Down).
     pub button_state: Option<((usize, usize), u32)>,
+    /// Movie-clip clock while playing (movie clips keep running when a frame
+    /// script stops the main timeline); None = follow the playhead.
+    pub clock: Option<u32>,
     /// Current scene (index into `doc.scenes()`).
     pub scene: usize,
     /// Scripts: draw.* commands draw into the merge shape instead of adding objects.
@@ -93,6 +96,7 @@ impl Editor {
             revision: 0,
             multi_frame: None,
             button_state: None,
+            clock: None,
             scene: 0,
             script_merge: false,
         }
@@ -254,7 +258,8 @@ impl Editor {
 
     /// Draw items for the timeline currently being edited (with `src` set).
     pub fn evaluate_current(&self, frame: u32) -> Vec<DrawItem> {
-        let ctx = EvalCtx { button: self.button_state, ..EvalCtx::new(&self.doc, frame) };
+        let global = self.clock.filter(|_| frame == self.frame).unwrap_or(frame);
+        let ctx = EvalCtx { button: self.button_state, ..EvalCtx::new(&self.doc, global) };
         let mut out = Vec::new();
         evaluate(&ctx, self.timeline(), frame, &Matrix::IDENTITY, 1.0, 0, &mut out);
         if self.camera_view && self.editing.is_none() {
@@ -1337,7 +1342,7 @@ impl Editor {
             }
         }
         if slot < kf.elements.len() {
-            kf.elements[slot] = Element::instance(name, id, Matrix::translate(reg.x, reg.y));
+            kf.elements[slot] = Element::instance("", id, Matrix::translate(reg.x, reg.y));
         }
         self.selection = vec![Selection { layer: first.layer, element: slot }];
         Some(id)

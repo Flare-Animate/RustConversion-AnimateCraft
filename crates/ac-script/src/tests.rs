@@ -181,7 +181,7 @@ tl.layers[li].frames[0].actionScript = "this.stop();";
 doc.library.addNewItem("graphic", "Empty");
 fl.trace(tl.layerCount + " layers, " + tl.frameCount + " frames, items: " + doc.library.items.map(function (i) { return i.name + ":" + i.itemType; }).join(","));
 fl.trace("frame0 " + tl.layers[li].frames[0].tweenType + " " + tl.layers[li].frames[0].duration + " " + tl.getFrameProperty("name", 3));
-try { tl.copyFrames(0, 1); } catch (e) { fl.trace("unsupported ok"); }
+try { tl.copyLayers(); } catch (e) { fl.trace("unsupported ok"); }
 "##;
     let rep = run_code(&mut ed, Language::Jsfl, code, &ScriptOptions::default());
     assert!(rep.error.is_none(), "{:?} {:?}", rep.error, rep.log);
@@ -210,4 +210,33 @@ fn frame_scripts_accept_html5_event_listeners() {
     let inst = Instance { name: "go".into(), x: 1.0, y: 2.0, rotation: 0.0, scale_x: 1.0, scale_y: 1.0, alpha: 1.0, visible: true };
     let (_, changed) = p.run_with("this.go.addEventListener('click', () => {}); this.go.on('mouseover', () => {}); this.go.x = 5;", 0, 1, &[], &[inst]).unwrap();
     assert_eq!(changed[0].x, 5.0);
+}
+
+#[test]
+fn jsfl_frames_clipboard_and_flfile() {
+    let dir = std::env::temp_dir().join(format!("ac-jsfl-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut ed = Editor::new(Document::default());
+    let code = r##"
+var doc = fl.getDocumentDOM(), tl = doc.getTimeline();
+doc.addNewRectangle({ left: 0, top: 0, right: 20, bottom: 20 }, 0);
+tl.insertFrames(4);
+tl.copyFrames(0, 1);
+tl.pasteFrames(10);
+var uri = FLfile.platformPathToURI("out/log.txt");
+FLfile.createFolder(FLfile.platformPathToURI("out"));
+FLfile.write(uri, "frames: " + tl.frameCount);
+FLfile.write(uri, "\nmore", "append");
+fl.trace(FLfile.read(uri));
+fl.trace(FLfile.listFolder(FLfile.platformPathToURI("out")).join(","));
+try { FLfile.remove(uri); } catch (e) { fl.trace("no remove"); }
+"##;
+    let o = ScriptOptions { base_dir: dir.clone(), ..opts() };
+    let rep = run_code(&mut ed, Language::Jsfl, code, &o);
+    assert!(rep.error.is_none(), "{:?} {:?}", rep.error, rep.log);
+    assert_eq!(rep.log[0], "frames: 11\nmore");
+    assert_eq!(rep.log[1], "log.txt");
+    assert_eq!(rep.log[2], "no remove");
+    assert!(ed.doc.scene.layers[0].keyframes.contains_key(&10), "{:?}", ed.doc.scene.layers[0].keyframes.keys().collect::<Vec<_>>());
+    std::fs::remove_dir_all(&dir).ok();
 }

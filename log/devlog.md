@@ -92,3 +92,15 @@
 ## 2026-10-14 — Review of what Flare uses from OpenToonz
 - Cloned Flare-Animate/Flare (0368b5b): ~880k lines of C++ (OpenToonz fork, Qt) + 670k third-party; its native Rust Studio already runs on a copy of our ac-core (e3aadad) with Flare patches listed in its ORIGIN.md.
 - Wrote docs/OPENTOONZ-REVIEW.md: subsystem map, 16 OpenToonz features worth porting (Trace Bitmap, Magic Wand, stroke styles, MyPaint raster painting, Rhubarb lip-sync, curve keyframe types + expressions, Jacobian IK, plastic mesh deformation, drawing assistants, vector deformation tools, PSD, particles, FX subset, Shift & Trace, XDTS), what to learn from but not port, what to skip, licence/provenance rules (port from upstream OpenToonz with BSD notices; avoid Flare's GPL/AGPL-referenced Flash readers), and a suggested order.
+
+## 2026-10-14 — Closing Phase 1–4 gaps, batch A (Phase 4)
+- Sounds inside symbols: `ac_core::sound::frame_sounds` walks the main timeline and every symbol (graphic frame mapping now shared in `Instance::symbol_frame`); a keyframe sound fires when its keyframe is entered, so looping graphics replay it each loop and single-frame graphics don't retrigger. The mixer, video export and HTML5 publish all use it.
+- Sound effects (Properties ▸ Sound ▸ Effect, `timeline.set_sound effect:`): left/right channel, fade to right/left, fade in/out, in the mixer and in HTML5 (Web Audio gain + stereo panner). AIFF import (Symphonia `aiff`). `.fla` export warns that effects aren't written.
+- Lip Syncing: "Mouth shapes" picker (frame per viseme, remembered per symbol).
+- Movie clips keep playing when a frame script calls `stop()`: the editor's playback keeps a movie-clip clock (`Editor::clock`) and only the main timeline is held (`App::halted`); playback ends as before if nothing would move. HTML5: frames that can be held store one display list per movie-clip phase (LCM of visible clip lengths, ≤240, budgeted) and the runtime picks by its clock. Verified in Chromium (the clip cycles while the main frame stays 1) and in the app under Xvfb.
+- `.fla` export shares edges: identical straight segments of a raw shape merge into one Edge with fillStyle0/fillStyle1/strokeStyle (tested: the boundary between two fills with a line on it is one edge).
+- `.fla` import reads `motionObjectXML` motion tweens (Motion_X/Y, Rotation_Z, Skew_X, Scale_X/Y keyframes → our motion tween) — experimental, flagged in the import notes.
+- JSFL: copyFrames/cutFrames/pasteFrames (new commands `timeline.copy_frames/cut_frames/paste_frames`), FLfile (exists/read/write/append/createFolder/listFolder; no remove) on new script commands `file.*`; JSFL now asks before running, like external languages, because it can write files.
+- Lottie: masks become alpha track mattes (checked in lottie-web).
+- Convert to Symbol no longer names the new instance after the symbol (Animate leaves it blank).
+- Tests: 111. Xvfb: held playback, Sound ▸ Effect, the Lip Syncing picker + Lip Sync on a mouth symbol.

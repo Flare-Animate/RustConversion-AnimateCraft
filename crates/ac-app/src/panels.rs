@@ -499,7 +499,7 @@ fn object_properties(app: &mut App, ui: &mut egui::Ui) {
                 }
                 color_effect(app, ui, &el);
                 if kind == Some(SymbolKind::Graphic) && n == 1 {
-                    lip_sync_section(app, ui);
+                    lip_sync_section(app, ui, id);
                 }
                 if kind == Some(SymbolKind::Button) {
                     ui.label(RichText::new("Button: Up / Over / Down / Hit frames. Control ▸ Enable Simple Buttons to try it on the stage.").small().color(Color32::from_gray(150)));
@@ -812,6 +812,20 @@ fn sound_section(app: &mut App, ui: &mut egui::Ui, kf: &ac_core::Keyframe) {
         app.ed.edit_frame_sound(|s| s.sync = sync);
     }
     if fs.sync != SoundSync::Stop {
+        let mut effect = fs.effect;
+        ui.horizontal(|ui| {
+            ui.label("Effect");
+            egui::ComboBox::from_id_salt("sound-effect").selected_text(effect.name()).show_ui(ui, |ui| {
+                for e in ac_core::sound::SoundEffect::ALL {
+                    ui.selectable_value(&mut effect, e, e.name());
+                }
+            });
+        });
+        if effect != fs.effect {
+            app.ed.edit_frame_sound(|s| s.effect = effect);
+        }
+    }
+    if fs.sync != SoundSync::Stop {
         let mut forever = fs.forever;
         let mut rep = fs.repeat;
         ui.horizontal(|ui| {
@@ -836,7 +850,7 @@ fn sound_section(app: &mut App, ui: &mut egui::Ui, kf: &ac_core::Keyframe) {
 }
 
 /// Properties ▸ Lip Syncing for a selected graphic instance.
-fn lip_sync_section(app: &mut App, ui: &mut egui::Ui) {
+fn lip_sync_section(app: &mut App, ui: &mut egui::Ui, symbol: ac_core::SymbolId) {
     let layers: Vec<(usize, String)> = app.ed.timeline().layers.iter().enumerate().filter(|(_, l)| l.keyframes.values().any(|k| k.sound.is_some())).map(|(i, l)| (i, l.name.clone())).collect();
     section(ui, "Lip Syncing");
     if layers.is_empty() {
@@ -854,9 +868,26 @@ fn lip_sync_section(app: &mut App, ui: &mut egui::Ui) {
         });
     });
     ui.ctx().data_mut(|d| d.insert_temp(id, pick));
-    if ui.button("Lip Sync").on_hover_text("Keyframe this instance to the voice: each frame shows the mouth shape heard (symbol frames 1–10 = Neutral, MBP, Ai, E, O, U, FV, L, WQ, etc)").clicked() {
-        app.status = match app.ed.lip_sync(pick, &[]) {
-            Ok(n) => format!("Lip sync: {n} mouth keyframes"),
+    // which symbol frame shows each mouth shape (Animate's Lip-sync mapping)
+    let poses = app.ed.doc.symbol(symbol).map(|s| s.timeline.frame_count()).unwrap_or(1);
+    let map_id = egui::Id::new(("lipsync-map", symbol));
+    let mut map: Vec<u32> = ui.ctx().data(|d| d.get_temp(map_id)).unwrap_or_else(|| (0..10).map(|i| (i as u32).min(poses - 1) + 1).collect());
+    egui::CollapsingHeader::new(format!("Mouth shapes ({poses} frames in the symbol)")).id_salt("lipsync-shapes").show(ui, |ui| {
+        egui::Grid::new("visemes").num_columns(4).spacing([8.0, 4.0]).show(ui, |ui| {
+            for (i, v) in ac_core::sound::Viseme::ALL.iter().enumerate() {
+                ui.label(v.name());
+                ui.add(egui::DragValue::new(&mut map[i]).range(1..=poses).prefix("frame "));
+                if i % 2 == 1 {
+                    ui.end_row();
+                }
+            }
+        });
+    });
+    ui.ctx().data_mut(|d| d.insert_temp(map_id, map.clone()));
+    if ui.button("Lip Sync").on_hover_text("Keyframe this instance to the voice: each frame shows the mouth shape heard, using the frames chosen under Mouth shapes").clicked() {
+        let pairs: Vec<(ac_core::sound::Viseme, u32)> = ac_core::sound::Viseme::ALL.iter().zip(&map).map(|(v, f)| (*v, f.saturating_sub(1))).collect();
+        app.status = match app.ed.lip_sync(pick, &pairs) {
+            Ok(n) => format!("Lip sync: {n} mouth keyframe{}", if n == 1 { "" } else { "s" }),
             Err(e) => format!("Lip sync: {e}"),
         };
     }

@@ -231,7 +231,7 @@ impl W<'_> {
             c2.commit_float();
             return self.canvas(&c2, m, ind);
         }
-        self.dom_shape(false, &fills, &strokes, &recs, ind)
+        self.dom_shape(false, &fills, &strokes, &share_edges(recs), ind)
     }
 
     /// A drawing-object shape, baked into parent coordinates by `m`.
@@ -535,6 +535,9 @@ impl W<'_> {
                     if fs.sync != ac_core::sound::SoundSync::Event {
                         let _ = write!(fa, r#" soundSync="{}""#, fs.sync.name().to_lowercase());
                     }
+                    if fs.effect != ac_core::sound::SoundEffect::None {
+                        self.warn.push("sound effects (fades, channels) are not exported to .fla".into());
+                    }
                     if fs.forever {
                         fa.push_str(r#" soundLoopMode="loop""#);
                     } else if fs.repeat > 1 {
@@ -579,6 +582,67 @@ impl W<'_> {
         let _ = writeln!(s, "{ind}  </layers>\n{ind}</DOMTimeline>");
         s
     }
+}
+
+/// Merge identical straight segments of a raw shape into shared edges, the
+/// way the authoring tool stores them: a boundary between two fills (and a
+/// line drawn along it) becomes one edge carrying fillStyle0, fillStyle1 and
+/// strokeStyle, instead of two or three overlapping edges.
+fn share_edges(recs: Vec<(u32, u32, u32, Vec<Piece>)>) -> Vec<(u32, u32, u32, Vec<Piece>)> {
+    use std::collections::HashMap;
+    type Key = ((i64, i64), (i64, i64));
+    let tw = |p: Pt| ((p.x * 20.0).round() as i64, (p.y * 20.0).round() as i64);
+    let mut order: Vec<Key> = vec![];
+    let mut seg: HashMap<Key, (Piece, u32, u32, u32)> = HashMap::new();
+    let mut curved = vec![];
+    for (f0, f1, st, pieces) in recs {
+        for p in pieces {
+            if p.ctrl.is_some() {
+                curved.push((f0, f1, st, vec![p]));
+                continue;
+            }
+            let (a, b) = (tw(p.a), tw(p.b));
+            if a == b {
+                continue;
+            }
+            // canonical direction: reversing a segment swaps its left and right fills
+            let (key, piece, l, r) = if a < b { ((a, b), p, f0, f1) } else { ((b, a), p.reversed(), f1, f0) };
+            match seg.get_mut(&key) {
+                Some(e) => {
+                    if e.1 == 0 {
+                        e.1 = l;
+                    }
+                    if e.2 == 0 {
+                        e.2 = r;
+                    }
+                    if e.3 == 0 {
+                        e.3 = st;
+                    }
+                }
+                None => {
+                    order.push(key);
+                    seg.insert(key, (piece, l, r, st));
+                }
+            }
+        }
+    }
+    // chain segments that share all three styles back into longer edges
+    let mut groups: Vec<((u32, u32, u32), Vec<Piece>)> = vec![];
+    for k in order {
+        let (p, l, r, st) = seg[&k];
+        match groups.iter_mut().find(|g| g.0 == (l, r, st)) {
+            Some(g) => g.1.push(p),
+            None => groups.push(((l, r, st), vec![p])),
+        }
+    }
+    let mut out = vec![];
+    for ((l, r, st), pieces) in groups {
+        for (ch, _) in edges::chain(&pieces) {
+            out.push((l, r, st, ch));
+        }
+    }
+    out.extend(curved);
+    out
 }
 
 fn file_safe(name: &str) -> String {

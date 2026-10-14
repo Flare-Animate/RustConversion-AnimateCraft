@@ -44,6 +44,69 @@ impl SoundSync {
     }
 }
 
+/// Animate's Effect setting (Properties ▸ Sound).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum SoundEffect {
+    #[default]
+    None,
+    LeftChannel,
+    RightChannel,
+    FadeLeftToRight,
+    FadeRightToLeft,
+    FadeIn,
+    FadeOut,
+}
+
+impl SoundEffect {
+    pub const ALL: [SoundEffect; 7] = [SoundEffect::None, SoundEffect::LeftChannel, SoundEffect::RightChannel, SoundEffect::FadeLeftToRight, SoundEffect::FadeRightToLeft, SoundEffect::FadeIn, SoundEffect::FadeOut];
+    pub fn name(self) -> &'static str {
+        match self {
+            SoundEffect::None => "None",
+            SoundEffect::LeftChannel => "Left channel",
+            SoundEffect::RightChannel => "Right channel",
+            SoundEffect::FadeLeftToRight => "Fade to right",
+            SoundEffect::FadeRightToLeft => "Fade to left",
+            SoundEffect::FadeIn => "Fade in",
+            SoundEffect::FadeOut => "Fade out",
+        }
+    }
+    pub fn from_name(s: &str) -> Option<SoundEffect> {
+        let k = s.trim().to_ascii_lowercase().replace(['_', '-'], " ");
+        SoundEffect::ALL.into_iter().find(|e| e.name().to_ascii_lowercase() == k || format!("{e:?}").to_ascii_lowercase() == k.replace(' ', ""))
+    }
+    /// (left, right) gain at `t` seconds into a voice lasting `total`
+    /// seconds whose sound is `len` seconds long. Fades run over one play of
+    /// the sound (the first for fade in, the last for fade out).
+    pub fn gains(self, t: f64, len: f64, total: f64) -> (f32, f32) {
+        let len = len.max(1e-6);
+        let span = if total.is_finite() { total.max(1e-6) } else { len };
+        match self {
+            SoundEffect::None => (1.0, 1.0),
+            SoundEffect::LeftChannel => (1.0, 0.0),
+            SoundEffect::RightChannel => (0.0, 1.0),
+            SoundEffect::FadeLeftToRight => {
+                let k = (t / span).clamp(0.0, 1.0) as f32;
+                (1.0 - k, k)
+            }
+            SoundEffect::FadeRightToLeft => {
+                let k = (t / span).clamp(0.0, 1.0) as f32;
+                (k, 1.0 - k)
+            }
+            SoundEffect::FadeIn => {
+                let k = (t / len).clamp(0.0, 1.0) as f32;
+                (k, k)
+            }
+            SoundEffect::FadeOut => {
+                if !total.is_finite() {
+                    return (1.0, 1.0);
+                }
+                let k = ((total - t) / len.min(total)).clamp(0.0, 1.0) as f32;
+                (k, k)
+            }
+        }
+    }
+}
+
 /// The sound a keyframe starts (or stops).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct FrameSound {
@@ -55,6 +118,12 @@ pub struct FrameSound {
     pub repeat: u32,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub forever: bool,
+    #[serde(default, skip_serializing_if = "is_no_effect")]
+    pub effect: SoundEffect,
+}
+
+fn is_no_effect(e: &SoundEffect) -> bool {
+    *e == SoundEffect::None
 }
 
 fn one() -> u32 {
@@ -63,7 +132,7 @@ fn one() -> u32 {
 
 impl FrameSound {
     pub fn new(sound: SoundId) -> Self {
-        FrameSound { sound, sync: SoundSync::Event, repeat: 1, forever: false }
+        FrameSound { sound, sync: SoundSync::Event, repeat: 1, forever: false, effect: SoundEffect::None }
     }
 }
 
@@ -124,4 +193,88 @@ pub fn has_decoder() -> bool {
 }
 pub fn seconds(s: &SoundAsset) -> Option<f32> {
     MEASURER.get().and_then(|m| m(s))
+}
+
+// ---------------------------------------------------------------- sounds in the movie
+
+/// A keyframe sound reached at a movie frame, on the main timeline or
+/// inside a symbol.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SoundCue {
+    pub sound: FrameSound,
+    /// Movie frame (exclusive) where a Stream sound's frames end.
+    pub stream_end: u32,
+}
+
+/// (path to the keyframe, symbol-local frame it is at, sound, frames left in its span)
+type Hit = (Vec<u32>, u32, FrameSound, u32);
+
+fn collect(doc: &crate::model::Document, tl: &crate::model::Timeline, frame: u32, global: u32, path: &mut Vec<u32>, depth: u32, out: &mut Vec<Hit>) {
+    use crate::model::{ElementKind, LayerKind};
+    if depth > 16 {
+        return;
+    }
+    for (li, l) in tl.layers.iter().enumerate() {
+        if matches!(l.kind, LayerKind::Guide | LayerKind::Folder | LayerKind::Camera) {
+            continue;
+        }
+        let Some((start, kf, _)) = l.span_at(frame) else { continue };
+        path.push(li as u32);
+        path.push(start);
+        if start == frame {
+            if let Some(fs) = &kf.sound {
+                out.push((path.clone(), frame, fs.clone(), l.span_end(start) - frame));
+            }
+        }
+        fn walk(doc: &crate::model::Document, els: &[crate::model::Element], local: u32, global: u32, path: &mut Vec<u32>, depth: u32, out: &mut Vec<Hit>) {
+            for (ei, el) in els.iter().enumerate() {
+                path.push(ei as u32);
+                match &el.kind {
+                    ElementKind::Instance(inst) => {
+                        if let Some(sym) = doc.symbol(inst.symbol) {
+                            let dur = sym.timeline.frame_count();
+                            let f = inst.symbol_frame(sym.kind, local, global, dur);
+                            path.push(inst.symbol);
+                            collect(doc, &sym.timeline, f, global, path, depth + 1, out);
+                            path.pop();
+                        }
+                    }
+                    ElementKind::Group(ch) => walk(doc, ch, local, global, path, depth, out),
+                    _ => {}
+                }
+                path.pop();
+            }
+        }
+        walk(doc, &kf.elements, frame - start, global, path, depth, out);
+        path.pop();
+        path.pop();
+    }
+}
+
+fn hits_at(doc: &crate::model::Document, global: u32) -> Vec<Hit> {
+    let (si, local) = doc.locate_frame(global);
+    let Some(tl) = doc.scene_at(si) else { return vec![] };
+    let mut out = vec![];
+    let mut path = vec![si as u32];
+    collect(doc, tl, local, global, &mut path, 0, &mut out);
+    out
+}
+
+/// Sounds that start (or stop) at movie frame `global`: keyframes entered on
+/// the main timeline and inside symbols (a looping graphic replays its sound
+/// each time it comes round, as in Animate). A sound counts as entered when
+/// its keyframe wasn't showing at the same point on the previous frame.
+pub fn frame_sounds(doc: &crate::model::Document, global: u32) -> Vec<SoundCue> {
+    if global >= doc.total_frames() {
+        return vec![];
+    }
+    let now = hits_at(doc, global);
+    if now.is_empty() {
+        return vec![];
+    }
+    let before = if global == 0 { vec![] } else { hits_at(doc, global - 1) };
+    now.into_iter()
+        .filter(|(p, f, _, _)| !before.iter().any(|(q, g, _, _)| q == p && g == f))
+        .map(|(_, _, sound, left)| SoundCue { sound, stream_end: global + left.max(1) })
+        .collect()
 }

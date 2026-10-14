@@ -63,6 +63,8 @@ pub struct App {
     #[cfg(feature = "audio")]
     pub(crate) audio: Option<ac_audio::playback::Player>,
     pub(crate) audio_started: bool,
+    /// A frame script stopped the main timeline; movie clips keep playing.
+    pub(crate) halted: bool,
     pub(crate) loop_play: bool,
     play_accum: f64,
     pub(crate) onion: bool,
@@ -157,6 +159,7 @@ impl App {
             #[cfg(feature = "audio")]
             audio: None,
             audio_started: false,
+            halted: false,
             loop_play: true,
             play_accum: 0.0,
             onion: false,
@@ -292,6 +295,8 @@ impl App {
     pub(crate) fn toggle_play(&mut self) {
         self.playing = !self.playing;
         self.play_accum = 0.0;
+        self.halted = false;
+        self.ed.clock = None;
         if self.playing {
             self.ed.selection.clear();
             if self.ed.frame + 1 >= self.ed.frame_count() {
@@ -648,7 +653,7 @@ impl App {
                         if ui.add(egui::Button::new("Import to Stage…").shortcut_text("Ctrl+R")).on_hover_text("PNG, JPG, GIF, BMP").clicked() { self.file(FileAction::ImportImage); ui.close_menu(); }
                         if ui.button("Import Image Sequence…").on_hover_text("walk0001.png, walk0002.png, … onto consecutive keyframes").clicked() { self.file(FileAction::ImportSequence); ui.close_menu(); }
                         if ui.button("Import SVG…").clicked() { self.file(FileAction::ImportSvg); ui.close_menu(); }
-                        if ui.button("Import Sound…").on_hover_text("WAV, MP3, OGG Vorbis, FLAC").clicked() { self.file(FileAction::ImportSound); ui.close_menu(); }
+                        if ui.button("Import Sound…").on_hover_text("WAV, MP3, OGG Vorbis, FLAC, AIFF").clicked() { self.file(FileAction::ImportSound); ui.close_menu(); }
                     });
                     ui.menu_button("Export", |ui| {
                         if ui.button("Export Image (PNG)…").clicked() { self.file(FileAction::ExportPng); ui.close_menu(); }
@@ -1083,6 +1088,11 @@ impl eframe::App for App {
             let n = self.ed.frame_count();
             while self.play_accum >= spf {
                 self.play_accum -= spf;
+                // movie clips run on their own clock, even while the main timeline is held
+                self.ed.clock = Some(self.ed.clock.unwrap_or(self.ed.frame) + 1);
+                if self.halted {
+                    continue;
+                }
                 if self.ed.frame + 1 >= n {
                     if self.loop_play { self.ed.frame = 0; self.restart_audio(); } else { self.playing = false; break; }
                 } else {
@@ -1093,7 +1103,15 @@ impl eframe::App for App {
                     break;
                 }
             }
+            // held with nothing left to animate: end playback as before
+            if self.halted && self.ed.doc.movie_clip_lengths(self.ed.doc.scene_start(self.ed.scene) + self.ed.frame).is_empty() {
+                self.playing = false;
+            }
             ctx.request_repaint();
+        }
+        if !self.playing {
+            self.halted = false;
+            self.ed.clock = None;
         }
         self.audio_tick();
         self.menu_bar(ctx);

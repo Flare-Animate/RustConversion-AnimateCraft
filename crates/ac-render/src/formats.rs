@@ -290,6 +290,7 @@ fn lottie_paths(p: &ac_core::Path, m: &Matrix) -> Vec<String> {
     out
 }
 
+const IDENT_KS: &str = "{\"o\":{\"a\":0,\"k\":100},\"r\":{\"a\":0,\"k\":0},\"p\":{\"a\":0,\"k\":[0,0,0]},\"a\":{\"a\":0,\"k\":[0,0,0]},\"s\":{\"a\":0,\"k\":[100,100,100]}}";
 const TR: &str = "{\"ty\":\"tr\",\"p\":{\"a\":0,\"k\":[0,0]},\"a\":{\"a\":0,\"k\":[0,0]},\"s\":{\"a\":0,\"k\":[100,100]},\"r\":{\"a\":0,\"k\":0},\"o\":{\"a\":0,\"k\":100}}";
 
 /// One draw item as a Lottie group (None for images, handled as layers).
@@ -297,8 +298,8 @@ fn lottie_item(it: &DrawItem, warn: &mut Vec<&'static str>) -> Option<String> {
     if it.image.is_some() {
         return None;
     }
-    if !it.clips.is_empty() {
-        warn.push("masks are not exported to Lottie (masked shapes show whole)");
+    if it.clips.len() > 1 {
+        warn.push("nested masks: Lottie keeps only the innermost one");
     }
     if !it.fx.is_empty() {
         warn.push("filters and blend modes are not exported to Lottie");
@@ -382,18 +383,26 @@ pub fn lottie(doc: &Document, o: &ExportOpts) -> (String, Vec<String>) {
         let items = evaluate_scene(doc, f);
         let mut layers: Vec<String> = vec![];
         let mut groups: Vec<String> = vec![];
-        let flush = |groups: &mut Vec<String>, layers: &mut Vec<String>| {
+        // the mask (if any) the current run of shape groups is clipped by
+        let mut run_clip: Option<std::sync::Arc<ac_core::Clip>> = None;
+        let flush = |groups: &mut Vec<String>, layers: &mut Vec<String>, clip: &Option<std::sync::Arc<ac_core::Clip>>| {
             if !groups.is_empty() {
                 // Lottie draws a layer's first group on top
                 groups.reverse();
-                layers.push(format!("\"ty\":4,\"ks\":{{\"o\":{{\"a\":0,\"k\":100}},\"r\":{{\"a\":0,\"k\":0}},\"p\":{{\"a\":0,\"k\":[0,0,0]}},\"a\":{{\"a\":0,\"k\":[0,0,0]}},\"s\":{{\"a\":0,\"k\":[100,100,100]}}}},\"shapes\":[{}]", groups.join(",")));
+                let matte = if clip.is_some() { ",\"tt\":1" } else { "" };
+                layers.push(format!("\"ty\":4{matte},\"ks\":{IDENT_KS},\"shapes\":[{}]", groups.join(",")));
                 groups.clear();
+                // the mask as an alpha matte layer just above its content
+                if let Some(c) = clip {
+                    let shapes: Vec<String> = c.shapes.iter().flat_map(|(p, m)| lottie_paths(p, m)).collect();
+                    layers.push(format!("\"ty\":4,\"td\":1,\"ks\":{IDENT_KS},\"shapes\":[{{\"ty\":\"gr\",\"it\":[{},{{\"ty\":\"fl\",\"c\":{{\"a\":0,\"k\":[1,1,1,1]}},\"o\":{{\"a\":0,\"k\":100}},\"r\":1}},{TR}]}}]", shapes.join(",")));
+                }
             }
         };
         for it in &items {
             match &it.image {
                 Some(img) => {
-                    flush(&mut groups, &mut layers);
+                    flush(&mut groups, &mut layers, &run_clip);
                     let key = std::sync::Arc::as_ptr(img) as usize;
                     let ix = *asset_ix.entry(key).or_insert_with(|| {
                         let mut rgba = Vec::with_capacity(img.rgba.len());
@@ -429,10 +438,22 @@ pub fn lottie(doc: &Document, o: &ExportOpts) -> (String, Vec<String>) {
                         f3(d.scale_y * 100.0)
                     ));
                 }
-                None => groups.extend(lottie_item(it, &mut warn)),
+                None => {
+                    let clip = it.clips.last().cloned();
+                    let same = match (&clip, &run_clip) {
+                        (Some(a), Some(b)) => std::sync::Arc::ptr_eq(a, b),
+                        (None, None) => true,
+                        _ => false,
+                    };
+                    if !same {
+                        flush(&mut groups, &mut layers, &run_clip);
+                        run_clip = clip;
+                    }
+                    groups.extend(lottie_item(it, &mut warn));
+                }
             }
         }
-        flush(&mut groups, &mut layers);
+        flush(&mut groups, &mut layers, &run_clip);
         layers.reverse(); // Lottie lists the top layer first
         keep.push(items);
         match runs.last_mut() {

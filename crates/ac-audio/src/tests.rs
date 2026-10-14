@@ -151,3 +151,66 @@ fn lip_sync_and_sound_commands_drive_the_editor() {
     assert!(has_sound(&back));
     std::fs::remove_dir_all(&dir).ok();
 }
+
+#[test]
+fn sounds_inside_symbols_play_and_effects_shape_them() {
+    use ac_core::geom::Matrix;
+    // a 5-frame graphic with a sound on its first frame, looping for 12 frames
+    let mut d = doc_with(vec![], 12);
+    let mut tl = Timeline::new("Beeper");
+    let mut k = Keyframe::blank();
+    k.sound = Some(FrameSound::new(1));
+    tl.layers[0].keyframes.insert(0, k);
+    tl.layers[0].end = 5;
+    d.library.push(Symbol { id: 7, name: "Beeper".into(), kind: SymbolKind::Graphic, timeline: tl });
+    d.next_symbol_id = 8;
+    d.scene.layers[0].keyframes.get_mut(&0).unwrap().elements.push(Element::instance("", 7, Matrix::IDENTITY));
+    let v = schedule(&d, &|_| Some(0.2));
+    let starts: Vec<f64> = v.iter().map(|v| (v.start * 10.0).round()).collect();
+    assert_eq!(starts, [0.0, 5.0, 10.0], "plays each time the graphic loops round");
+    // a single-frame graphic doesn't retrigger every frame
+    if let ElementKind::Instance(i) = &mut d.scene.layers[0].keyframes.get_mut(&0).unwrap().elements[0].kind {
+        i.loop_mode = LoopMode::SingleFrame;
+    }
+    assert_eq!(schedule(&d, &|_| Some(0.2)).len(), 1);
+    // effects: left channel only, fade in
+    let mut d = doc_with(vec![(0, FrameSound { effect: ac_core::sound::SoundEffect::LeftChannel, ..FrameSound::new(1) })], 10);
+    let m = mix(&d, 0, 22050);
+    let (l, r): (f32, f32) = m[..20000].chunks(2).fold((0.0, 0.0), |(a, b), s| (a + s[0].abs(), b + s[1].abs()));
+    assert!(l > 100.0 && r < 1e-3, "{l} {r}");
+    d.scene.layers[0].keyframes.get_mut(&0).unwrap().sound.as_mut().unwrap().effect = ac_core::sound::SoundEffect::FadeIn;
+    let m = mix(&d, 0, 22050);
+    let early: f32 = m[..2000].iter().map(|x| x.abs()).sum();
+    let late: f32 = m[40000..42000].iter().map(|x| x.abs()).sum();
+    assert!(early * 5.0 < late, "fades in: {early} vs {late}");
+}
+
+#[test]
+fn decodes_aiff() {
+    // 16-bit stereo AIFF, 100 frames of a ramp
+    let frames = 100u32;
+    let mut ssnd = vec![0u8; 8];
+    for i in 0..frames {
+        let v = (i as i16 * 300).to_be_bytes();
+        ssnd.extend_from_slice(&v);
+        ssnd.extend_from_slice(&v);
+    }
+    let mut comm = vec![];
+    comm.extend_from_slice(&2u16.to_be_bytes());
+    comm.extend_from_slice(&frames.to_be_bytes());
+    comm.extend_from_slice(&16u16.to_be_bytes());
+    // 22050 as 80-bit extended
+    comm.extend_from_slice(&[0x40, 0x0D, 0xAC, 0x44, 0, 0, 0, 0, 0, 0]);
+    let mut body = b"AIFF".to_vec();
+    body.extend_from_slice(b"COMM");
+    body.extend_from_slice(&(comm.len() as u32).to_be_bytes());
+    body.extend_from_slice(&comm);
+    body.extend_from_slice(b"SSND");
+    body.extend_from_slice(&(ssnd.len() as u32).to_be_bytes());
+    body.extend_from_slice(&ssnd);
+    let mut file = b"FORM".to_vec();
+    file.extend_from_slice(&(body.len() as u32).to_be_bytes());
+    file.extend_from_slice(&body);
+    let p = decode(&file).unwrap();
+    assert_eq!((p.rate, p.frames()), (22050, 100));
+}

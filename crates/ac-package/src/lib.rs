@@ -69,6 +69,8 @@ fn sound_ext(data: &[u8]) -> &'static str {
         "ogg"
     } else if data.starts_with(b"fLaC") {
         "flac"
+    } else if data.starts_with(b"FORM") {
+        "aif"
     } else {
         "mp3"
     }
@@ -145,7 +147,7 @@ pub fn write(doc: &Document, thumbnail: Option<&[u8]>) -> Result<Vec<u8>, String
     let mut order: Vec<&String> = files.keys().collect();
     order.sort_by_key(|k| (k.as_str() != "manifest.json", k.as_str() != "document.json", (*k).clone()));
     for name in order {
-        let compressed = name.ends_with(".png") || name.ends_with(".mp3") || name.ends_with(".ogg") || name.ends_with(".flac");
+        let compressed = name.ends_with(".png") || name.ends_with(".mp3") || name.ends_with(".ogg") || name.ends_with(".flac") || name.ends_with(".aif");
         z.start_file(name.as_str(), if compressed { stored } else { deflated }).map_err(|e| e.to_string())?;
         z.write_all(&files[name]).map_err(|e| e.to_string())?;
     }

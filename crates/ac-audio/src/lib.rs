@@ -4,7 +4,7 @@
 //! waveforms, guess mouth shapes for Auto Lip-Sync, and (feature
 //! `playback`) play through the system output.
 
-use ac_core::model::{Document, LayerKind};
+use ac_core::model::Document;
 use ac_core::sound::{SoundAsset, SoundId, SoundSync, Viseme};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -139,47 +139,42 @@ pub struct Voice {
     /// Cut here (Stream span end, a Stop keyframe, or the movie's end).
     pub end: f64,
     pub sync: SoundSync,
+    pub effect: ac_core::sound::SoundEffect,
+    /// Planned length before any cut (for fades), seconds; infinite = loop.
+    pub planned: f64,
 }
 
 /// The sounds the movie plays, in Animate's semantics, for linear playback
-/// of all scenes. `length` gives a sound's duration in seconds.
+/// of all scenes (main timeline and symbols). `length` gives a sound's
+/// duration in seconds.
 pub fn schedule(doc: &Document, length: &dyn Fn(SoundId) -> Option<f64>) -> Vec<Voice> {
     let fps = doc.fps.max(1.0) as f64;
-    // (time, order, sound, sync, repeat, forever, stream end)
-    let mut events = vec![];
-    let mut offset = 0u32;
-    let mut order = 0usize;
-    for tl in doc.scenes() {
-        for l in &tl.layers {
-            if matches!(l.kind, LayerKind::Guide | LayerKind::Folder | LayerKind::Camera) {
-                continue;
-            }
-            for (&s, kf) in &l.keyframes {
-                if let Some(fs) = &kf.sound {
-                    let span_end = (offset + l.span_end(s)) as f64 / fps;
-                    events.push(((offset + s) as f64 / fps, order, fs.clone(), span_end));
-                    order += 1;
-                }
-            }
-        }
-        offset += tl.frame_count();
-    }
-    let movie_end = offset as f64 / fps;
-    events.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap().then(a.1.cmp(&b.1)));
+    let frames = doc.total_frames();
+    let movie_end = frames as f64 / fps;
     let mut voices: Vec<Voice> = vec![];
-    for (t, _, fs, span_end) in events {
-        let Some(len) = length(fs.sound) else { continue };
-        let total = if fs.forever { f64::INFINITY } else { len * fs.repeat.max(1) as f64 };
-        let playing = |v: &Voice| v.sound == fs.sound && v.start <= t && v.end > t;
-        match fs.sync {
-            SoundSync::Stop => {
-                for v in voices.iter_mut().filter(|v| playing(v)) {
-                    v.end = t;
+    if doc.sounds.is_empty() {
+        return voices;
+    }
+    for f in 0..frames {
+        let t = f as f64 / fps;
+        for cue in ac_core::sound::frame_sounds(doc, f) {
+            let fs = cue.sound;
+            let Some(len) = length(fs.sound) else { continue };
+            let total = if fs.forever { f64::INFINITY } else { len * fs.repeat.max(1) as f64 };
+            let playing = |v: &Voice| v.sound == fs.sound && v.start <= t && v.end > t;
+            match fs.sync {
+                SoundSync::Stop => {
+                    for v in voices.iter_mut().filter(|v| playing(v)) {
+                        v.end = t;
+                    }
+                }
+                SoundSync::Start if voices.iter().any(playing) => {}
+                SoundSync::Event | SoundSync::Start => voices.push(Voice { sound: fs.sound, start: t, end: (t + total).min(movie_end), sync: fs.sync, effect: fs.effect, planned: total }),
+                SoundSync::Stream => {
+                    let span_end = cue.stream_end as f64 / fps;
+                    voices.push(Voice { sound: fs.sound, start: t, end: (t + total).min(span_end).min(movie_end), sync: fs.sync, effect: fs.effect, planned: total.min(span_end - t) })
                 }
             }
-            SoundSync::Start if voices.iter().any(playing) => {}
-            SoundSync::Event | SoundSync::Start => voices.push(Voice { sound: fs.sound, start: t, end: (t + total).min(movie_end), sync: fs.sync }),
-            SoundSync::Stream => voices.push(Voice { sound: fs.sound, start: t, end: (t + total).min(span_end).min(movie_end), sync: fs.sync }),
         }
     }
     voices.retain(|v| v.end > v.start);
@@ -209,8 +204,9 @@ pub fn mix(doc: &Document, from: u32, rate: u32) -> Vec<f32> {
             let t = t0 + i as f64 / rate as f64 - v.start;
             let local = if len > 0.0 { t % len } else { 0.0 };
             let (l, r) = p.at(local * p.rate as f64);
-            out[i * 2] += l;
-            out[i * 2 + 1] += r;
+            let (gl, gr) = v.effect.gains(t, len, v.planned);
+            out[i * 2] += l * gl;
+            out[i * 2 + 1] += r * gr;
         }
     }
     for s in &mut out {

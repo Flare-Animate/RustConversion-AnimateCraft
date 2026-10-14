@@ -540,10 +540,17 @@ impl Reader<'_> {
                     Tween::Classic { ease, rotate_turns: turns }
                 }
                 Some("shape") => Tween::Shape { ease },
-                Some("motion object") => {
-                    self.warn.push(format!("motion tween on '{}' imported without its property keyframes", l.name));
-                    Tween::None
-                }
+                Some("motion object") => match kf.elements.first().and_then(|el| motion_object(fr, el, self.doc.fps)) {
+                    Some(m) => {
+                        kf.motion = Some(Box::new(m));
+                        self.warn.push(format!("motion tween on '{}' read from its motion XML (experimental: check the result)", l.name));
+                        Tween::Motion { ease: 0.0 }
+                    }
+                    None => {
+                        self.warn.push(format!("motion tween on '{}' imported without its property keyframes", l.name));
+                        Tween::None
+                    }
+                },
                 _ => Tween::None,
             };
             kf.orient_to_path = flag(fr, "motionTweenOrientToPath");
@@ -708,6 +715,84 @@ pub(crate) fn read(pkg: &Package) -> Result<crate::Imported, String> {
     r.doc.more_scenes = scenes;
     let warn = dedup(r.warn);
     Ok(crate::Imported { doc: r.doc, warnings: warn })
+}
+
+/// A motion tween's property keyframes from `<motionObjectXML>`
+/// (`<AnimationCore TimeScale=… ><PropertyContainer>…<Property id="Motion_X">
+/// <Keyframe anchor="t,v" timevalue=…/>`). Values are offsets from the
+/// object's starting pose: pixels, degrees, and percent for scale.
+/// Experimental: built from the published structure, without a corpus.
+fn motion_object(fr: Node, el: &Element, fps: f32) -> Option<ac_core::motion::Motion> {
+    let mo = child(fr, "motionObjectXML")?;
+    let owned;
+    let core = match mo.descendants().find(|n| n.tag_name().name() == "AnimationCore") {
+        Some(c) => c,
+        None => {
+            let text: String = mo.children().filter_map(|t| t.text()).collect();
+            owned = roxmltree::Document::parse(text.trim()).ok()?;
+            let r = owned.root_element();
+            if r.tag_name().name() != "AnimationCore" {
+                return None;
+            }
+            // re-enter with the parsed tree
+            return motion_from_core(r, el, fps);
+        }
+    };
+    motion_from_core(core, el, fps)
+}
+
+fn motion_from_core(core: Node, el: &Element, fps: f32) -> Option<ac_core::motion::Motion> {
+    use ac_core::motion::{Motion, PathKey, Pose};
+    let scale = f(core, "TimeScale", 24000.0).max(1.0);
+    let props: std::collections::HashMap<String, Vec<(u32, f32)>> = core
+        .descendants()
+        .filter(|n| n.tag_name().name() == "Property" && n.attribute("enabled") != Some("0"))
+        .filter_map(|p| {
+            let keys: Vec<(u32, f32)> = kids(p, "Keyframe")
+                .filter_map(|k| {
+                    let t = f(k, "timevalue", 0.0);
+                    let v = k.attribute("anchor")?.split(',').next_back()?.trim().parse::<f32>().ok()?;
+                    Some(((t / scale * fps).round().max(0.0) as u32, v))
+                })
+                .collect();
+            (!keys.is_empty()).then(|| (p.attribute("id").unwrap_or("").to_string(), keys))
+        })
+        .collect();
+    if props.is_empty() {
+        return None;
+    }
+    let base = Pose::of(el, pt(0.0, 0.0));
+    let at = |keys: Option<&Vec<(u32, f32)>>, fr: u32| -> f32 {
+        let Some(k) = keys else { return 0.0 };
+        match k.iter().position(|(kf, _)| *kf >= fr) {
+            Some(0) => k[0].1,
+            Some(i) => {
+                let ((a, va), (b, vb)) = (k[i - 1], k[i]);
+                if b == a { vb } else { va + (vb - va) * (fr - a) as f32 / (b - a) as f32 }
+            }
+            None => k.last().unwrap().1,
+        }
+    };
+    let mut m = Motion::new(pt(0.0, 0.0));
+    let (xs, ys) = (props.get("Motion_X"), props.get("Motion_Y"));
+    let mut frames: Vec<u32> = xs.into_iter().chain(ys).flat_map(|k| k.iter().map(|x| x.0)).collect();
+    frames.sort();
+    frames.dedup();
+    for fr in frames {
+        m.path.push(PathKey { frame: fr, at: pt(base.pos.x + at(xs, fr), base.pos.y + at(ys, fr)), h_in: Pt::default(), h_out: Pt::default() });
+    }
+    let track = |id: &str, f: &dyn Fn(f32) -> f32, t: &mut ac_core::motion::Track| {
+        if let Some(k) = props.get(id) {
+            for (fr, v) in k {
+                t.set(*fr, f(*v));
+            }
+        }
+    };
+    track("Rotation_Z", &|v| base.rotation + v, &mut m.rotation);
+    track("Skew_X", &|v| base.skew + v, &mut m.skew);
+    track("Scale_X", &|v| base.scale_x * v / 100.0, &mut m.scale_x);
+    track("Scale_Y", &|v| base.scale_y * v / 100.0, &mut m.scale_y);
+    Some(m)
 }
 
 pub(crate) fn dedup(v: Vec<String>) -> Vec<String> {

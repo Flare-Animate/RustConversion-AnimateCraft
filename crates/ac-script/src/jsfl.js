@@ -147,8 +147,12 @@ var fl = (function () {
       targets.forEach(function (i) { layerObj(i)[prop] = value; });
     },
     getLayerProperty: function (prop) { return layerObj(tl.currentLayer)[prop]; },
-    copyFrames: unsupported("Timeline.copyFrames"),
-    pasteFrames: unsupported("Timeline.pasteFrames"),
+    copyFrames: function (a, b) { ac.timeline.copy_frames({ frame: (a === undefined ? tl.currentFrame : a) + 1, to_frame: b === undefined ? undefined : b }); },
+    cutFrames: function (a, b) { ac.timeline.cut_frames({ frame: (a === undefined ? tl.currentFrame : a) + 1, to_frame: b === undefined ? undefined : b }); },
+    pasteFrames: function (a) { ac.timeline.paste_frames({ frame: (a === undefined ? tl.currentFrame : a) + 1 }); },
+    copyLayers: unsupported("Timeline.copyLayers"),
+    duplicateLayers: function () { throw new Error("JSFL: Timeline.duplicateLayers is not supported by AnimationCraft yet"); },
+    expandFolder: function (expand, recurse, i) { if (i !== undefined) ac.layer.set({ layer: i + 1 }); },
   };
 
   // ---------------------------------------------------------------- library
@@ -280,7 +284,24 @@ var fl = (function () {
 var alert = function (m) { fl.trace(m); };
 var confirm = function () { return true; };
 var prompt = function (_, d) { return d === undefined ? null : d; };
-var FLfile = {
-  uriToPlatformPath: function (u) { return String(u).replace(/^file:\/\//, ""); },
-  platformPathToURI: function (p) { return "file://" + (String(p).charAt(0) === "/" ? "" : "/") + p; },
-};
+var FLfile = (function () {
+  function p(u) {
+    u = String(u);
+    if (u.indexOf("file:///") === 0) {
+      u = decodeURIComponent(u.slice(7));
+      if (/^\/[A-Za-z]\|/.test(u)) u = u.slice(1, 2) + ":" + u.slice(3);
+    }
+    return u;
+  }
+  function attempt(fn) { try { return fn(); } catch (e) { return false; } }
+  return {
+    uriToPlatformPath: p,
+    platformPathToURI: function (q) { q = String(q).replace(/\\/g, "/"); return "file://" + (q.charAt(0) === "/" ? "" : "/") + encodeURI(q); },
+    exists: function (u) { return ac.file.exists({ path: p(u) }); },
+    read: function (u) { return attempt(function () { return ac.file.read({ path: p(u) }); }) || undefined; },
+    write: function (u, text, mode) { return attempt(function () { return ac.file.write({ path: p(u), text: String(text), append: mode === "append" }); }); },
+    createFolder: function (u) { return attempt(function () { return ac.file.mkdir({ path: p(u) }); }); },
+    listFolder: function (u, kind) { return attempt(function () { return ac.file.list({ path: p(u).replace(/\/\*.*$/, ""), kind: kind || "all" }); }) || []; },
+    remove: function () { throw new Error("JSFL: FLfile.remove is not supported (AnimationCraft scripts don't delete files)"); },
+  };
+})();

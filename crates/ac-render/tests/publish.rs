@@ -90,3 +90,54 @@ fn animated_svg_and_lottie_cover_every_frame() {
     let shapes = layers[0]["shapes"].as_array().unwrap();
     assert!(shapes.iter().any(|g| g["it"].as_array().unwrap().iter().any(|x| x["ty"] == "fl" && x["c"]["k"][0] == 1)));
 }
+
+/// A movie clip blinking red/green/blue/white on a main timeline that a
+/// script stops on frame 1.
+fn held_doc() -> Document {
+    let mut d = Document { width: 40.0, height: 40.0, fps: 10.0, ..Default::default() };
+    let mut tl = Timeline::new("Blink");
+    let cols = [Color::rgb(255, 0, 0), Color::rgb(0, 255, 0), Color::rgb(0, 0, 255), Color::rgb(255, 255, 255)];
+    for (i, c) in cols.iter().enumerate() {
+        tl.layers[0].keyframes.insert(i as u32, Keyframe::with(vec![Element::shape("", Shape::new(Path::rect(0.0, 0.0, 40.0, 40.0), Some(*c), None))]));
+    }
+    tl.layers[0].end = 4;
+    d.library.push(Symbol { id: 1, name: "Blink".into(), kind: SymbolKind::MovieClip, timeline: tl });
+    d.next_symbol_id = 2;
+    let mut k = Keyframe::with(vec![Element::instance("", 1, Matrix::IDENTITY)]);
+    k.script = Some("this.stop();".into());
+    d.scene.layers[0].keyframes.insert(0, k);
+    d.scene.layers[0].end = 2;
+    d
+}
+
+#[test]
+fn held_frames_keep_movie_clips_playing() {
+    let d = held_doc();
+    assert_eq!(d.movie_clip_lengths(0), vec![4]);
+    let files = publish(&d, &Html5Opts::default());
+    let movie = String::from_utf8(files[1].1.clone()).unwrap();
+    let json = movie.trim_start_matches("var AC_MOVIE=").trim_end().trim_end_matches(';');
+    let m: serde_json::Value = serde_json::from_str(json).unwrap();
+    let v = m["extra"][0]["v"].as_array().expect("clock variants for the held frame");
+    assert_eq!(v.len(), 4);
+    assert_ne!(v[0], v[1]);
+    assert_eq!(v[0], m["frames"][0], "phase 0 is the normal frame");
+}
+
+#[test]
+fn lottie_masks_become_track_mattes() {
+    let mut d = Document { width: 100.0, height: 100.0, ..Default::default() };
+    let mut mask = Layer::new("Mask", 0);
+    mask.kind = LayerKind::Mask;
+    mask.keyframes.insert(0, Keyframe::with(vec![Element::shape("", Shape::new(Path::ellipse(50.0, 50.0, 30.0, 30.0), Some(Color::rgb(0, 0, 0)), None))]));
+    let mut art = Layer::new("Art", 1);
+    art.parent = Some(0);
+    art.keyframes.insert(0, Keyframe::with(vec![Element::shape("", Shape::new(Path::rect(0.0, 0.0, 100.0, 100.0), Some(Color::rgb(255, 0, 0)), None))]));
+    d.scene.layers = vec![mask, art];
+    let (json, warn) = lottie(&d, &ExportOpts::default());
+    assert!(warn.is_empty(), "{warn:?}");
+    let l: serde_json::Value = serde_json::from_str(&json).unwrap();
+    let layers = l["layers"].as_array().unwrap();
+    let matte = layers.iter().position(|x| x["td"] == 1).expect("a matte layer");
+    assert_eq!(layers[matte + 1]["tt"], 1, "the masked content follows its matte");
+}

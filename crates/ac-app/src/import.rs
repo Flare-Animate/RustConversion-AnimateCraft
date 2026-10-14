@@ -237,7 +237,7 @@ pub(crate) fn dropped(app: &mut App, path: &str) -> Result<String, String> {
     let l = path.to_lowercase();
     if l.ends_with(".svg") {
         import_svg(app, path)
-    } else if [".wav", ".mp3", ".ogg", ".oga", ".flac"].iter().any(|e| l.ends_with(e)) {
+    } else if [".wav", ".mp3", ".ogg", ".oga", ".flac", ".aif", ".aiff"].iter().any(|e| l.ends_with(e)) {
         app.import_sound(path)
     } else if l.ends_with(".json") || l.ends_with(".acx") || l.ends_with(".fla") || l.ends_with(".xfl") {
         app.guarded(crate::files::Pending::OpenPath(path.to_string()));

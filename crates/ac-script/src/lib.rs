@@ -163,6 +163,37 @@ pub fn exec(ed: &mut Editor, base: &Path, id: &str, args: &Value) -> Result<Valu
             std::fs::write(&p, ac_render::export_svg(&ed.doc, frame())).map_err(|e| e.to_string())?;
             Ok(json!(p.display().to_string()))
         }
+        // FLfile (JSFL): files as text; paths relative to the script
+        "file.read" => std::fs::read_to_string(path()?).map(Value::from).map_err(|e| e.to_string()),
+        "file.write" => {
+            let p = path()?;
+            let text = args.get("text").and_then(Value::as_str).unwrap_or("");
+            let r = if args.get("append").and_then(Value::as_bool).unwrap_or(false) {
+                use std::io::Write;
+                std::fs::OpenOptions::new().create(true).append(true).open(&p).and_then(|mut f| f.write_all(text.as_bytes()))
+            } else {
+                std::fs::write(&p, text)
+            };
+            r.map(|_| Value::Bool(true)).map_err(|e| e.to_string())
+        }
+        "file.exists" => Ok(Value::Bool(path()?.exists())),
+        "file.list" => {
+            let p = path()?;
+            let want = args.get("kind").and_then(Value::as_str).unwrap_or("all");
+            let mut v: Vec<String> = std::fs::read_dir(&p)
+                .map_err(|e| e.to_string())?
+                .filter_map(|e| e.ok())
+                .filter(|e| match want {
+                    "files" => e.path().is_file(),
+                    "directories" => e.path().is_dir(),
+                    _ => true,
+                })
+                .map(|e| e.file_name().to_string_lossy().to_string())
+                .collect();
+            v.sort();
+            Ok(json!(v))
+        }
+        "file.mkdir" => std::fs::create_dir_all(path()?).map(|_| Value::Bool(true)).map_err(|e| e.to_string()),
         "doc.save" => {
             let p = path()?;
             if p.extension().is_some_and(|e| e.eq_ignore_ascii_case("acx")) {
@@ -180,6 +211,11 @@ pub const EXTRA_COMMANDS: &[(&str, &str, &str)] = &[
     ("export.gif", "path, scale?", "Export the animation as a GIF"),
     ("export.png", "path, frame?, scale?", "Export one frame as PNG"),
     ("export.svg", "path, frame?", "Export one frame as SVG"),
+    ("file.read", "path", "Read a text file (relative to the script)"),
+    ("file.write", "path, text, append?", "Write (or append to) a text file"),
+    ("file.exists", "path", "Does the file or folder exist"),
+    ("file.list", "path, kind? ('files'|'directories'|'all')", "Names in a folder"),
+    ("file.mkdir", "path", "Create a folder (and its parents)"),
     ("doc.save", "path", "Save the document (.acx package, or .acx.json for plain JSON)"),
 ];
 

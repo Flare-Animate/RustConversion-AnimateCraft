@@ -225,6 +225,26 @@ pub struct Instance {
     pub first_frame: u32,
 }
 
+impl Instance {
+    /// The symbol frame shown `local` frames after the instance's keyframe
+    /// (graphics follow the parent; movie clips run on the global clock).
+    pub fn symbol_frame(&self, kind: SymbolKind, local: u32, global: u32, dur: u32) -> u32 {
+        let dur = dur.max(1);
+        match kind {
+            SymbolKind::MovieClip => global % dur,
+            SymbolKind::Button => 0,
+            SymbolKind::Graphic => {
+                let raw = self.first_frame.saturating_add(local);
+                match self.loop_mode {
+                    LoopMode::Loop => raw % dur,
+                    LoopMode::PlayOnce => raw.min(dur - 1),
+                    LoopMode::SingleFrame => self.first_frame.min(dur - 1),
+                }
+            }
+        }
+    }
+}
+
 /// Static text (Animate's Text tool, "Static Text" mode).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct TextEl {
@@ -630,6 +650,43 @@ impl Default for Document {
 }
 
 impl Document {
+    /// Lengths of the movie clips (with more than one frame) showing at
+    /// movie frame `frame`, at any depth.
+    pub fn movie_clip_lengths(&self, frame: u32) -> Vec<u32> {
+        fn walk(doc: &Document, tl: &Timeline, frame: u32, global: u32, depth: u32, out: &mut Vec<u32>) {
+            if depth > 16 {
+                return;
+            }
+            for l in &tl.layers {
+                let Some((start, kf, _)) = l.span_at(frame) else { continue };
+                fn els(doc: &Document, e: &[Element], local: u32, global: u32, depth: u32, out: &mut Vec<u32>) {
+                    for el in e {
+                        match &el.kind {
+                            ElementKind::Instance(i) => {
+                                if let Some(sym) = doc.symbol(i.symbol) {
+                                    let dur = sym.timeline.frame_count();
+                                    if sym.kind == SymbolKind::MovieClip && dur > 1 && !out.contains(&dur) {
+                                        out.push(dur);
+                                    }
+                                    walk(doc, &sym.timeline, i.symbol_frame(sym.kind, local, global, dur), global, depth + 1, out);
+                                }
+                            }
+                            ElementKind::Group(ch) => els(doc, ch, local, global, depth, out),
+                            _ => {}
+                        }
+                    }
+                }
+                els(doc, &kf.elements, frame - start, global, depth, out);
+            }
+        }
+        let (si, local) = self.locate_frame(frame);
+        let mut out = vec![];
+        if let Some(tl) = self.scene_at(si) {
+            walk(self, tl, local, frame, 0, &mut out);
+        }
+        out
+    }
+
     /// A copy with every floating merge selection merged back (for saving).
     pub fn with_floats_committed(&self) -> Document {
         fn fix(els: &mut [Element]) {
@@ -1106,20 +1163,12 @@ pub fn eval_element(ctx: &EvalCtx, el: &Element, parent: &Matrix, alpha: f32, lo
             let Some(sym) = ctx.doc.symbol(inst.symbol) else { return };
             let dur = sym.timeline.frame_count();
             let f = match sym.kind {
-                SymbolKind::MovieClip => ctx.global_frame % dur,
                 // Up, or Over/Down while live; the Hit frame (4th) never shows
                 SymbolKind::Button => match ctx.button {
                     Some((src, state)) if ctx.top.get() == Some(src) => state.min(2).min(dur.saturating_sub(1)),
                     _ => 0,
                 },
-                SymbolKind::Graphic => {
-                    let raw = inst.first_frame + local;
-                    match inst.loop_mode {
-                        LoopMode::Loop => raw % dur,
-                        LoopMode::PlayOnce => raw.min(dur - 1),
-                        LoopMode::SingleFrame => inst.first_frame.min(dur - 1),
-                    }
-                }
+                kind => inst.symbol_frame(kind, local, ctx.global_frame, dur),
             };
             evaluate(ctx, &sym.timeline, f, &m, a, depth + 1, out);
             for it in &mut out[first..] {
@@ -1256,9 +1305,15 @@ pub fn apply_view(items: &mut [DrawItem], view: &Matrix) {
 
 /// The whole movie at `frame`: scenes play one after another.
 pub fn evaluate_scene(doc: &Document, frame: u32) -> Vec<DrawItem> {
+    evaluate_scene_clock(doc, frame, frame)
+}
+
+/// Like `evaluate_scene`, with movie clips at their own clock `global`
+/// (they keep playing while a script holds the main timeline still).
+pub fn evaluate_scene_clock(doc: &Document, frame: u32, global: u32) -> Vec<DrawItem> {
     let (si, local) = doc.locate_frame(frame);
     let scene = doc.scene_at(si).unwrap_or(&doc.scene);
-    let ctx = EvalCtx::new(doc, frame);
+    let ctx = EvalCtx::new(doc, global);
     let mut out = Vec::new();
     evaluate(&ctx, scene, local, &Matrix::IDENTITY, 1.0, 0, &mut out);
     if let Some(v) = camera_view(doc, scene, local) {

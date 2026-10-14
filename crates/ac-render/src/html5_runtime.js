@@ -48,6 +48,7 @@
 
   // ---------------------------------------------------------------- state
   var frame = 0, playing = true;
+  var clock = 0; // movie clips' clock: keeps running while a script holds the timeline
   var insts = {};       // name → script object (persists while playing)
   var changed = {};     // name → true once a script changed it
   var hover = null, press = null; // button src
@@ -194,13 +195,17 @@
     c.restore();
   }
 
+  function frameList() {
+    var v = extra(frame).v;
+    return v ? v[clock % v.length] : M.frames[frame];
+  }
   function draw() {
     prepare(frame);
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.globalAlpha = 1;
     ctx.fillStyle = M.bg;
     ctx.fillRect(0, 0, cv.width, cv.height);
-    drawList(ctx, M.frames[frame], 0);
+    drawList(ctx, frameList(), 0);
     dirty = false;
   }
 
@@ -229,8 +234,25 @@
     var src = actx.createBufferSource();
     src.buffer = b;
     src.loop = e.l || e.r > 1;
-    src.connect(actx.destination);
     var t0 = actx.currentTime;
+    var total = e.l ? Infinity : b.duration * e.r;
+    if (e.y === "stream") total = Math.min(total, Math.max(0, (e.e - f) / M.fps));
+    var out = src;
+    if (e.fx) {
+      // Properties > Sound > Effect: pan and fades over one play of the sound
+      var gain = actx.createGain(), pan = actx.createStereoPanner ? actx.createStereoPanner() : null;
+      var span = isFinite(total) ? total : b.duration;
+      if (e.fx === "LeftChannel" && pan) pan.pan.value = -1;
+      if (e.fx === "RightChannel" && pan) pan.pan.value = 1;
+      if (e.fx === "FadeLeftToRight" && pan) { pan.pan.setValueAtTime(-1, t0); pan.pan.linearRampToValueAtTime(1, t0 + span); }
+      if (e.fx === "FadeRightToLeft" && pan) { pan.pan.setValueAtTime(1, t0); pan.pan.linearRampToValueAtTime(-1, t0 + span); }
+      if (e.fx === "FadeIn") { gain.gain.setValueAtTime(0, t0); gain.gain.linearRampToValueAtTime(1, t0 + b.duration); }
+      if (e.fx === "FadeOut" && isFinite(total)) { var d = Math.min(b.duration, total); gain.gain.setValueAtTime(1, t0 + total - d); gain.gain.linearRampToValueAtTime(0, t0 + total); }
+      src.connect(gain);
+      out = gain;
+      if (pan) { gain.connect(pan); out = pan; }
+    }
+    out.connect(actx.destination);
     src.start(t0);
     if (!e.l && e.r > 1) src.stop(t0 + b.duration * e.r);
     var v = { s: e.s, src: src, alive: true, stream: e.y === "stream", from: f, end: e.e };
@@ -327,7 +349,7 @@
     var bs = x.b || [];
     for (var i = bs.length - 1; i >= 0; i--) {
       var b = bs[i];
-      var shapes = b.hit.length ? b.hit.map(function (h) { return { p: h[0], m: h[1] }; }) : itemsOf(M.frames[frame], b.src, []);
+      var shapes = b.hit.length ? b.hit.map(function (h) { return { p: h[0], m: h[1] }; }) : itemsOf(frameList(), b.src, []);
       for (var k = 0; k < shapes.length; k++) {
         ctx.setTransform(BASE.multiply(new DOMMatrix(shapes[k].m)));
         if (ctx.isPointInPath(paths[shapes[k].p], px, py)) return { src: b.src, name: b.name, button: true };
@@ -338,7 +360,7 @@
     for (var j = names.length - 1; j >= 0; j--) {
       var o = insts[names[j]];
       if (!o || !Object.keys(o._l).some(function (t) { return o._l[t].length; })) continue;
-      var its = itemsOf(M.frames[frame], n[names[j]].src, []);
+      var its = itemsOf(frameList(), n[names[j]].src, []);
       for (var q = 0; q < its.length; q++) {
         ctx.setTransform(BASE.multiply(new DOMMatrix(its[q].m)));
         if (ctx.isPointInPath(paths[its[q].p], px, py)) return { src: n[names[j]].src, name: names[j], button: false };
@@ -386,15 +408,15 @@
     if (last === null) last = t;
     var dt = Math.min(0.25, (t - last) / 1000);
     last = t;
-    if (playing) {
-      acc += dt;
-      var spf = 1 / M.fps;
-      while (acc >= spf) {
-        acc -= spf;
-        advance();
-        if (!playing) { acc = 0; break; }
-      }
-    } else { acc = 0; cutStreams(); }
+    acc += dt;
+    var spf = 1 / M.fps;
+    while (acc >= spf) {
+      acc -= spf;
+      clock++;
+      if (extra(frame).v) dirty = true;
+      if (playing) advance();
+    }
+    if (!playing) cutStreams();
     if (dirty || Object.keys(changed).length) draw();
     requestAnimationFrame(tick);
   }

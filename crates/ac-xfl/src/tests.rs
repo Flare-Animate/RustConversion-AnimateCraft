@@ -136,7 +136,7 @@ fn round_trips_editor_features() {
     tl.layers.extend([folder, mask, body]);
     doc.more_scenes.push(Timeline::new("Scene 2"));
     doc.sounds.push(ac_core::sound::SoundAsset { id: 4, name: "voice.wav".into(), data: b"RIFF....WAVE".to_vec() });
-    doc.scene.layers[2].keyframes.get_mut(&12).unwrap().sound = Some(ac_core::sound::FrameSound { sound: 4, sync: ac_core::sound::SoundSync::Stream, repeat: 3, forever: false });
+    doc.scene.layers[2].keyframes.get_mut(&12).unwrap().sound = Some(ac_core::sound::FrameSound { sound: 4, sync: ac_core::sound::SoundSync::Stream, repeat: 3, forever: false, effect: Default::default() });
 
     let (pkg, warn) = write_package(&doc);
     assert!(warn.is_empty(), "{warn:?}");
@@ -222,4 +222,62 @@ fn saves_and_opens_files_and_folders() {
     check_fixture(&open(&dir.join("t/t.xfl")).unwrap().doc);
     check_fixture(&open(&dir.join("t")).unwrap().doc);
     std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn adjacent_fills_and_lines_share_edges_on_export() {
+    let mut doc = Document::default();
+    let mut c = ac_core::merge::MergeShape::default();
+    c.add_path(&Path::rect(0.0, 0.0, 100.0, 50.0), Some(Color::rgb(255, 0, 0)), None, None);
+    c.add_path(&Path::rect(0.0, 50.0, 100.0, 50.0), Some(Color::rgb(0, 0, 255)), None, None);
+    c.add_stroke(&[pt(0.0, 50.0), pt(100.0, 50.0)], false, Stroke { color: Color::rgb(0, 0, 0), width: 2.0 });
+    doc.scene.layers[0].keyframes.get_mut(&0).unwrap().elements.push(Element { kind: ElementKind::Canvas(c), ..Element::group(vec![]) });
+    let (pkg, _) = write_package(&doc);
+    let xml = String::from_utf8(pkg["DOMDocument.xml"].clone()).unwrap();
+    // the middle line: one edge with both fills and the stroke
+    assert!(xml.lines().any(|l| l.contains("fillStyle0") && l.contains("fillStyle1") && l.contains("strokeStyle")), "{xml}");
+    // and the shapes still come back intact
+    let d = read_package(&pkg).unwrap().doc;
+    let c = canvas(&d.scene.layers[0].keyframes[&0]);
+    let areas: Vec<f32> = c.fills.iter().map(region_area).collect();
+    assert_eq!(areas.len(), 2, "{areas:?}");
+    assert!(areas.iter().all(|a| (a - 5000.0).abs() < 1.0), "{areas:?}");
+    assert!(!c.strokes.is_empty());
+}
+
+#[test]
+fn reads_motion_object_tweens() {
+    let mut pkg = fixture();
+    let xml = String::from_utf8(pkg["DOMDocument.xml"].clone()).unwrap();
+    // turn the ball's classic tween into a motion-object tween (hand-written)
+    let motion = r#"<DOMFrame index="0" duration="10" tweenType="motion object" name="start" labelType="name">
+              <motionObjectXML>
+                <AnimationCore TimeScale="12000" Version="1" duration="120000">
+                  <PropertyContainer id="headContainer">
+                    <PropertyContainer id="Basic_Motion">
+                      <Property enabled="1" id="Motion_X"><Keyframe anchor="0,0" timevalue="0"/><Keyframe anchor="0,200" timevalue="9000"/></Property>
+                      <Property enabled="1" id="Motion_Y"><Keyframe anchor="0,0" timevalue="0"/><Keyframe anchor="0,-50" timevalue="9000"/></Property>
+                      <Property enabled="1" id="Rotation_Z"><Keyframe anchor="0,0" timevalue="0"/><Keyframe anchor="0,90" timevalue="9000"/></Property>
+                    </PropertyContainer>
+                    <PropertyContainer id="Transformation">
+                      <Property enabled="1" id="Scale_X"><Keyframe anchor="0,100" timevalue="0"/><Keyframe anchor="0,200" timevalue="9000"/></Property>
+                    </PropertyContainer>
+                  </PropertyContainer>
+                </AnimationCore>
+              </motionObjectXML>"#;
+    let xml = xml.replacen(r#"<DOMFrame index="0" duration="10" tweenType="motion" acceleration="-40" name="start" labelType="name">"#, motion, 1);
+    pkg.insert("DOMDocument.xml".into(), xml.into_bytes());
+    let im = read_package(&pkg).unwrap();
+    let k = &im.doc.scene.layers[0].keyframes[&0];
+    assert!(k.tween.is_motion(), "{:?} {:?}", k.tween, im.warnings);
+    let m = k.motion.as_ref().unwrap();
+    assert_eq!(m.path.len(), 2);
+    assert_eq!(m.path[1].frame, 9);
+    assert!(m.path[1].at.dist(pt(240.0, 70.0)) < 1e-3, "{:?}", m.path[1].at);
+    // frame 9 of the span: moved, turned 90°, twice as wide
+    let items = evaluate_scene(&im.doc, 9);
+    let ball = items.iter().find(|i| i.gradient.is_some()).unwrap();
+    assert!((ball.matrix.tx - 240.0).abs() < 0.5 && (ball.matrix.ty - 70.0).abs() < 0.5, "{:?}", ball.matrix);
+    let d = ball.matrix.decompose();
+    assert!((d.skew_y.to_degrees() - 90.0).abs() < 0.5 && (d.scale_x - 2.0).abs() < 0.01, "{d:?}");
 }
