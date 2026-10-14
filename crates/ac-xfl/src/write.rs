@@ -335,6 +335,8 @@ impl W<'_> {
         let b = |name: &str, v: bool| if v { format!(r#" {name}="true""#) } else { String::new() };
         for f in fs {
             let line = match f {
+                // no XFL equivalent (warned by the caller)
+                Filter::MotionBlur { .. } | Filter::Effect { .. } => continue,
                 Filter::DropShadow { blur_x, blur_y, strength, quality, angle, distance, color, knockout, inner, hide_object } => format!(
                     r#"<DropShadowFilter blurX="{}" blurY="{}" strength="{}" quality="{quality}" angle="{}" distance="{}"{}{}{}{}/>"#,
                     n(*blur_x), n(*blur_y), n(strength / 100.0), n(*angle), n(*distance), c(*color, "color", "alpha"), b("knockout", *knockout), b("inner", *inner), b("hideObject", *hide_object)
@@ -427,6 +429,9 @@ impl W<'_> {
                     s.push_str(&matrix_xml(&m, &inner));
                     s.push_str(&Self::color_xml(e, &inner));
                     s.push_str(&Self::filters_xml(&e.filters, &inner));
+                    if e.filters.iter().any(|f| matches!(f, Filter::MotionBlur { .. } | Filter::Effect { .. })) {
+                        self.warn.push("Motion Blur and EffectCraft effects have no .fla equivalent and were left out".into());
+                    }
                     let _ = writeln!(s, "{ind}</DOMSymbolInstance>");
                 }
                 ElementKind::Bitmap(b) => {
@@ -720,8 +725,8 @@ fn file_safe(name: &str) -> String {
 }
 
 pub(crate) fn write(doc: &Document) -> (Package, Vec<String>) {
-    let doc = doc.with_floats_committed();
-    let mut w = W { doc: &doc, warn: vec![] };
+    let (doc, warn) = ac_core::frames::for_interchange(&doc.with_floats_committed());
+    let mut w = W { doc: &doc, warn };
     let mut pkg = Package::new();
     pkg.insert("mimetype".into(), b"application/vnd.adobe.xfl".to_vec());
 

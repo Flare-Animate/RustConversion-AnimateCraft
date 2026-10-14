@@ -67,7 +67,12 @@ fn device_bounds(items: &[DrawItem], view: &Matrix) -> Option<(f32, f32, f32, f3
 
 pub fn draw_group(pix: &mut sk::PixmapMut, items: &[DrawItem], level: usize, g: &FxGroup, opts: &RenderOpts, masks: &mut MaskCache) {
     let scale = view_scale(&opts.view);
-    let Some((x0, y0, x1, y1)) = device_bounds(items, &opts.view) else { return };
+    let Some((mut x0, mut y0, mut x1, mut y1)) = device_bounds(items, &opts.view) else { return };
+    if let Some((m, frac, _)) = motion_blur(g) {
+        if let Some((a0, b0, a1, b1)) = device_bounds(items, &opts.view.concat(&lerp_matrix(&Matrix::IDENTITY, &m, frac))) {
+            (x0, y0, x1, y1) = (x0.min(a0), y0.min(b0), x1.max(a1), y1.max(b1));
+        }
+    }
     let margin = g.filters.iter().map(|f| f.margin()).sum::<f32>() * scale + 2.0;
     let (pw, ph) = (pix.width() as f32, pix.height() as f32);
     let (x0, y0) = ((x0 - margin).floor().max(0.0), (y0 - margin).floor().max(0.0));
@@ -78,11 +83,50 @@ pub fn draw_group(pix: &mut sk::PixmapMut, items: &[DrawItem], level: usize, g: 
     let (w, h) = ((x1 - x0) as u32, (y1 - y0) as u32);
     let Some(mut tmp) = sk::Pixmap::new(w, h) else { return };
     let sub = RenderOpts { view: Matrix::translate(-x0, -y0).concat(&opts.view), alpha: opts.alpha, tint: opts.tint };
-    draw_level(&mut tmp.as_mut(), items, level + 1, &sub, masks);
+    match motion_blur(g) {
+        Some((motion, frac, samples)) => {
+            // Draw the object at `samples` instants over the shutter and average.
+            let mut acc = vec![0u32; (w * h * 4) as usize];
+            for k in 0..samples {
+                let u = (k as f32 + 0.5) / samples as f32 * frac;
+                let Some(mut s) = sk::Pixmap::new(w, h) else { return };
+                let so = RenderOpts { view: sub.view.concat(&lerp_matrix(&Matrix::IDENTITY, &motion, u)), ..sub };
+                draw_level(&mut s.as_mut(), items, level + 1, &so, masks);
+                for (a, v) in acc.iter_mut().zip(s.data()) {
+                    *a += *v as u32;
+                }
+            }
+            let n = samples;
+            for (d, a) in tmp.data_mut().iter_mut().zip(&acc) {
+                *d = ((a + n / 2) / n) as u8;
+            }
+        }
+        None => draw_level(&mut tmp.as_mut(), items, level + 1, &sub, masks),
+    }
     for f in &g.filters {
-        apply_filter(&mut tmp, f, scale);
+        match f {
+            Filter::Effect { id, params } => {
+                crate::effectcraft::apply(&mut tmp, id, params, scale, g.time);
+            }
+            _ => apply_filter(&mut tmp, f, scale),
+        }
     }
     composite(pix, &tmp, x0 as i32, y0 as i32, g.blend);
+}
+
+/// (motion since the previous frame, shutter as a fraction of it, samples)
+/// when the group has a Motion Blur filter and the object moved.
+fn motion_blur(g: &FxGroup) -> Option<(Matrix, f32, u32)> {
+    let m = g.motion?;
+    g.filters.iter().find_map(|f| match f {
+        Filter::MotionBlur { shutter, samples } if *shutter > 0.0 => Some((m, (shutter / 360.0).min(2.0), (*samples).clamp(2, 64) as u32)),
+        _ => None,
+    })
+}
+
+fn lerp_matrix(a: &Matrix, b: &Matrix, t: f32) -> Matrix {
+    let l = |x: f32, y: f32| x + (y - x) * t;
+    Matrix { a: l(a.a, b.a), b: l(a.b, b.b), c: l(a.c, b.c), d: l(a.d, b.d), tx: l(a.tx, b.tx), ty: l(a.ty, b.ty) }
 }
 
 fn composite(dst: &mut sk::PixmapMut, src: &sk::Pixmap, x: i32, y: i32, blend: BlendMode) {
@@ -380,6 +424,11 @@ pub fn apply_filter(pix: &mut sk::Pixmap, f: &Filter, scale: f32) {
             }
         }
         Filter::AdjustColor { brightness, contrast, saturation, hue } => adjust_color(pix, brightness, contrast, saturation, hue),
+        // Motion blur happens while drawing the group (draw_group).
+        Filter::MotionBlur { .. } => {}
+        Filter::Effect { ref id, ref params } => {
+            crate::effectcraft::apply(pix, id, params, scale, 0.0);
+        }
     }
 }
 

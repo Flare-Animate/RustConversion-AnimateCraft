@@ -15,11 +15,20 @@ pub struct OnionOpts {
     pub outline: bool,
     /// Edit Multiple Frames: show and edit every keyframe between the markers.
     pub multi: bool,
+    /// Shift and Trace (from OpenToonz): the previous and next keyframes show as
+    /// ghosts you can slide and turn under the current drawing. View only.
+    pub shift_trace: bool,
+    /// Dragging on the stage moves a ghost (Shift: the next one; Alt: rotate).
+    pub shift_edit: bool,
+    /// Ghost offsets (previous, next) in stage space.
+    pub shift: [ac_core::Matrix; 2],
+    /// Pivot of the current Alt-drag turn.
+    pub shift_pivot: Option<ac_core::Pt>,
 }
 
 impl Default for OnionOpts {
     fn default() -> Self {
-        OnionOpts { before: 2, after: 2, anchor: None, outline: false, multi: false }
+        OnionOpts { before: 2, after: 2, anchor: None, outline: false, multi: false, shift_trace: false, shift_edit: false, shift: [ac_core::Matrix::IDENTITY; 2], shift_pivot: None }
     }
 }
 
@@ -41,6 +50,22 @@ pub struct TimelineState {
     pub parent_view: bool,
     /// Parent link being dragged from this layer.
     link_drag: Option<usize>,
+    /// Frame View: thumbnails of each keyframe in its span.
+    pub frame_view: FrameView,
+    /// Keyframe thumbnails by (layer, frame, in context, width, height); cleared on any edit.
+    thumbs: std::collections::HashMap<(usize, u32, bool, u32, u32), Option<egui::TextureHandle>>,
+    thumbs_key: (u64, Option<ac_core::SymbolId>, usize),
+}
+
+/// Timeline Frame View options (as in Animate's frame-view menu).
+#[derive(Default, Clone, Copy, PartialEq, Eq, Debug)]
+pub enum FrameView {
+    #[default]
+    Normal,
+    /// Each keyframe's content, scaled to fit the span.
+    Preview,
+    /// Each keyframe as it sits on the stage.
+    PreviewInContext,
 }
 
 #[derive(Default, Clone, Copy, PartialEq, Debug)]
@@ -81,10 +106,21 @@ pub fn frame_menu(app: &mut App, ui: &mut egui::Ui) {
     if app.ed.motion_span(app.ed.layer, app.ed.frame).is_some() && item(ui, "Motion Editor…", "") { app.motion.open = true; ui.close_menu(); }
     if item(ui, "Convert to Frame-by-Frame", "") { app.ed.convert_to_frame_by_frame(); ui.close_menu(); }
     if item(ui, "Reverse Frames", "") { app.ed.reverse_frames(); ui.close_menu(); }
+    let mut keep = app.settings.retain_tween_curves;
+    if ui
+        .checkbox(&mut keep, "Keep Tween Curves When Splitting")
+        .on_hover_text("On: a keyframe added inside a tween (or a partial copy/reverse) keeps the original ease curve exactly — Flare's behaviour. Off: Animate's behaviour (each piece becomes its own tween). Pieces export to .fla frame by frame.")
+        .changed()
+    {
+        app.settings.retain_tween_curves = keep;
+        app.settings.save();
+        ac_core::frames::set_retain_tween_curves(keep);
+    }
     ui.separator();
     if item(ui, "Cut Frames", "") { app.ed.cut_frames(); ui.close_menu(); }
     if item(ui, "Copy Frames", "") { app.ed.copy_frames(); ui.close_menu(); }
     if ui.add_enabled(app.ed.can_paste_frames(), egui::Button::new("Paste Frames")).clicked() { app.ed.paste_frames(); ui.close_menu(); }
+    if ui.add_enabled(app.ed.can_paste_frames(), egui::Button::new("Paste and Overwrite Frames")).clicked() { app.ed.paste_overwrite_frames(); ui.close_menu(); }
     if item(ui, "Select All Frames", "") {
         let n = app.ed.timeline().layers.len();
         let f = app.ed.frame_count();
@@ -120,6 +156,17 @@ pub fn layer_menu(app: &mut App, ui: &mut egui::Ui, i: usize) {
     if ui.button("Insert Layer").clicked() { app.ed.layer = i; app.ed.add_layer(); ui.close_menu(); }
     if ui.button("Delete Layer").clicked() { app.ed.layer = i; app.ed.delete_layer(); ui.close_menu(); }
     if ui.button("Duplicate Layer").clicked() { app.ed.layer = i; app.ed.duplicate_layer(); ui.close_menu(); }
+    // the clicked layer, or the selected rows when it's one of them
+    let pick = |app: &mut App| {
+        let in_sel = app.ed.frame_sel.is_some_and(|s| (s.layer0.min(s.layer1)..=s.layer0.max(s.layer1)).contains(&i));
+        if !in_sel {
+            app.ed.frame_sel = None;
+        }
+        app.ed.layer = i;
+    };
+    if ui.button("Cut Layers").clicked() { pick(app); app.ed.cut_layers(); app.status = "Cut layers".into(); ui.close_menu(); }
+    if ui.button("Copy Layers").clicked() { pick(app); app.ed.copy_layers(); app.status = "Copied layers (with their folders' contents)".into(); ui.close_menu(); }
+    if ui.add_enabled(app.ed.can_paste_layers(), egui::Button::new("Paste Layers")).clicked() { app.ed.layer = i; app.ed.paste_layers(); ui.close_menu(); }
     ui.separator();
     if ui.button("New Folder").on_hover_text("Insert a folder above and put this layer in it").clicked() { app.ed.layer = i; app.ed.wrap_layer(LayerKind::Folder, "Folder"); ui.close_menu(); }
     if ui.selectable_label(kind == LayerKind::Guide, "Guide").on_hover_text("Guide layers don't export. A guide with layers under it is a motion guide").clicked() {
@@ -175,6 +222,32 @@ fn toolbar(app: &mut App, ui: &mut egui::Ui) {
         ui.toggle_value(&mut app.onion_opts.outline, "Outlines").on_hover_text("Onion Skin Outlines");
         ui.toggle_value(&mut app.tl.parent_view, "Parenting").on_hover_text("Show Parenting View: drag from a layer's link dot onto another layer to parent it (Alt+click a dot to unparent)");
         ui.toggle_value(&mut app.onion_opts.multi, "Edit Multiple").on_hover_text("Edit Multiple Frames: show every keyframe between the markers and move them together");
+        let fv = match app.tl.frame_view {
+            FrameView::Normal => "Frames",
+            FrameView::Preview => "Preview",
+            FrameView::PreviewInContext => "In context",
+        };
+        ui.menu_button(fv, |ui| {
+            for (v, l, tip) in [
+                (FrameView::Normal, "Normal", "Plain frame cells"),
+                (FrameView::Preview, "Preview", "Thumbnails of each keyframe's content, fitted to the span"),
+                (FrameView::PreviewInContext, "Preview in Context", "Thumbnails of each keyframe as it sits on the stage"),
+            ] {
+                if ui.selectable_label(app.tl.frame_view == v, l).on_hover_text(tip).clicked() {
+                    app.tl.frame_view = v;
+                    ui.close_menu();
+                }
+            }
+        })
+        .response
+        .on_hover_text("Frame View: keyframe thumbnails in the timeline");
+        ui.toggle_value(&mut app.onion_opts.shift_trace, "Shift & Trace").on_hover_text("Shift and Trace: show the previous and next keyframes as ghosts you can slide under the current drawing to trace in-betweens (view only)");
+        if app.onion_opts.shift_trace {
+            ui.toggle_value(&mut app.onion_opts.shift_edit, "Edit Shift").on_hover_text("Drag on the stage to move the previous ghost; Shift+drag moves the next one; Alt+drag turns it");
+            if ui.small_button("Reset Shift").clicked() {
+                app.onion_opts.shift = [ac_core::Matrix::IDENTITY; 2];
+            }
+        }
         if app.onion || app.onion_opts.multi {
             ui.menu_button("Markers", |ui| {
                 let anchored = app.onion_opts.anchor.is_some();
@@ -233,6 +306,19 @@ fn grid(app: &mut App, ui: &mut egui::Ui) {
     let rows: Vec<usize> = (0..nl).filter(|i| !app.ed.layer_collapsed_away(*i)).collect();
     let nr = rows.len().max(1);
     let depths: Vec<usize> = (0..nl).map(|i| app.ed.layer_depth(i)).collect();
+    // per-row heights (Layer Properties › Layer height: 100/200/300 %) and their tops
+    let preview = app.tl.frame_view != FrameView::Normal;
+    let heights: Vec<f32> = rows.iter().map(|&i| RH * (layers[i].row_height.clamp(if preview { 200 } else { 100 }, 300) as f32 / 100.0)).collect();
+    // thumbnails are rebuilt after any edit or context change
+    let tkey = (app.ed.revision, app.ed.editing, app.ed.scene);
+    if app.tl.thumbs_key != tkey {
+        app.tl.thumbs.clear();
+        app.tl.thumbs_key = tkey;
+    }
+    let mut offs = vec![0.0f32];
+    for h in &heights {
+        offs.push(offs.last().copied().unwrap_or(0.0) + h);
+    }
 
     // Follow the playhead while playing; wheel scrolls (horizontal over frames, vertical over layers).
     if app.playing {
@@ -257,10 +343,14 @@ fn grid(app: &mut App, ui: &mut egui::Ui) {
     let vscroll = app.tl.vscroll;
     let first = scroll.floor() as u32;
     let x_of = |f: u32| grid_x0 + (f as f32 - scroll) * CW;
-    let row_y = |i: usize| rows_top + (i as f32 - vscroll as f32) * RH;
+    let top_off = offs[vscroll.min(rows.len())];
+    let row_y = |i: usize| rows_top + offs[i.min(rows.len())] - top_off;
+    // row under a y position (clamped to the last row)
+    let row_at = |y: f32| -> usize { offs.partition_point(|&o| o <= y - rows_top + top_off).saturating_sub(1).min(nr.saturating_sub(1)) };
+    let rows_bottom = rows_top + offs[rows.len()] - top_off;
     let cell_at = |pos: egui::Pos2| -> (usize, u32) {
         let f = (((pos.x - grid_x0) / CW) + scroll).floor().max(0.0) as u32;
-        let r = (((pos.y - rows_top) / RH).floor().max(0.0) as usize + vscroll).min(nr.saturating_sub(1));
+        let r = row_at(pos.y);
         (rows.get(r).copied().unwrap_or(0), f)
     };
 
@@ -340,7 +430,7 @@ fn grid(app: &mut App, ui: &mut egui::Ui) {
     }
 
     // --- frame cells: one interaction for the whole area (selection, drag-move, context menu)
-    let cells = Rect::from_min_max(pos2(grid_x0, rows_top), pos2(rect.right(), (rows_top + (nr - vscroll) as f32 * RH).min(rect.bottom())));
+    let cells = Rect::from_min_max(pos2(grid_x0, rows_top), pos2(rect.right(), rows_bottom.max(rows_top + RH).min(rect.bottom())));
     let cresp = ui.interact(cells, ui.id().with("tl-cells"), Sense::click_and_drag());
     let shift = ui.input(|i| i.modifiers.shift);
     if cresp.hovered() || cresp.dragged() {
@@ -438,18 +528,19 @@ fn grid(app: &mut App, ui: &mut egui::Ui) {
     for (ri, &i) in rows.iter().enumerate().skip(vscroll) {
         let layer = &layers[i];
         let y = row_y(ri);
+        let rh = heights[ri];
         if y > rect.bottom() {
             break;
         }
-        let row_left = Rect::from_min_size(pos2(rect.left(), y), vec2(LW, RH));
+        let row_left = Rect::from_min_size(pos2(rect.left(), y), vec2(LW, rh));
         let selected = i == app.ed.layer;
         p.rect_filled(row_left, 0.0, if selected { Color32::from_rgb(0x2B, 0x4F, 0x7A) } else { Color32::from_gray(0x30) });
-        p.line_segment([pos2(rect.left(), y + RH), pos2(rect.right(), y + RH)], Stroke::new(1.0_f32, Color32::from_gray(0x22)));
+        p.line_segment([pos2(rect.left(), y + rh), pos2(rect.right(), y + rh)], Stroke::new(1.0_f32, Color32::from_gray(0x22)));
 
         // Name: click = select layer (+ its frames), double-click = rename, drag = reorder.
         // nesting indent + type icon (folder ▸/▾, mask, guide, camera)
         let indent = depths[i] as f32 * 14.0;
-        let icon_c = pos2(rect.left() + 12.0 + indent, y + RH / 2.0);
+        let icon_c = pos2(rect.left() + 12.0 + indent, y + rh / 2.0);
         let ic = Color32::from_gray(200);
         match layer.kind {
             LayerKind::Folder => {
@@ -486,7 +577,7 @@ fn grid(app: &mut App, ui: &mut egui::Ui) {
             }
         }
         let link_w = if app.tl.parent_view { 18.0 } else { 0.0 };
-        let name_rect = Rect::from_min_size(pos2(rect.left() + 22.0 + indent, y), vec2(LW - 104.0 - indent - link_w, RH));
+        let name_rect = Rect::from_min_size(pos2(rect.left() + 22.0 + indent, y), vec2(LW - 104.0 - indent - link_w, rh));
         if app.tl.parent_view && layer.kind == LayerKind::Normal {
             let dot = link_dot(rect, y);
             let col = if layer.anim_parent.is_some() { c32(layer.color) } else { Color32::from_gray(120) };
@@ -503,7 +594,7 @@ fn grid(app: &mut App, ui: &mut egui::Ui) {
             }
             if r.drag_stopped() {
                 if let (Some(from), Some(pos)) = (app.tl.link_drag.take(), ui.input(|inp| inp.pointer.latest_pos())) {
-                    let to_row = (((pos.y - rows_top) / RH).floor().max(0.0) as usize + vscroll).min(nr - 1);
+                    let to_row = row_at(pos.y);
                     let to = rows[to_row];
                     if to == from {
                         app.ed.set_anim_parent(from, None);
@@ -552,7 +643,7 @@ fn grid(app: &mut App, ui: &mut egui::Ui) {
             }
             if r.drag_stopped() {
                 if let (Some(from), Some(pos)) = (app.tl.layer_drag.take(), ui.input(|inp| inp.pointer.latest_pos())) {
-                    let to_row = (((pos.y - rows_top) / RH).floor().max(0.0) as usize + vscroll).min(nr - 1);
+                    let to_row = row_at(pos.y);
                     let to = rows[to_row];
                     if to != from {
                         app.ed.drop_layer(from, to);
@@ -563,7 +654,7 @@ fn grid(app: &mut App, ui: &mut egui::Ui) {
             r.context_menu(|ui| layer_menu(app, ui, i));
         }
         // Eye / lock / outline toggles
-        let icon = |k: usize| Rect::from_center_size(pos2(rect.left() + LW - 70.0 + k as f32 * 22.0, y + RH / 2.0), vec2(18.0, 18.0));
+        let icon = |k: usize| Rect::from_center_size(pos2(rect.left() + LW - 70.0 + k as f32 * 22.0, y + rh / 2.0), vec2(18.0, 18.0));
         let eye = icon(0);
         if layer.visible {
             p.circle_stroke(eye.center(), 5.0, Stroke::new(1.3_f32, Color32::from_gray(200)));
@@ -592,7 +683,7 @@ fn grid(app: &mut App, ui: &mut egui::Ui) {
         }
 
         // Frame cells
-        let row = Rect::from_min_max(pos2(grid_x0, y), pos2(rect.right(), y + RH));
+        let row = Rect::from_min_max(pos2(grid_x0, y), pos2(rect.right(), y + rh));
         let rp = ui.painter_at(row.intersect(rect));
         if layer.kind == LayerKind::Folder {
             rp.rect_filled(row, 0.0, Color32::from_gray(0x2E));
@@ -600,7 +691,7 @@ fn grid(app: &mut App, ui: &mut egui::Ui) {
         }
         for f in first..first + visible_cols {
             let x = x_of(f);
-            let cell = Rect::from_min_size(pos2(x, y), vec2(CW, RH));
+            let cell = Rect::from_min_size(pos2(x, y), vec2(CW, rh));
             let in_span = f < layer.end;
             let fill = if in_span {
                 if (f + 1) % 5 == 0 { Color32::from_gray(0x52) } else { Color32::from_gray(0x47) }
@@ -610,18 +701,18 @@ fn grid(app: &mut App, ui: &mut egui::Ui) {
                 Color32::from_gray(0x2A)
             };
             rp.rect_filled(cell, 0.0, fill);
-            rp.line_segment([pos2(x + CW, y), pos2(x + CW, y + RH)], Stroke::new(1.0_f32, Color32::from_gray(0x24)));
+            rp.line_segment([pos2(x + CW, y), pos2(x + CW, y + rh)], Stroke::new(1.0_f32, Color32::from_gray(0x24)));
         }
         for (&start, kf) in &layer.keyframes {
             let end = layer.span_end(start);
             let (x0, x1) = (x_of(start), x_of(end));
-            let span = Rect::from_min_max(pos2(x0, y + 1.0), pos2(x1, y + RH - 1.0));
+            let span = Rect::from_min_max(pos2(x0, y + 1.0), pos2(x1, y + rh - 1.0));
             let has_next = layer.keyframes.contains_key(&end);
             match kf.tween {
                 Tween::Classic { .. } | Tween::Shape { .. } => {
                     let col = if matches!(kf.tween, Tween::Classic { .. }) { CLASSIC } else { SHAPE };
                     rp.rect_filled(span, 0.0, col);
-                    let ym = y + RH / 2.0;
+                    let ym = y + rh / 2.0;
                     let stroke = Stroke::new(1.0_f32, Color32::from_gray(20));
                     if has_next {
                         rp.line_segment([pos2(x0 + CW, ym), pos2(x1 - 3.0, ym)], stroke);
@@ -639,7 +730,7 @@ fn grid(app: &mut App, ui: &mut egui::Ui) {
                     rp.rect_filled(span, 0.0, MOTION);
                     if let Some(m) = &kf.motion {
                         for k in m.key_frames().into_iter().filter(|&k| k > 0 && start + k < end) {
-                            let c = pos2(x_of(start + k) + CW / 2.0, y + RH - 7.0);
+                            let c = pos2(x_of(start + k) + CW / 2.0, y + rh - 7.0);
                             let d = 3.2;
                             rp.add(egui::Shape::convex_polygon(vec![c + vec2(0.0, -d), c + vec2(d, 0.0), c + vec2(0.0, d), c + vec2(-d, 0.0)], Color32::from_gray(20), Stroke::NONE));
                         }
@@ -647,15 +738,34 @@ fn grid(app: &mut App, ui: &mut egui::Ui) {
                 }
                 Tween::None => {
                     if end > start + 1 {
-                        let r = Rect::from_center_size(pos2(x1 - CW / 2.0, y + RH - 7.0), vec2(5.0, 7.0));
+                        let r = Rect::from_center_size(pos2(x1 - CW / 2.0, y + rh - 7.0), vec2(5.0, 7.0));
                         rp.rect_stroke(r, 0.0, Stroke::new(1.0_f32, Color32::from_gray(30)));
                     }
                 }
             }
             if let Some(fs) = &kf.sound {
-                draw_waveform(&rp, &app.ed.doc, fs, start, end, x0, x1, y);
+                draw_waveform(&rp, &app.ed.doc, fs, start, end, x0, x1, y, rh);
             }
-            let c = pos2(x0 + CW / 2.0, y + RH - 7.0);
+            if preview && !kf.elements.is_empty() && rh > RH + 4.0 {
+                let th = (rh - 16.0).max(8.0);
+                let ctx_mode = app.tl.frame_view == FrameView::PreviewInContext;
+                let aspect = if ctx_mode { app.ed.doc.width / app.ed.doc.height.max(1.0) } else { 1.0 };
+                let tw = (th * aspect).min((x1 - x0 - 4.0).max(0.0));
+                if tw >= 8.0 && x1 > grid_x0 && x0 < rect.right() {
+                    let key = (i, start, ctx_mode, tw as u32, th as u32);
+                    if !app.tl.thumbs.contains_key(&key) {
+                        let img = keyframe_thumb(app, i, start, ctx_mode, tw as u32, th as u32);
+                        let tex = img.map(|im| ui.ctx().load_texture(format!("tl-thumb-{i}-{start}"), im, egui::TextureOptions::LINEAR));
+                        app.tl.thumbs.insert(key, tex);
+                    }
+                    if let Some(Some(tex)) = app.tl.thumbs.get(&key) {
+                        let r = Rect::from_min_size(pos2(x0 + 2.0, y + 2.0), vec2(tw, th));
+                        rp.rect_filled(r, 0.0, Color32::from_gray(if ctx_mode { 0xF2 } else { 0x5A }));
+                        rp.image(tex.id(), r, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
+                    }
+                }
+            }
+            let c = pos2(x0 + CW / 2.0, y + rh - 7.0);
             if kf.elements.is_empty() {
                 rp.circle_stroke(c, 3.0, Stroke::new(1.2_f32, Color32::from_gray(20)));
             } else {
@@ -673,14 +783,14 @@ fn grid(app: &mut App, ui: &mut egui::Ui) {
         }
         if let Gesture::SpanEnd { layer: gl, start, end } = app.tl.gesture {
             if gl == i {
-                let r = Rect::from_min_max(pos2(x_of(start), y + 1.0), pos2(x_of(end.max(start + 1)), y + RH - 1.0));
+                let r = Rect::from_min_max(pos2(x_of(start), y + 1.0), pos2(x_of(end.max(start + 1)), y + rh - 1.0));
                 rp.rect_stroke(r, 0.0, Stroke::new(2.0_f32, Color32::WHITE));
             }
         }
         // Frame selection highlight (and its ghost while dragging).
         if let Some(s) = sel {
             if (s.layer0..=s.layer1).contains(&i) {
-                let r = Rect::from_min_max(pos2(x_of(s.f0), y), pos2(x_of(s.f1 + 1), y + RH));
+                let r = Rect::from_min_max(pos2(x_of(s.f0), y), pos2(x_of(s.f1 + 1), y + rh));
                 rp.rect_filled(r, 0.0, ACCENT.gamma_multiply(0.45));
                 rp.rect_stroke(r, 0.0, Stroke::new(1.0_f32, ACCENT));
                 if move_delta != 0 {
@@ -694,7 +804,7 @@ fn grid(app: &mut App, ui: &mut egui::Ui) {
     let row_of = |l: usize| rows.iter().position(|&r| r == l);
     for (k, &(c, par)) in link_lines.iter().enumerate() {
         let (Some(rc), Some(rpar)) = (row_of(c), row_of(par)) else { continue };
-        let (yc, yp) = (row_y(rc) + RH / 2.0, row_y(rpar) + RH / 2.0);
+        let (yc, yp) = (row_y(rc) + heights[rc] / 2.0, row_y(rpar) + heights[rpar] / 2.0);
         let x = link_dot(rect, 0.0).x;
         let bend = x - 8.0 - (k % 3) as f32 * 3.0;
         let col = c32(layers[c].color);
@@ -710,7 +820,7 @@ fn grid(app: &mut App, ui: &mut egui::Ui) {
     }
     // Layer reorder indicator
     if let (Some(_), Some(pos)) = (app.tl.layer_drag, ui.input(|i| i.pointer.latest_pos())) {
-        let to = (((pos.y - rows_top) / RH).floor().max(0.0) as usize + vscroll).min(nr - 1);
+        let to = row_at(pos.y);
         let y = row_y(to);
         p.line_segment([pos2(rect.left(), y), pos2(grid_x0, y)], Stroke::new(2.0_f32, ACCENT));
     }
@@ -719,7 +829,7 @@ fn grid(app: &mut App, ui: &mut egui::Ui) {
     let x = x_of(app.ed.frame);
     if x >= grid_x0 - CW && x <= rect.right() {
         let gp = ui.painter_at(grid_rect);
-        let bottom = (rows_top + (nr - vscroll) as f32 * RH).min(rect.bottom());
+        let bottom = rows_bottom.max(rows_top + RH).min(rect.bottom());
         gp.line_segment([pos2(x + CW / 2.0, rect.top()), pos2(x + CW / 2.0, bottom)], Stroke::new(1.5_f32, PLAYHEAD));
         let tag = Rect::from_center_size(pos2(x + CW / 2.0, rect.top() + HH / 2.0), vec2(26.0, HH - 4.0));
         gp.rect_filled(tag, 3.0, PLAYHEAD);
@@ -732,7 +842,7 @@ fn grid(app: &mut App, ui: &mut egui::Ui) {
 /// waveform in the frames). Event sounds play past the span, so only the
 /// part inside it is drawn.
 #[allow(clippy::too_many_arguments)]
-fn draw_waveform(rp: &egui::Painter, doc: &ac_core::Document, fs: &ac_core::sound::FrameSound, start: u32, end: u32, x0: f32, x1: f32, y: f32) {
+fn draw_waveform(rp: &egui::Painter, doc: &ac_core::Document, fs: &ac_core::sound::FrameSound, start: u32, end: u32, x0: f32, x1: f32, y: f32, rh: f32) {
     if fs.sync == ac_core::sound::SoundSync::Stop {
         return;
     }
@@ -742,8 +852,8 @@ fn draw_waveform(rp: &egui::Painter, doc: &ac_core::Document, fs: &ac_core::soun
     let fps = doc.fps.max(1.0);
     let n = (x1 - x0).max(1.0) as usize;
     let secs = (end - start) as f32 / fps;
-    let mid = y + RH / 2.0 - 2.0;
-    let h = RH / 2.0 - 4.0;
+    let mid = y + rh / 2.0 - 2.0;
+    let h = rh / 2.0 - 4.0;
     let col = Color32::from_rgb(0x3A, 0x8F, 0xD8);
     // per-pixel peaks; cached per (sound, width, span) since this runs every repaint
     type Key = (u32, usize, u32, u32, u32, bool);
@@ -778,4 +888,39 @@ fn draw_waveform(rp: &egui::Painter, doc: &ac_core::Document, fs: &ac_core::soun
         let x = x0 + i as f32 + 0.5;
         rp.line_segment([pos2(x, mid - hi * h), pos2(x, mid - lo * h)], Stroke::new(1.0_f32, col));
     }
+}
+
+/// A keyframe's content on its own as a small image: fitted to its bounds
+/// (Preview) or the whole stage scaled down (Preview in Context).
+fn keyframe_thumb(app: &App, li: usize, frame: u32, in_context: bool, w: u32, h: u32) -> Option<egui::ColorImage> {
+    let doc = &app.ed.doc;
+    let mut tl = app.ed.timeline().clone();
+    let mut layer = tl.layers.get(li)?.clone();
+    if layer.anim_parent.is_some() {
+        let pm = ac_core::layer_parent_matrix(&tl, li, frame);
+        for kf in layer.keyframes.values_mut() {
+            for el in &mut kf.elements {
+                el.matrix = pm.concat(&el.matrix);
+            }
+        }
+    }
+    layer.parent = None;
+    layer.anim_parent = None;
+    layer.visible = true;
+    layer.kind = LayerKind::Normal;
+    tl.layers = vec![layer];
+    let ctx = ac_core::EvalCtx::new(doc, frame);
+    let mut items = Vec::new();
+    ac_core::evaluate(&ctx, &tl, frame, &ac_core::Matrix::IDENTITY, 1.0, 0, &mut items);
+    let (lo, hi) = if in_context {
+        (ac_core::pt(0.0, 0.0), ac_core::pt(doc.width, doc.height))
+    } else {
+        items.iter().filter_map(|it| it.path.transformed(&it.matrix).bounds()).reduce(|a, b| (ac_core::pt(a.0.x.min(b.0.x), a.0.y.min(b.0.y)), ac_core::pt(a.1.x.max(b.1.x), a.1.y.max(b.1.y))))?
+    };
+    let (bw, bh) = ((hi.x - lo.x).max(1.0), (hi.y - lo.y).max(1.0));
+    let k = ((w as f32 - 2.0) / bw).min((h as f32 - 2.0) / bh);
+    let view = ac_core::Matrix::translate((w as f32 - bw * k) / 2.0, (h as f32 - bh * k) / 2.0).concat(&ac_core::Matrix::scale(k, k)).concat(&ac_core::Matrix::translate(-lo.x, -lo.y));
+    let mut pix = tiny_skia::Pixmap::new(w.max(1), h.max(1))?;
+    ac_render::draw_items(&mut pix.as_mut(), &items, &ac_render::RenderOpts { view, ..Default::default() });
+    Some(egui::ColorImage::from_rgba_premultiplied([w as usize, h as usize], pix.data()))
 }

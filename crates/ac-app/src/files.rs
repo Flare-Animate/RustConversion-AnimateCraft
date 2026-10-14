@@ -19,12 +19,14 @@ pub(crate) enum FileAction {
     ImportImage,
     ImportSvg,
     ImportSequence,
+    ImportPsd,
     ExportXfl,
     ImportSound,
     ExportHtml5,
     ExportSpriteSheet,
     ExportAnimatedSvg,
     ExportLottie,
+    ExportXdts,
 }
 
 impl FileAction {
@@ -40,17 +42,19 @@ impl FileAction {
             FileAction::ImportImage => "Import image (PNG / JPG / GIF / BMP)",
             FileAction::ImportSvg => "Import SVG",
             FileAction::ImportSequence => "Import image sequence (pick the first numbered image)",
+            FileAction::ImportPsd => "Import Photoshop file (one layer per Photoshop layer)",
             FileAction::ExportXfl => "Export as .fla / XFL",
             FileAction::ImportSound => "Import sound to library (WAV / MP3 / OGG / FLAC / AIFF)",
             FileAction::ExportHtml5 => "Publish HTML5 Canvas (a folder, or name.html for one file)",
             FileAction::ExportSpriteSheet => "Generate sprite sheet (PNG + data file)",
             FileAction::ExportAnimatedSvg => "Export animated SVG",
             FileAction::ExportLottie => "Export Lottie JSON",
+            FileAction::ExportXdts => "Export Timing Sheet (XDTS)",
         }
     }
     fn default_name(self, doc_name: &str) -> String {
         match self {
-            FileAction::Open | FileAction::ImportImage | FileAction::ImportSvg | FileAction::ImportSequence | FileAction::ImportSound => String::new(),
+            FileAction::Open | FileAction::ImportImage | FileAction::ImportSvg | FileAction::ImportSequence | FileAction::ImportSound | FileAction::ImportPsd => String::new(),
             FileAction::Save => format!("{doc_name}.acx"),
             FileAction::ExportGif => format!("{doc_name}.gif"),
             FileAction::ExportPng => format!("{doc_name}.png"),
@@ -62,6 +66,7 @@ impl FileAction {
             FileAction::ExportSpriteSheet => format!("{doc_name}-sheet.png"),
             FileAction::ExportAnimatedSvg => format!("{doc_name}-animated.svg"),
             FileAction::ExportLottie => format!("{doc_name}.json"),
+            FileAction::ExportXdts => format!("{doc_name}.xdts"),
         }
     }
     fn filters(self) -> (&'static str, &'static [&'static str]) {
@@ -74,16 +79,18 @@ impl FileAction {
             FileAction::ExportSpriteSheet => ("PNG", &["png"]),
             FileAction::ExportAnimatedSvg => ("SVG", &["svg"]),
             FileAction::ExportLottie => ("Lottie JSON", &["json"]),
+            FileAction::ExportXdts => ("XDTS timing sheet", &["xdts"]),
             FileAction::ExportGif => ("Animated GIF", &["gif"]),
             FileAction::ExportPng => ("Image", &["png", "jpg", "jpeg", "gif"]),
             FileAction::ExportSvg | FileAction::ImportSvg => ("SVG", &["svg"]),
             FileAction::ExportPngSequence => ("Folder", &[]),
             FileAction::ExportVideo => ("Video", &["mp4", "webm", "mov"]),
             FileAction::ImportImage | FileAction::ImportSequence => ("Images", &["png", "jpg", "jpeg", "gif", "bmp"]),
+            FileAction::ImportPsd => ("Photoshop files", &["psd"]),
         }
     }
     fn picks_existing(self) -> bool {
-        matches!(self, FileAction::Open | FileAction::ImportImage | FileAction::ImportSvg | FileAction::ImportSequence | FileAction::ImportSound)
+        matches!(self, FileAction::Open | FileAction::ImportImage | FileAction::ImportSvg | FileAction::ImportSequence | FileAction::ImportSound | FileAction::ImportPsd)
     }
 }
 
@@ -120,6 +127,10 @@ pub(crate) struct Settings {
     /// Properties › Filters › Presets: named filter lists.
     #[serde(default)]
     pub filter_presets: Vec<(String, Vec<ac_core::Filter>)>,
+    /// Modify › Timeline › Keep Tween Curves When Splitting (Flare's timeline
+    /// semantics). Off = Animate's behaviour.
+    #[serde(default)]
+    pub retain_tween_curves: bool,
 }
 
 fn app_dir(base: Option<PathBuf>) -> Option<PathBuf> {

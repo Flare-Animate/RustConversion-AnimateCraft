@@ -15,11 +15,19 @@ pub mod sound;
 pub mod strokes;
 pub mod motion;
 pub mod text;
+pub mod trace;
+pub mod xdts;
+pub mod tween_edit;
 pub mod commands;
 
 pub use editor::{Editor, FrameSel, LayerFlag, Selection};
 pub use geom::{pt, Matrix, Path, PointRef, Pt, Seg};
 pub use model::*;
+
+#[cfg(test)]
+mod flare_frame_clock_tests;
+#[cfg(test)]
+mod flare_tween_boundary_tests;
 
 #[cfg(test)]
 mod tests {

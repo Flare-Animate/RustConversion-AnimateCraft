@@ -87,6 +87,36 @@ pub enum Filter {
     /// A bevel coloured by a gradient ramp: shadow side → middle (usually
     /// transparent) → highlight side.
     GradientBevel { blur_x: f32, blur_y: f32, strength: f32, quality: u8, angle: f32, distance: f32, knockout: bool, kind: BevelType, stops: Vec<(f32, Color)> },
+    /// Motion blur from the object's real movement: the object is drawn at
+    /// `samples` instants across the shutter (`shutter` degrees of a frame,
+    /// 180 = half a frame, trailing behind the current position) and averaged.
+    MotionBlur { shutter: f32, samples: u8 },
+    /// An effect from the EffectCraft library, by id (e.g. "ec.blur.directional"),
+    /// run on everything the object draws. Parameters not listed keep the
+    /// effect's defaults. Rendered by `ac-render` (raster only).
+    Effect { id: String, #[serde(default)] params: Vec<(String, EffectValue)> },
+}
+
+/// A parameter value of an EffectCraft effect (the subset we can edit and tween).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum EffectValue {
+    Bool(bool),
+    Num(f64),
+    Vec2([f64; 2]),
+    Color(Color),
+}
+
+impl EffectValue {
+    fn lerp(&self, o: &EffectValue, t: f32) -> EffectValue {
+        let td = t as f64;
+        match (self, o) {
+            (EffectValue::Num(a), EffectValue::Num(b)) => EffectValue::Num(a + (b - a) * td),
+            (EffectValue::Vec2(a), EffectValue::Vec2(b)) => EffectValue::Vec2([a[0] + (b[0] - a[0]) * td, a[1] + (b[1] - a[1]) * td]),
+            (EffectValue::Color(a), EffectValue::Color(b)) => EffectValue::Color(a.lerp(*b, t)),
+            _ => if t < 0.5 { self.clone() } else { o.clone() },
+        }
+    }
 }
 
 /// Colour of a gradient ramp at `t` (0…1); stops sorted by position.
@@ -125,10 +155,11 @@ impl Filter {
                 kind: BevelType::Inner,
                 stops: vec![(0.0, Color::rgb(255, 255, 255)), (0.5, Color { r: 255, g: 0, b: 0, a: 0 }), (1.0, Color::rgb(0, 0, 0))],
             },
+            "motionblur" => Filter::MotionBlur { shutter: 180.0, samples: 12 },
             _ => return None,
         })
     }
-    pub const NAMES: [&'static str; 7] = ["Drop Shadow", "Blur", "Glow", "Bevel", "Gradient Glow", "Gradient Bevel", "Adjust Color"];
+    pub const NAMES: [&'static str; 8] = ["Drop Shadow", "Blur", "Glow", "Bevel", "Gradient Glow", "Gradient Bevel", "Adjust Color", "Motion Blur"];
     pub fn name(&self) -> &'static str {
         match self {
             Filter::DropShadow { .. } => "Drop Shadow",
@@ -138,6 +169,18 @@ impl Filter {
             Filter::AdjustColor { .. } => "Adjust Color",
             Filter::GradientGlow { .. } => "Gradient Glow",
             Filter::GradientBevel { .. } => "Gradient Bevel",
+            Filter::MotionBlur { .. } => "Motion Blur",
+            Filter::Effect { .. } => "Effect",
+        }
+    }
+    /// A numeric effect parameter, if set.
+    pub fn effect_num(&self, key: &str) -> Option<f64> {
+        match self {
+            Filter::Effect { params, .. } => params.iter().find(|(k, _)| k == key).and_then(|(_, v)| match v {
+                EffectValue::Num(n) => Some(*n),
+                _ => None,
+            }),
+            _ => None,
         }
     }
     /// How far (in px, before view scaling) this filter can paint outside the object.
@@ -145,7 +188,17 @@ impl Filter {
         match self {
             Filter::DropShadow { blur_x, blur_y, distance, .. } | Filter::Bevel { blur_x, blur_y, distance, .. } | Filter::GradientGlow { blur_x, blur_y, distance, .. } | Filter::GradientBevel { blur_x, blur_y, distance, .. } => blur_x.max(*blur_y) * 1.5 + distance.abs() + 2.0,
             Filter::Blur { blur_x, blur_y, .. } | Filter::Glow { blur_x, blur_y, .. } => blur_x.max(*blur_y) * 1.5 + 2.0,
-            Filter::AdjustColor { .. } => 0.0,
+            Filter::AdjustColor { .. } | Filter::MotionBlur { .. } => 0.0,
+            // Effects can paint anywhere; size the margin from their size-like
+            // parameters (blur, radius, length…), at least 24 px.
+            Filter::Effect { params, .. } => {
+                let big = params
+                    .iter()
+                    .filter(|(k, _)| ["blur", "radius", "length", "size", "distance", "amount", "spread", "width"].iter().any(|w| k.to_lowercase().contains(w)))
+                    .filter_map(|(_, v)| if let EffectValue::Num(n) = v { Some(n.abs() as f32) } else { None })
+                    .fold(0.0f32, f32::max);
+                (big * 1.5).clamp(24.0, 400.0)
+            }
         }
     }
 
@@ -228,6 +281,15 @@ impl Filter {
             (Filter::AdjustColor { brightness, contrast, saturation, hue }, Filter::AdjustColor { brightness: b, contrast: c, saturation: s, hue: h }) => {
                 Filter::AdjustColor { brightness: l(*brightness, *b), contrast: l(*contrast, *c), saturation: l(*saturation, *s), hue: l(*hue, *h) }
             }
+            (Filter::MotionBlur { shutter, samples }, Filter::MotionBlur { shutter: s2, .. }) => Filter::MotionBlur { shutter: l(*shutter, *s2), samples: *samples },
+            (Filter::Effect { id, params }, Filter::Effect { id: id2, params: p2 }) if id == id2 => Filter::Effect {
+                id: id.clone(),
+                params: params
+                    .iter()
+                    .map(|(k, v)| (k.clone(), p2.iter().find(|(k2, _)| k2 == k).map_or(v.clone(), |(_, w)| v.lerp(w, t))))
+                    .chain(p2.iter().filter(|(k, _)| !params.iter().any(|(k1, _)| k1 == k)).cloned())
+                    .collect(),
+            },
             _ => if t < 0.5 { self.clone() } else { o.clone() },
         }
     }
@@ -245,4 +307,16 @@ fn lerp_stops(a: &[(f32, Color)], b: &[(f32, Color)], t: f32) -> Vec<(f32, Color
 pub struct FxGroup {
     pub filters: Vec<Filter>,
     pub blend: BlendMode,
+    /// Motion since the previous frame, in the items' (stage) space: maps where
+    /// the object is now to where it was a frame earlier. Set for groups with a
+    /// Motion Blur filter.
+    pub motion: Option<crate::geom::Matrix>,
+    /// Seconds on the object's own timeline (time-dependent effects).
+    pub time: f32,
+}
+
+impl FxGroup {
+    pub fn new(filters: Vec<Filter>, blend: BlendMode) -> FxGroup {
+        FxGroup { filters, blend, motion: None, time: 0.0 }
+    }
 }

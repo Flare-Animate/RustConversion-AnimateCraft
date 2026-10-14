@@ -5,6 +5,7 @@ use ac_core::{evaluate_scene, Color, Document, DrawItem, Matrix, Path, Seg};
 use tiny_skia as sk;
 
 mod fx;
+pub mod effectcraft;
 pub mod fonts;
 pub mod formats;
 pub mod html5;

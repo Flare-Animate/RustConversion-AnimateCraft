@@ -13,6 +13,7 @@
   cv.style.width = M.w + "px";
   cv.style.height = M.h + "px";
   var BASE = new DOMMatrix([dpr, 0, 0, dpr, 0, 0]);
+  var MB = null; // motion-blur sample transform (stage space), while drawing a sample
   var N = M.frames.length;
   var dirty = true;
 
@@ -94,7 +95,7 @@
   }
 
   // ---- filter stages: CSS filters and per-pixel gradient glow / bevel
-  var spare = [];
+  var spare = [], mbPool = [];
   function spareCanvas(i) {
     var c = spare[i] || (spare[i] = document.createElement("canvas"));
     if (c.width !== cv.width || c.height !== cv.height) { c.width = cv.width; c.height = cv.height; }
@@ -264,7 +265,8 @@
       var e = list[i];
       if (typeof e === "number") { drawItem(c, M.items[e], depth); continue; }
       var off = offscreen(depth + 1);
-      drawList(off.getContext("2d"), e.c, depth + 1);
+      if (e.mb) drawMotionBlur(off, e, depth);
+      else drawList(off.getContext("2d"), e.c, depth + 1);
       var fx = M.fx[e.x];
       var src = off;
       if (fx.s) src = stages(off, fx.s, depth + 1);
@@ -275,6 +277,31 @@
       c.drawImage(src, 0, 0);
       c.restore();
     }
+  }
+
+  // Motion Blur: the group drawn at e.mb.n instants over the shutter, averaged
+  // (each sample added at 1/n with "lighter"), as in ac-render's draw_group.
+  function drawMotionBlur(off, e, depth) {
+    var mb = e.mb, n = mb.n, oc = off.getContext("2d");
+    var tmp = mbPool[depth] || (mbPool[depth] = document.createElement("canvas"));
+    if (tmp.width !== off.width || tmp.height !== off.height) { tmp.width = off.width; tmp.height = off.height; }
+    var tc = tmp.getContext("2d");
+    var saved = MB;
+    for (var k = 0; k < n; k++) {
+      var u = (k + 0.5) / n * mb.f, m = mb.m;
+      MB = new DOMMatrix([1 + (m[0] - 1) * u, m[1] * u, m[2] * u, 1 + (m[3] - 1) * u, m[4] * u, m[5] * u]);
+      if (saved) MB = saved.multiply(MB);
+      tc.setTransform(1, 0, 0, 1, 0, 0);
+      tc.clearRect(0, 0, tmp.width, tmp.height);
+      drawList(tc, e.c, depth + 1);
+      oc.save();
+      oc.setTransform(1, 0, 0, 1, 0, 0);
+      oc.globalCompositeOperation = "lighter";
+      oc.globalAlpha = 1 / n;
+      oc.drawImage(tmp, 0, 0);
+      oc.restore();
+    }
+    MB = saved;
   }
 
   function drawItem(c, it, depth) {
@@ -293,7 +320,7 @@
       c.setTransform(BASE);
       for (var k = 0; k < it.c.length; k++) c.clip(clipPath(it.c[k]), "nonzero");
     }
-    var T = BASE.multiply(m);
+    var T = (MB ? BASE.multiply(MB) : BASE).multiply(m);
     c.setTransform(T);
     c.globalAlpha = fa * (it.a === undefined ? 1 : it.a);
     if (it.ol) {

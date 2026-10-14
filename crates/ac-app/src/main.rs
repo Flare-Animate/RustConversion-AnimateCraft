@@ -1,3 +1,5 @@
+// Release builds on Windows are GUI apps: no console window behind the editor.
+#![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 //! AnimationCraft desktop editor. Layout follows Adobe Animate's default
 //! "Essentials" workspace: menu bar, Tools (left), Stage (centre),
 //! Properties + Library (right), Timeline (bottom).
@@ -40,7 +42,8 @@ pub(crate) enum Dialog {
     Unsaved(files::Pending),
     Recover { original: Option<String>, age_secs: u64 },
     ScaleRotate { scale: f32, rotate: f32 },
-    LayerProps { i: usize, name: String, kind: ac_core::LayerKind, parent: Option<usize>, color: Color32, visible: bool, locked: bool, outline: bool },
+    TraceBitmap { threshold: u32, min_area: u32, fit: usize, corners: usize },
+    LayerProps { i: usize, name: String, kind: ac_core::LayerKind, parent: Option<usize>, color: Color32, visible: bool, locked: bool, outline: bool, height: u16 },
     About,
 }
 
@@ -89,6 +92,8 @@ pub struct App {
     pub(crate) vcam_preview: bool,
     /// Free camera: dim the scene outside the camera frame.
     pub(crate) vcam_dim: bool,
+    /// Search text in Add filter › EffectCraft effects.
+    pub(crate) effect_search: String,
     /// Editor revision at the last save/open (dirty = different).
     pub(crate) saved_rev: u64,
     pub(crate) autosave_rev: u64,
@@ -142,15 +147,23 @@ pub(crate) fn from32(c: Color32) -> Color {
     Color { r, g, b, a }
 }
 
+/// Layer Properties › OK: (layer, name, type, inside, colour, show, lock, outline, height %).
+type LayerPropsOk = (usize, String, ac_core::LayerKind, Option<usize>, Color32, bool, bool, bool, u16);
+
 impl App {
     fn new(cc: &eframe::CreationContext) -> Self {
+        // timeline semantics for this (the UI) thread, from the saved setting
+        ac_core::frames::set_retain_tween_curves(files::Settings::load().retain_tween_curves);
         let mut v = egui::Visuals::dark();
         v.panel_fill = Color32::from_gray(0x32);
         v.window_fill = Color32::from_gray(0x2B);
         v.extreme_bg_color = Color32::from_gray(0x1E);
         v.selection.bg_fill = ACCENT;
         v.widgets.noninteractive.bg_stroke = EStroke::new(1.0_f32, Color32::from_gray(0x24));
-        cc.egui_ctx.set_visuals(v);
+        // Dark regardless of the OS setting: egui would otherwise switch to its light
+        // style on a light-mode Windows desktop, half-overriding our panel colours.
+        cc.egui_ctx.set_theme(egui::Theme::Dark);
+        cc.egui_ctx.set_visuals_of(egui::Theme::Dark, v);
         cc.egui_ctx.style_mut(|s| s.spacing.item_spacing = vec2(6.0, 5.0));
 
         ac_render::fonts::install_system_fonts();
@@ -191,6 +204,7 @@ impl App {
             place: vec![],
             vcam_preview: false,
             vcam_dim: true,
+            effect_search: String::new(),
             saved_rev: 0,
             autosave_rev: 0,
             dirty_since: None,
@@ -536,6 +550,11 @@ impl App {
         if let Some(id) = inst {
             if ui.button("Edit Symbol").clicked() { self.edit_symbol(id); ui.close_menu(); }
         }
+        let has_bitmap = self.ed.selection.iter().any(|s| matches!(self.ed.element_at(*s).map(|e| e.kind), Some(ElementKind::Bitmap(_))));
+        if ui.add_enabled(has_bitmap, egui::Button::new("Trace Bitmap…")).on_hover_text("Modify › Bitmap › Trace Bitmap: turn the selected bitmap into vector fills").clicked() {
+            self.dialog = Dialog::TraceBitmap { threshold: 100, min_area: 8, fit: 3, corners: 1 };
+            ui.close_menu();
+        }
         if ui.add_enabled(has_sel, egui::Button::new("Group").shortcut_text("Ctrl+G")).clicked() { self.ed.group_selected(); ui.close_menu(); }
         let has_group = self.ed.selection.iter().any(|s| matches!(self.ed.element_at(*s).map(|e| e.kind), Some(ElementKind::Group(_))));
         if ui.add_enabled(has_group, egui::Button::new("Ungroup").shortcut_text("Ctrl+Shift+G")).clicked() { self.ed.ungroup_selected(); ui.close_menu(); }
@@ -618,7 +637,7 @@ impl App {
 
     pub(crate) fn open_layer_props(&mut self, i: usize) {
         let Some(l) = self.ed.timeline().layers.get(i) else { return };
-        self.dialog = Dialog::LayerProps { i, name: l.name.clone(), kind: l.kind, parent: l.parent, color: c32(l.color), visible: l.visible, locked: l.locked, outline: l.outline };
+        self.dialog = Dialog::LayerProps { i, name: l.name.clone(), kind: l.kind, parent: l.parent, color: c32(l.color), visible: l.visible, locked: l.locked, outline: l.outline, height: l.row_height };
     }
 
     pub(crate) fn open_scale_rotate(&mut self) {
@@ -671,6 +690,7 @@ impl App {
                     ui.menu_button("Import", |ui| {
                         if ui.add(egui::Button::new("Import to Stage…").shortcut_text("Ctrl+R")).on_hover_text("PNG, JPG, GIF, BMP").clicked() { self.file(FileAction::ImportImage); ui.close_menu(); }
                         if ui.button("Import Image Sequence…").on_hover_text("walk0001.png, walk0002.png, … onto consecutive keyframes").clicked() { self.file(FileAction::ImportSequence); ui.close_menu(); }
+                        if ui.button("Import Photoshop (PSD)…").on_hover_text("Each Photoshop layer becomes a bitmap on its own layer, in place").clicked() { self.file(FileAction::ImportPsd); ui.close_menu(); }
                         if ui.button("Import SVG…").clicked() { self.file(FileAction::ImportSvg); ui.close_menu(); }
                         if ui.button("Import Sound…").on_hover_text("WAV, MP3, OGG Vorbis, FLAC, AIFF").clicked() { self.file(FileAction::ImportSound); ui.close_menu(); }
                     });
@@ -685,6 +705,7 @@ impl App {
                         if ui.button("Generate Sprite Sheet…").on_hover_text("All frames in one PNG + JSON / Starling XML data").clicked() { self.file(FileAction::ExportSpriteSheet); ui.close_menu(); }
                         if ui.button("Export Animated SVG…").clicked() { self.file(FileAction::ExportAnimatedSvg); ui.close_menu(); }
                         if ui.button("Export Lottie…").clicked() { self.file(FileAction::ExportLottie); ui.close_menu(); }
+                        if ui.button("Export Timing Sheet (XDTS)…").on_hover_text("Layer timing for exposure-sheet tools (Clip Studio Paint, OpenToonz, TVPaint)").clicked() { self.file(FileAction::ExportXdts); ui.close_menu(); }
                         ui.separator();
                         if ui.button("Export .fla / XFL…").on_hover_text("CS5+ .fla (zipped) or an uncompressed XFL folder").clicked() { self.file(FileAction::ExportXfl); ui.close_menu(); }
                     });
@@ -834,7 +855,8 @@ impl App {
         let mut bitmap_rename: Option<(u32, String)> = None;
         let mut bitmap_delete: Option<u32> = None;
         #[allow(clippy::type_complexity)]
-        let mut layer_ok: Option<(usize, String, ac_core::LayerKind, Option<usize>, Color32, bool, bool, bool)> = None;
+        let mut trace_ok: Option<ac_core::trace::TraceOpts> = None;
+        let mut layer_ok: Option<LayerPropsOk> = None;
         let enter = ctx.input(|i| i.key_pressed(Key::Enter));
         let esc = ctx.input(|i| i.key_pressed(Key::Escape));
         let win = |t: &str| egui::Window::new(t.to_string()).collapsible(false).resizable(false).anchor(Align2::CENTER_CENTER, [0.0, 0.0]);
@@ -897,6 +919,39 @@ impl App {
                     });
                 });
             }
+            Dialog::TraceBitmap { threshold, min_area, fit, corners } => {
+                win("Trace Bitmap").show(ctx, |ui| {
+                    egui::Grid::new("tb").num_columns(2).spacing([10.0, 6.0]).show(ui, |ui| {
+                        ui.label("Color threshold");
+                        ui.add(egui::DragValue::new(threshold).range(0..=500));
+                        ui.end_row();
+                        ui.label("Minimum area");
+                        ui.add(egui::DragValue::new(min_area).range(1..=1000).suffix(" pixels"));
+                        ui.end_row();
+                        ui.label("Curve fit");
+                        egui::ComboBox::from_id_salt("tb-fit").selected_text(ac_core::trace::CurveFit::ALL[*fit].name()).show_ui(ui, |ui| {
+                            for (k, c) in ac_core::trace::CurveFit::ALL.iter().enumerate() {
+                                ui.selectable_value(fit, k, c.name());
+                            }
+                        });
+                        ui.end_row();
+                        ui.label("Corner threshold");
+                        egui::ComboBox::from_id_salt("tb-corner").selected_text(ac_core::trace::Corners::ALL[*corners].name()).show_ui(ui, |ui| {
+                            for (k, c) in ac_core::trace::Corners::ALL.iter().enumerate() {
+                                ui.selectable_value(corners, k, c.name());
+                            }
+                        });
+                        ui.end_row();
+                    });
+                    ui.horizontal(|ui| {
+                        if ui.button("OK").clicked() || enter {
+                            trace_ok = Some(ac_core::trace::TraceOpts { color_threshold: *threshold, min_area: *min_area, curve_fit: ac_core::trace::CurveFit::ALL[*fit], corners: ac_core::trace::Corners::ALL[*corners] });
+                            close = true;
+                        }
+                        if ui.button("Cancel").clicked() || esc { close = true; }
+                    });
+                });
+            }
             Dialog::ScaleRotate { scale, rotate } => {
                 win("Scale and Rotate").show(ctx, |ui| {
                     egui::Grid::new("sr").show(ui, |ui| {
@@ -955,7 +1010,7 @@ impl App {
                     });
                 });
             }
-            Dialog::LayerProps { i, name, kind, parent, color, visible, locked, outline } => {
+            Dialog::LayerProps { i, name, kind, parent, color, visible, locked, outline, height } => {
                 let li = *i;
                 let containers: Vec<(usize, String)> = self.ed.timeline().layers.iter().enumerate().filter(|(j, l)| *j < li && matches!(l.kind, ac_core::LayerKind::Folder | ac_core::LayerKind::Mask | ac_core::LayerKind::Guide)).map(|(j, l)| (j, l.name.clone())).collect();
                 win("Layer Properties").show(ctx, |ui| {
@@ -990,9 +1045,16 @@ impl App {
                         ui.label("Outline colour");
                         ui.horizontal(|ui| { ui.color_edit_button_srgba(color); ui.checkbox(outline, "View layer as outlines"); });
                         ui.end_row();
+                        ui.label("Layer height");
+                        ui.horizontal(|ui| {
+                            for h in [100u16, 200, 300] {
+                                ui.radio_value(height, h, format!("{h}%"));
+                            }
+                        });
+                        ui.end_row();
                     });
                     ui.horizontal(|ui| {
-                        if ui.button("OK").clicked() || enter { layer_ok = Some((li, name.clone(), *kind, *parent, *color, *visible, *locked, *outline)); close = true; }
+                        if ui.button("OK").clicked() || enter { layer_ok = Some((li, name.clone(), *kind, *parent, *color, *visible, *locked, *outline, *height)); close = true; }
                         if ui.button("Cancel").clicked() || esc { close = true; }
                     });
                 });
@@ -1010,14 +1072,19 @@ impl App {
             self.dialog = d;
         }
         if path_cancelled { self.after_save = None; }
+        if let Some(o) = trace_ok {
+            let n = self.ed.trace_bitmap(&o);
+            self.status = format!("Trace Bitmap: {n} fill region{}", if n == 1 { "" } else { "s" });
+        }
         if let Some((id, n)) = bitmap_rename { self.ed.rename_bitmap(id, &n); }
         if let Some(id) = bitmap_delete { self.ed.delete_bitmap(id); self.lib.bitmap = None; }
-        if let Some((i, name, kind, parent, color, visible, locked, outline)) = layer_ok {
+        if let Some((i, name, kind, parent, color, visible, locked, outline, height)) = layer_ok {
             let mark = self.ed.undo_depth();
             if self.ed.timeline().layers[i].name != name && !name.trim().is_empty() { self.ed.rename_layer(i, name.trim()); }
             self.ed.set_layer_kind(i, kind);
             self.ed.set_layer_parent(i, parent);
             self.ed.set_layer_look(i, from32(color), visible, locked, outline);
+            self.ed.set_layer_row_height(i, height);
             self.ed.squash_undo(mark, "Layer Properties");
         }
         if let Some((a, p)) = run { self.do_file(a, &p); }
@@ -1181,6 +1248,15 @@ impl eframe::App for App {
     }
 }
 
+/// The window / taskbar icon (the same artwork the Windows exe embeds).
+fn app_icon() -> egui::IconData {
+    let img = image::load_from_memory(include_bytes!("../../../assets/icon/animationcraft.png")).map(|i| i.to_rgba8());
+    match img {
+        Ok(i) => egui::IconData { width: i.width(), height: i.height(), rgba: i.into_raw() },
+        Err(_) => egui::IconData::default(),
+    }
+}
+
 fn main() -> eframe::Result<()> {
     let shot = std::env::var("AC_SCREENSHOT").is_ok();
     // Start maximised so the panels fit on any screen size / display scaling.
@@ -1188,7 +1264,8 @@ fn main() -> eframe::Result<()> {
         .with_inner_size([1280.0, 800.0])
         .with_min_inner_size([800.0, 520.0])
         .with_maximized(!shot)
-        .with_title("AnimationCraft");
+        .with_title("AnimationCraft")
+        .with_icon(app_icon());
     let options = eframe::NativeOptions { viewport, ..Default::default() };
     eframe::run_native("AnimationCraft", options, Box::new(|cc| Ok(Box::new(App::new(cc)))))
 }

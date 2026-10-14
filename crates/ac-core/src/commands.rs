@@ -54,10 +54,13 @@ cmds! {
     "timeline.move_frames", "by, layer?, frame?, to_frame?", "Drag frames left/right";
     "timeline.copy_frames", "layer?, frame?, to_layer?, to_frame?", "Copy Frames (Ctrl+Alt+C)";
     "timeline.cut_frames", "layer?, frame?, to_layer?, to_frame?", "Cut Frames (Ctrl+Alt+X)";
-    "timeline.paste_frames", "layer?, frame?", "Paste Frames (Ctrl+Alt+V) at the target";
+    "timeline.paste_frames", "layer?, frame?, overwrite? (false: the copied frames replace the selection and later frames move; true: Paste and Overwrite Frames)", "Paste Frames (Ctrl+Alt+V) at the target";
     "layer.list", "", "All layers with flags and frame counts";
     "layer.add", "name?", "New layer above the current one; returns its number";
     "layer.delete", "layer?", "Delete a layer";
+    "layer.copy", "layer?, to_layer? (copies the rows layer..to_layer)", "Copy Layers: the layers (and everything in their folders) with all frames";
+    "layer.cut", "layer?, to_layer?", "Cut Layers";
+    "layer.paste", "layer? (pasted above it)", "Paste Layers: copied layers keep their folders, masks and parenting";
     "layer.select", "layer", "Make a layer current (number or name)";
     "layer.set", "layer?, name?, visible?, locked?, outline?, kind? ('normal'|'folder'|'mask'|'guide'), parent? (layer or 0 = none)", "Rename, change flags, type, or the folder/mask/guide a layer belongs to";
     "layer.set_parent", "parent (layer or 0 = none), layer?", "Layer parenting: the layer's objects follow the parent layer's first object";
@@ -129,8 +132,9 @@ cmds! {
     "selection.group", "", "Ctrl+G: group the selection (per layer)";
     "selection.ungroup", "", "Ctrl+Shift+G: ungroup";
     "selection.align", "op ('left'|'hcenter'|'right'|'top'|'vcenter'|'bottom'|'dist_left'|'dist_hcenter'|'dist_right'|'dist_top'|'dist_vcenter'|'dist_bottom'|'match_width'|'match_height'|'match_size'|'space_h'|'space_v'), to_stage?", "Align panel";
-    "selection.add_filter", "type ('drop_shadow'|'blur'|'glow'|'bevel'|'gradient_glow'|'gradient_bevel'|'adjust_color'), …filter fields (blur_x, blur_y, strength, angle, distance, color, kind, stops [[pos, '#RRGGBBAA']…], brightness, contrast, saturation, hue…)", "Add a filter to the selected objects";
+    "selection.add_filter", "type ('drop_shadow'|'blur'|'glow'|'bevel'|'gradient_glow'|'gradient_bevel'|'adjust_color'|'motion_blur'|'effect'), …filter fields (blur_x, blur_y, strength, angle, distance, color, kind, stops [[pos, '#RRGGBBAA']…], brightness, contrast, saturation, hue, shutter (degrees), samples…); effect: id (EffectCraft id, e.g. 'ec.blur.radial'; `animationcraft-cli effects` lists them), params {id: number | bool | [x, y] (fraction of the object) | '#RRGGBBAA'}", "Add a filter to the selected objects";
     "selection.clear_filters", "", "Remove all filters";
+    "bitmap.trace", "color_threshold? (0–500, 100), min_area? (px, 8), curve_fit? ('pixels'|'very tight'|'tight'|'normal'|'smooth'|'very smooth'), corners? ('many'|'normal'|'few')", "Trace Bitmap: the selected bitmaps become vector fills in the layer's shape; returns the region count";
     "selection.set_blend", "mode ('normal'|'multiply'|'screen'|…)", "Blend mode";
     "import.image", "path (PNG), x?, y?, place? (true)", "Import a PNG into the library (and place it)";
     "import.sound", "path (WAV/MP3/OGG/FLAC), name?", "Import a sound into the library; returns its id";
@@ -579,7 +583,11 @@ pub fn execute(ed: &mut Editor, id: &str, a: &Value) -> Result<Value, String> {
             if ed.frame_sel.is_none() {
                 ed.select_frames(FrameSel::cell(ed.layer, ed.frame));
             }
-            ed.paste_frames();
+            if boolean(a, "overwrite").unwrap_or(false) {
+                ed.paste_overwrite_frames();
+            } else {
+                ed.paste_frames();
+            }
             Ok(Value::Null)
         }
         "timeline.set_label" => {
@@ -646,6 +654,28 @@ pub fn execute(ed: &mut Editor, id: &str, a: &Value) -> Result<Value, String> {
                 ed.rename_layer(i, n);
             }
             Ok(json!(ed.layer + 1))
+        }
+        "layer.copy" | "layer.cut" => {
+            if let Some(l) = layer_arg(ed, a, "layer")? {
+                ed.layer = l;
+            }
+            ed.frame_sel = layer_arg(ed, a, "to_layer")?.map(|to| FrameSel { layer0: ed.layer, layer1: to, f0: 0, f1: 0 });
+            if id == "layer.copy" {
+                ed.copy_layers();
+            } else {
+                ed.cut_layers();
+            }
+            Ok(Value::Null)
+        }
+        "layer.paste" => {
+            if let Some(l) = layer_arg(ed, a, "layer")? {
+                ed.layer = l;
+            }
+            if !ed.can_paste_layers() {
+                return Err("nothing copied (layer.copy first)".into());
+            }
+            ed.paste_layers();
+            Ok(Value::Null)
         }
         "layer.delete" => {
             if let Some(l) = layer_arg(ed, a, "layer")? {
@@ -774,10 +804,34 @@ pub fn execute(ed: &mut Editor, id: &str, a: &Value) -> Result<Value, String> {
             ed.align(op, boolean(a, "to_stage").unwrap_or(false));
             Ok(Value::Null)
         }
+        "selection.add_filter" if string(a, "type").is_some_and(|t| t.eq_ignore_ascii_case("effect")) => {
+            need_selection(ed)?;
+            let id = string(a, "id").ok_or("missing 'id' (an EffectCraft effect id)")?.to_string();
+            let mut params = vec![];
+            if let Some(obj) = a.get("params").and_then(Value::as_object) {
+                for (k, v) in obj {
+                    let ev = if let Some(b) = v.as_bool() {
+                        crate::fx::EffectValue::Bool(b)
+                    } else if let Some(n) = v.as_f64() {
+                        crate::fx::EffectValue::Num(n)
+                    } else if let Some(c) = v.as_str().and_then(Color::from_hex) {
+                        crate::fx::EffectValue::Color(c)
+                    } else if let Some([x, y]) = v.as_array().map(|a| a.iter().filter_map(Value::as_f64).collect::<Vec<_>>()).and_then(|v| <[f64; 2]>::try_from(v).ok()) {
+                        crate::fx::EffectValue::Vec2([x, y])
+                    } else {
+                        return Err(format!("effect param '{k}': number, bool, [x, y] or '#RRGGBBAA'"));
+                    };
+                    params.push((k.clone(), ev));
+                }
+            }
+            let f = crate::fx::Filter::Effect { id, params };
+            ed.modify_selected("Add Effect", |e| e.filters.push(f.clone()));
+            Ok(Value::Null)
+        }
         "selection.add_filter" => {
             need_selection(ed)?;
             let ty = string(a, "type").ok_or("missing 'type'")?;
-            let mut f = crate::fx::Filter::default_of(ty).ok_or_else(|| format!("unknown filter '{ty}' (drop_shadow, blur, glow, bevel, gradient_glow, gradient_bevel, adjust_color)"))?;
+            let mut f = crate::fx::Filter::default_of(ty).ok_or_else(|| format!("unknown filter '{ty}' (drop_shadow, blur, glow, bevel, gradient_glow, gradient_bevel, adjust_color, motion_blur, effect)"))?;
             // overlay given fields onto the defaults
             let mut v = serde_json::to_value(&f).map_err(|e| e.to_string())?;
             if let (Some(obj), Some(args)) = (v.as_object_mut(), a.as_object()) {
@@ -811,6 +865,27 @@ pub fn execute(ed: &mut Editor, id: &str, a: &Value) -> Result<Value, String> {
             f = serde_json::from_value(v).map_err(|e| format!("bad filter fields: {e}"))?;
             ed.modify_selected("Add Filter", |e| e.filters.push(f.clone()));
             Ok(Value::Null)
+        }
+        "bitmap.trace" => {
+            need_selection(ed)?;
+            let mut o = crate::trace::TraceOpts::default();
+            if let Some(v) = num(a, "color_threshold") {
+                o.color_threshold = v.clamp(0.0, 500.0) as u32;
+            }
+            if let Some(v) = num(a, "min_area") {
+                o.min_area = v.clamp(1.0, 1000.0) as u32;
+            }
+            if let Some(v) = string(a, "curve_fit") {
+                o.curve_fit = crate::trace::CurveFit::from_name(v).ok_or_else(|| format!("unknown curve_fit '{v}'"))?;
+            }
+            if let Some(v) = string(a, "corners") {
+                o.corners = crate::trace::Corners::from_name(v).ok_or_else(|| format!("unknown corners '{v}'"))?;
+            }
+            let n = ed.trace_bitmap(&o);
+            if n == 0 {
+                return Err("select a bitmap to trace".into());
+            }
+            Ok(json!(n))
         }
         "selection.clear_filters" => {
             need_selection(ed)?;

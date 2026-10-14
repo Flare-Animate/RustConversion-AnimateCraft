@@ -14,6 +14,10 @@ png.workspace = true
 fontdb = "0.22"
 image = { version = "0.25", default-features = false, features = ["jpeg"] }
 color_quant = "1.1"
+effectcraft-effects.workspace = true
+effectcraft-raster.workspace = true
+effectcraft-keyframe.workspace = true
+effectcraft-project.workspace = true
 
 [dev-dependencies]
 serde_json.workspace = true

@@ -161,6 +161,9 @@ fn fx_json(filters: &[Filter], blend: BlendMode) -> String {
                 f.push(format!("drop-shadow({}px {}px {b}px {})", n(dx), n(dy), css(*shadow, *strength)));
             }
             Filter::GradientGlow { .. } | Filter::GradientBevel { .. } => {} // handled above
+            Filter::MotionBlur { .. } => {} // per group occurrence ("mb"), see Tables::list
+            // EffectCraft effects run in Rust only; the published page shows the object without them.
+            Filter::Effect { .. } => unsupported = true,
             Filter::AdjustColor { brightness, contrast, saturation, hue } => {
                 f.push(format!("brightness({}) contrast({}) saturate({}) hue-rotate({}deg)", n(1.0 + brightness / 100.0), n(1.0 + contrast / 100.0), n(1.0 + saturation / 100.0), n(*hue)));
             }
@@ -347,7 +350,15 @@ impl Tables {
             }
             let fx = intern(&mut self.fx, &mut self.fx_ix, fx_json(&g.filters, g.blend));
             let inner = self.list(&items[i..j], level + 1);
-            out.push(format!("{{\"x\":{fx},\"c\":{inner}}}"));
+            let mb = g
+                .motion
+                .zip(g.filters.iter().find_map(|f| match f {
+                    Filter::MotionBlur { shutter, samples } if *shutter > 0.0 => Some(((shutter / 360.0).min(2.0), (*samples).clamp(2, 64))),
+                    _ => None,
+                }))
+                .map(|(m, (f, count))| format!(",\"mb\":{{\"m\":[{},{},{},{},{},{}],\"f\":{},\"n\":{count}}}", n(m.a), n(m.b), n(m.c), n(m.d), n(m.tx), n(m.ty), n(f)))
+                .unwrap_or_default();
+            out.push(format!("{{\"x\":{fx},\"c\":{inner}{mb}}}"));
             i = j;
         }
         format!("[{}]", out.join(","))

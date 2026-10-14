@@ -116,3 +116,26 @@ was deferred here too. Proposed order, each step a usable slice:
 
 Sizes, roughly: 5.0 and 5.1 are the large ones (1–2 weeks each); 5.6 is medium;
 the rest are days each.
+
+## 6. Status (14 Oct 2026, later the same day)
+
+The direction changed after this review: AnimationCraft and Flare are being
+folded into one Rust application, so Flare is ported as a whole (see the devlog),
+except the two items in §4. Done so far:
+
+- **Core merged**: TweenBoundary, pose corrections, playback clock, row height,
+  bitmap-fill usage; Flare's 21 core tests pass on our engine. Animate's
+  behaviour stays the default; Flare's is a switch (Keep Tween Curves When
+  Splitting). .fla export flattens both.
+- **Studio features**: Paste Frames / Paste and Overwrite, Copy/Cut/Paste Layers,
+  layer height, Frame View previews.
+- **OpenToonz list**: Trace Bitmap, Shift & Trace, XDTS export, PSD import,
+  Rhubarb lip sync (5.10). Effects/particles (#12, #13) now come from EffectCraft.
+- **Launcher**: icon, Windows exe without console, 64-bit installer, CI workflow.
+
+Next, in order: 5.0 egui upgrade + egui_kittest tests (also unblocks Flare's
+Studio tests and AccessKit), 5.1 docking, then the remaining OpenToonz ports
+(stroke styles, vector deformation tools, drawing assistants/symmetry, curve
+editor keyframe types, IK limits, MyPaint raster brushes, centerline tracing)
+and Flare's own subsystems (content sniffing on Open, SWF asset salvage via
+Ruffle's crate, Moho structure import).

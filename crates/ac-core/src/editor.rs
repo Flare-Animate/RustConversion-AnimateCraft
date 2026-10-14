@@ -52,6 +52,8 @@ pub struct Editor {
     redo: Vec<Snapshot>,
     element_clip: Vec<(Element, usize)>,
     frame_clip: Vec<FrameClip>,
+    /// Copied layers (Copy Layers), top first; parent links relative to the clip.
+    layer_clip: Vec<Layer>,
     /// Show the scene through the camera layer (playback, Camera tool).
     pub camera_view: bool,
     /// Bumped on every undoable change, undo and redo (dirty tracking, autosave).
@@ -98,6 +100,7 @@ impl Editor {
             redo: vec![],
             element_clip: vec![],
             frame_clip: vec![],
+            layer_clip: vec![],
             camera_view: false,
             revision: 0,
             multi_frame: None,
@@ -418,6 +421,9 @@ impl Editor {
         }
         self.checkpoint("Delete Layer");
         let i = self.layer;
+        self.delete_layer_raw(i);
+    }
+    fn delete_layer_raw(&mut self, i: usize) {
         let kids: Vec<usize> = (0..self.timeline().layers.len()).filter(|&c| self.timeline().layers[c].anim_parent == Some(i)).collect();
         for c in kids {
             let grand = self.timeline().layers[i].anim_parent;
@@ -540,7 +546,7 @@ impl Editor {
     /// Inside a motion tween it adds property keyframes instead (all properties).
     pub fn insert_keyframe(&mut self) {
         let s = self.frame_target();
-        if s.f0 == s.f1 && self.motion_span(s.layer0, s.f0).is_some_and(|(st, _)| st != s.f0) {
+        if s.f0 == s.f1 && self.motion_span(s.layer0, s.f0).is_some_and(|(st, _)| st != s.f0) && self.timeline().layers[s.layer0].span_at(s.f0).is_some_and(|(_, k, _)| k.tween_boundary.is_none()) {
             return self.key_all_properties(s.layer0, s.f0);
         }
         self.for_each_layer("Insert Keyframe", |l, s| frames::convert_to_keyframes(l, s.f0, s.f1, false));
@@ -718,17 +724,31 @@ impl Editor {
     pub fn can_paste_frames(&self) -> bool {
         !self.frame_clip.is_empty()
     }
+    /// Paste Frames (Ctrl+Alt+V): the copied frames replace the selected ones;
+    /// later frames move by the difference in length.
     pub fn paste_frames(&mut self) {
+        self.paste_frames_mode(false)
+    }
+    /// Paste and Overwrite Frames: the copied frames are written over what's
+    /// there; later frames stay where they are.
+    pub fn paste_overwrite_frames(&mut self) {
+        self.paste_frames_mode(true)
+    }
+    fn paste_frames_mode(&mut self, overwrite: bool) {
         if self.frame_clip.is_empty() {
             return;
         }
         let s = self.frame_target();
         let clips = self.frame_clip.clone();
-        self.checkpoint("Paste Frames");
+        self.checkpoint(if overwrite { "Paste and Overwrite Frames" } else { "Paste Frames" });
         let tl = self.timeline_mut();
         for (i, clip) in clips.iter().enumerate() {
             if let Some(l) = tl.layers.get_mut(s.layer0 + i) {
-                frames::paste_frames(l, s.f0, clip);
+                if overwrite {
+                    frames::paste_frames(l, s.f0, clip);
+                } else {
+                    frames::paste_frames_insert(l, s.f0, s.f1, clip);
+                }
             }
         }
         let len = clips[0].len;
@@ -834,6 +854,8 @@ impl Editor {
                 if pose && !matches!(kf.tween, Tween::None) {
                     let l = &mut self.timeline_mut().layers[layer];
                     frames::convert_to_keyframes(l, f, f, false);
+                    // a retained piece split here still needs a plain pose to edit
+                    frames::materialize_retained_boundaries(l, f, f);
                     f
                 } else {
                     s
@@ -1018,16 +1040,19 @@ impl Editor {
     }
 
     /// Apply `f` to every selected element on editable layers. `label` names the undo step.
-    pub fn modify_selected(&mut self, label: &str, f: impl Fn(&mut Element)) {
+    /// Returns true when an edit on a retained tween piece had to fall back to
+    /// per-frame poses (Flare semantics only).
+    pub fn modify_selected(&mut self, label: &str, f: impl Fn(&mut Element)) -> bool {
         if self.selection.is_empty() {
-            return;
+            return false;
         }
         self.checkpoint(label);
-        self.modify_selected_continuous(f);
+        self.modify_selected_continuous(f)
     }
 
     /// Like `modify_selected` without a new undo step (call `begin_drag` first).
-    pub fn modify_selected_continuous(&mut self, f: impl Fn(&mut Element)) {
+    pub fn modify_selected_continuous(&mut self, f: impl Fn(&mut Element)) -> bool {
+        let mut materialized = false;
         let sels = self.selection.clone();
         let mut layers: Vec<usize> = sels.iter().map(|s| s.layer).collect();
         layers.dedup();
@@ -1063,6 +1088,22 @@ impl Editor {
                 parented(el)
             };
             let f = &wrapped;
+            // Flare semantics (retained tween curves): an edit mid-tween becomes a
+            // sparse correction over the original curve where it can.
+            let frame = self.frame;
+            if self.multi_frame.is_none() && (frames::retain_tween_curves() || self.timeline().layers[li].span_at(frame).is_some_and(|(_, k, _)| k.tween_boundary.is_some())) {
+                if frames::retain_tween_curves() && self.timeline().layers[li].span_at(frame).is_some_and(|(start, key, _)| start < frame && key.tween != Tween::None && !key.tween.is_motion()) {
+                    frames::convert_to_keyframes(&mut self.timeline_mut().layers[li], frame, frame, false);
+                }
+                let selected: Vec<usize> = sels.iter().filter(|s| s.layer == li).map(|s| s.element).collect();
+                if crate::tween_edit::edit_pose(&mut self.timeline_mut().layers[li], frame, &selected, &f) {
+                    continue;
+                }
+                if self.timeline().layers[li].span_at(frame).is_some_and(|(_, k, _)| k.tween_boundary.is_some()) {
+                    frames::materialize_retained_boundaries(&mut self.timeline_mut().layers[li], frame, frame);
+                    materialized = true;
+                }
+            }
             if self.motion_span(li, self.frame).is_some() {
                 for s in sels.iter().filter(|s| s.layer == li) {
                     self.modify_motion_element(li, s.element, &f);
@@ -1094,6 +1135,7 @@ impl Editor {
                 }
             }
         }
+        materialized
     }
     // ------------------------------------------------------------ motion tweens
     /// (span start, span length) when `frame` on `layer` is inside a motion tween.
@@ -1199,6 +1241,7 @@ impl Editor {
             }
             kf.tween = Tween::Motion { ease: kf.tween.ease() };
             kf.motion = Some(Box::new(crate::motion::Motion::new(pivot)));
+            kf.tween_boundary = None;
             if l.span_end(st) - st == 1 {
                 frames::insert_frames(l, st, fps - 1);
             }
@@ -1319,12 +1362,19 @@ impl Editor {
             let l = &mut self.timeline_mut().layers[s.layer];
             if let Some(kf) = l.keyframes.get_mut(&start) {
                 if s.element < kf.elements.len() {
+                    let retained: Vec<usize> = (0..kf.elements.len()).filter(|&i| i != s.element).collect();
+                    crate::tween_edit::remap_elements(kf, &retained);
                     kf.elements.remove(s.element);
+                    if let Some(b) = &mut kf.tween_boundary {
+                        if s.element < b.elements.len() {
+                            b.elements.remove(s.element);
+                        }
+                    }
                     removed += 1;
                 }
                 // Keep a following tween's pairing intact: remove the same slot there too.
                 let next = l.keyframes.range(start + 1..).next().map(|(k, _)| *k);
-                let tweened = !matches!(l.keyframes[&start].tween, Tween::None);
+                let tweened = !matches!(l.keyframes[&start].tween, Tween::None) && l.keyframes[&start].tween_boundary.is_none();
                 if tweened {
                     if let Some(n) = next {
                         let nk = l.keyframes.get_mut(&n).unwrap();
@@ -1446,6 +1496,13 @@ impl Editor {
         let mut order: Vec<usize> = (0..n).collect();
         let moved = order.remove(s.element);
         order.insert(idx, moved);
+        if let Some(key) = self.timeline_mut().layers[s.layer].keyframes.get_mut(&start) {
+            crate::tween_edit::remap_elements(key, &order);
+            if let Some(b) = &mut key.tween_boundary {
+                let old = b.elements.clone();
+                b.elements = order.iter().filter_map(|&i| old.get(i).cloned()).collect();
+            }
+        }
         self.remap_bones(s.layer, |i| order.iter().position(|&o| o == i));
         self.selection = vec![Selection { layer: s.layer, element: idx }];
     }
@@ -1463,6 +1520,9 @@ impl Editor {
         let (lo, hi) = self.bounds_of(&sels)?;
         let reg = pt((lo.x + hi.x) / 2.0, (lo.y + hi.y) / 2.0);
         self.checkpoint("Convert to Symbol");
+        // structural edits use visible poses (don't apply a retained correction twice)
+        let frame = self.frame;
+        frames::materialize_retained_boundaries(&mut self.timeline_mut().layers[first.layer], frame, frame);
         let inner: Vec<Element> = els
             .iter()
             .map(|el| {
@@ -1579,6 +1639,44 @@ impl Editor {
         let at = s.element;
         self.remap_bones(s.layer, |i| if i == at { None } else if i > at { Some(i + n - 1) } else { Some(i) });
         self.selection = (s.element..s.element + n).map(|element| Selection { layer: s.layer, element }).collect();
+    }
+
+    /// Modify › Bitmap › Trace Bitmap: the selected bitmaps become vector fill
+    /// regions in the layer's merge shape (one undo step). Returns how many
+    /// regions were made.
+    pub fn trace_bitmap(&mut self, opts: &crate::trace::TraceOpts) -> usize {
+        let mut sels: Vec<Selection> = self.selection.iter().copied().filter(|s| matches!(self.element_at(*s).map(|e| e.kind), Some(ElementKind::Bitmap(_)))).collect();
+        if sels.is_empty() {
+            return 0;
+        }
+        self.checkpoint("Trace Bitmap");
+        sels.sort_by_key(|s| std::cmp::Reverse((s.layer, s.element)));
+        let mut made = 0;
+        for s in sels {
+            if !self.layer_editable(s.layer) {
+                continue;
+            }
+            let Some(el) = self.element_at(s) else { continue };
+            let ElementKind::Bitmap(b) = &el.kind else { continue };
+            let Some(img) = self.doc.bitmap(b.bitmap).and_then(|a| a.image()) else { continue };
+            let mut piece = crate::trace::trace(&img.rgba, img.width, img.height, opts);
+            piece.transform(&el.matrix);
+            made += piece.fills.len();
+            let Some(key) = self.target_keyframe(s.layer, false) else { continue };
+            let els = &mut self.timeline_mut().layers[s.layer].keyframes.get_mut(&key).unwrap().elements;
+            if s.element < els.len() {
+                els.remove(s.element);
+            }
+            let at = s.element;
+            self.remap_bones(s.layer, |i| if i == at { None } else if i > at { Some(i - 1) } else { Some(i) });
+            if let Some((k, ei)) = self.canvas_for_drawing(s.layer) {
+                if let Some(c) = self.canvas_mut(s.layer, k, ei) {
+                    c.merge_in(&piece);
+                }
+            }
+        }
+        self.selection.clear();
+        made
     }
 
     /// What Break Apart turns a text or bitmap object into.
@@ -1784,11 +1882,20 @@ impl Editor {
         fn count(els: &[Element], id: crate::bitmap::BitmapId) -> usize {
             els.iter().map(|e| match &e.kind {
                 ElementKind::Bitmap(b) if b.bitmap == id => 1,
+                // bitmap fills count too (Flare fix)
+                ElementKind::Shape(s) if s.bitmap_fill.is_some_and(|b| b.bitmap == id) => 1,
+                ElementKind::Canvas(c) => usize::from(c.fills.iter().chain(c.float.iter().flat_map(|f| f.fills.iter())).any(|r| r.bitmap.is_some_and(|b| b.bitmap == id))),
                 ElementKind::Group(c) => count(c, id),
                 _ => 0,
             }).sum()
         }
-        self.doc.scenes().chain(self.doc.library.iter().map(|s| &s.timeline)).flat_map(|t| t.layers.iter()).flat_map(|l| l.keyframes.values()).map(|k| count(&k.elements, id)).sum()
+        self.doc
+            .scenes()
+            .chain(self.doc.library.iter().map(|s| &s.timeline))
+            .flat_map(|t| t.layers.iter())
+            .flat_map(|l| l.keyframes.values())
+            .map(|k| count(&k.elements, id) + k.tween_boundary.as_ref().map_or(0, |b| count(&b.elements, id)))
+            .sum()
     }
     /// Keyframes that start a library sound.
     pub fn sound_usage(&self, id: crate::sound::SoundId) -> usize {
@@ -1800,8 +1907,18 @@ impl Editor {
         fn strip(els: &mut Vec<Element>, id: crate::bitmap::BitmapId) {
             els.retain(|e| !matches!(&e.kind, ElementKind::Bitmap(b) if b.bitmap == id));
             for e in els {
-                if let ElementKind::Group(c) = &mut e.kind {
-                    strip(c, id);
+                match &mut e.kind {
+                    // fills using the bitmap lose it (Flare fix: no dangling references)
+                    ElementKind::Shape(s) if s.bitmap_fill.is_some_and(|b| b.bitmap == id) => s.bitmap_fill = None,
+                    ElementKind::Canvas(c) => {
+                        for r in c.fills.iter_mut().chain(c.float.iter_mut().flat_map(|f| f.fills.iter_mut())) {
+                            if r.bitmap.is_some_and(|b| b.bitmap == id) {
+                                r.bitmap = None;
+                            }
+                        }
+                    }
+                    ElementKind::Group(c) => strip(c, id),
+                    _ => {}
                 }
             }
         }
@@ -1809,7 +1926,12 @@ impl Editor {
             for l in &mut tl.layers {
                 let before: Vec<usize> = l.keyframes.values().map(|k| k.elements.len()).collect();
                 for k in l.keyframes.values_mut() {
+                    let retained: Vec<usize> = k.elements.iter().enumerate().filter_map(|(i, e)| (!matches!(&e.kind, ElementKind::Bitmap(b) if b.bitmap == id)).then_some(i)).collect();
+                    crate::tween_edit::remap_elements(k, &retained);
                     strip(&mut k.elements, id);
+                    if let Some(b) = &mut k.tween_boundary {
+                        strip(&mut b.elements, id);
+                    }
                 }
                 let after: Vec<usize> = l.keyframes.values().map(|k| k.elements.len()).collect();
                 if before != after {
@@ -1913,7 +2035,7 @@ impl Editor {
                 _ => 0,
             }).sum()
         }
-        let count = |tl: &Timeline| tl.layers.iter().flat_map(|l| l.keyframes.values()).map(|k| n(&k.elements, id)).sum::<usize>();
+        let count = |tl: &Timeline| tl.layers.iter().flat_map(|l| l.keyframes.values()).map(|k| n(&k.elements, id) + k.tween_boundary.as_ref().map_or(0, |b| n(&b.elements, id))).sum::<usize>();
         self.doc.scenes().map(count).sum::<usize>() + self.doc.library.iter().map(|s| count(&s.timeline)).sum::<usize>()
     }
 
@@ -1931,7 +2053,12 @@ impl Editor {
         let strip = |tl: &mut Timeline| {
             for l in &mut tl.layers {
                 for k in l.keyframes.values_mut() {
+                    let retained: Vec<usize> = k.elements.iter().enumerate().filter_map(|(i, e)| (!matches!(&e.kind, ElementKind::Instance(s) if s.symbol == id)).then_some(i)).collect();
+                    crate::tween_edit::remap_elements(k, &retained);
                     strip_els(&mut k.elements, id);
+                    if let Some(b) = &mut k.tween_boundary {
+                        strip_els(&mut b.elements, id);
+                    }
                 }
             }
         };
@@ -3349,6 +3476,14 @@ impl Editor {
                 for el in &mut kf.elements {
                     el.matrix = conv.concat(&el.matrix);
                 }
+                if let Some(b) = &mut kf.tween_boundary {
+                    for el in &mut b.elements {
+                        el.matrix = conv.concat(&el.matrix);
+                    }
+                    for edit in &mut b.pose_edits {
+                        edit.transform_space(conv);
+                    }
+                }
                 if let Some(m) = kf.motion.as_deref_mut() {
                     // motion paths are in parent space too: move them with the object
                     for pk in &mut m.path {
@@ -3550,6 +3685,80 @@ impl Editor {
     }
 
     /// Duplicate a layer (and its content) above itself.
+    /// The layers a layer command acts on: the selected rows (a frame
+    /// selection spanning layers, else the current layer) plus everything
+    /// inside selected folders, masks and guides. Top first.
+    pub fn selected_layer_tree(&self) -> Vec<usize> {
+        let tl = self.timeline();
+        let (a, b) = self.frame_sel.map_or((self.layer, self.layer), |s| (s.layer0.min(s.layer1), s.layer0.max(s.layer1)));
+        let roots: Vec<usize> = (a..=b).filter(|&i| i < tl.layers.len()).collect();
+        let inside = |mut i: usize| {
+            let mut guard = 0;
+            while let (Some(p), true) = (tl.layers[i].parent, guard < 64) {
+                if roots.contains(&p) {
+                    return true;
+                }
+                i = p;
+                guard += 1;
+            }
+            false
+        };
+        (0..tl.layers.len()).filter(|&i| (roots.contains(&i) || inside(i)) && tl.layers[i].kind != LayerKind::Camera).collect()
+    }
+    /// Copy Layers (timeline layer menu): the selected layers with all their frames.
+    pub fn copy_layers(&mut self) {
+        let set = self.selected_layer_tree();
+        let tl = self.timeline();
+        let rel = |p: Option<usize>| p.and_then(|p| set.iter().position(|&i| i == p));
+        self.layer_clip = set
+            .iter()
+            .map(|&i| {
+                let mut l = tl.layers[i].clone();
+                l.parent = rel(l.parent);
+                l.anim_parent = rel(l.anim_parent);
+                l
+            })
+            .collect();
+    }
+    /// Cut Layers: copy, then delete them (at least one layer stays).
+    pub fn cut_layers(&mut self) {
+        self.copy_layers();
+        let set = self.selected_layer_tree();
+        if set.is_empty() || set.len() >= self.timeline().layers.len() {
+            return;
+        }
+        self.checkpoint("Cut Layers");
+        for &i in set.iter().rev() {
+            self.delete_layer_raw(i);
+        }
+        self.layer = self.layer.min(self.timeline().layers.len() - 1);
+    }
+    pub fn can_paste_layers(&self) -> bool {
+        !self.layer_clip.is_empty()
+    }
+    /// Paste Layers: the copied layers go above the current layer, keeping
+    /// their folders, masks and parenting among themselves.
+    pub fn paste_layers(&mut self) {
+        if self.layer_clip.is_empty() {
+            return;
+        }
+        self.checkpoint("Paste Layers");
+        let at = self.layer.min(self.timeline().layers.len());
+        let n = self.layer_clip.len();
+        self.remap_layer_parents(|p| Some(if p >= at { p + n } else { p }));
+        let clip = self.layer_clip.clone();
+        let tl = self.timeline_mut();
+        for (k, mut l) in clip.into_iter().enumerate() {
+            l.parent = l.parent.map(|p| p + at);
+            l.anim_parent = l.anim_parent.map(|p| p + at);
+            tl.layers.insert(at + k, l);
+        }
+        self.layer = at;
+        self.selection.clear();
+        self.frame_sel = Some(FrameSel { layer0: at, layer1: at + n - 1, f0: 0, f1: self.timeline().layers[at..at + n].iter().map(|l| l.end).max().unwrap_or(1).saturating_sub(1) });
+        self.fix_indices();
+    }
+
     pub fn duplicate_layer(&mut self) {
         let i = self.layer;
         let Some(mut l) = self.timeline().layers.get(i).cloned() else { return };
@@ -3562,6 +3771,15 @@ impl Editor {
         self.timeline_mut().layers.insert(i, l);
         self.selection.clear();
         self.frame_sel = None;
+    }
+
+    /// Layer Properties › Layer height (timeline row height in %: 100, 200 or 300).
+    pub fn set_layer_row_height(&mut self, i: usize, percent: u16) {
+        let h = percent.clamp(100, 300);
+        if self.timeline().layers.get(i).is_some_and(|l| l.row_height != h) {
+            self.checkpoint("Layer Height");
+            self.timeline_mut().layers[i].row_height = h;
+        }
     }
 
     /// Layer Properties: colour and flags in one undo step.

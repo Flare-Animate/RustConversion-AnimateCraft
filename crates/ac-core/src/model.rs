@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 pub use crate::bitmap::{BitmapAsset, BitmapId, Image};
-pub use crate::fx::{BevelType, BlendMode, Filter, FxGroup};
+pub use crate::fx::{BevelType, BlendMode, EffectValue, Filter, FxGroup};
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Color {
@@ -313,10 +313,11 @@ impl Instance {
             SymbolKind::MovieClip => global % dur,
             SymbolKind::Button => 0,
             SymbolKind::Graphic => {
-                let raw = self.first_frame.saturating_add(local);
+                // widened so huge imported First Frame values wrap exactly (Flare fix)
+                let raw = u64::from(self.first_frame) + u64::from(local);
                 match self.loop_mode {
-                    LoopMode::Loop => raw % dur,
-                    LoopMode::PlayOnce => raw.min(dur - 1),
+                    LoopMode::Loop => (raw % u64::from(dur)) as u32,
+                    LoopMode::PlayOnce => raw.min(u64::from(dur - 1)) as u32,
                     LoopMode::SingleFrame => self.first_frame.min(dur - 1),
                     LoopMode::PlayReverseOnce => self.first_frame.min(dur - 1).saturating_sub(local),
                     LoopMode::LoopReverse => (self.first_frame.min(dur - 1) as i64 - local as i64).rem_euclid(dur as i64) as u32,
@@ -562,6 +563,58 @@ pub struct Keyframe {
     /// to the path (on by default); off keeps the object's offset from it.
     #[serde(default = "yes", skip_serializing_if = "is_true")]
     pub snap: bool,
+    /// Graphic-symbol clock at this keyframe: graphic instances play from
+    /// here (plus their First Frame), so a keyframe inserted inside a span
+    /// keeps nested animation running instead of restarting it.
+    /// (Ported from Flare's Studio core.)
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub playback_offset: u32,
+    /// A reversed static exposure runs graphic symbols backwards as well.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub playback_reversed: bool,
+    /// A tween piece that keeps the original curve over part of its source
+    /// time (made when a tween is split or partly copied with
+    /// `frames::set_retain_tween_curves(true)`; Flare's Studio behaviour).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tween_boundary: Option<Box<TweenBoundary>>,
+}
+
+fn is_zero_u32(v: &u32) -> bool {
+    *v == 0
+}
+
+/// An authored tween curve retained across clipping, splitting and reversal.
+/// The owning keyframe's elements stay the live start of the curve; this holds
+/// its end, and which part of the source time `[time_start, time_end)` the
+/// span shows (backwards when `reversed`). Ported from Flare's Studio core.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct TweenBoundary {
+    /// Length of the original tween in frames.
+    pub duration: u32,
+    #[serde(default, skip_serializing_if = "is_zero_f32")]
+    pub time_start: f32,
+    pub time_end: f32,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub reversed: bool,
+    /// The original tween's end keyframe content.
+    pub elements: Vec<Element>,
+    pub shape_hints: Vec<Pt>,
+    /// Sparse corrections made by editing poses inside the piece.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pose_edits: Vec<crate::tween_edit::TweenPoseEdit>,
+}
+
+fn is_zero_f32(v: &f32) -> bool {
+    *v == 0.0
+}
+
+impl TweenBoundary {
+    /// Source time (frames into the original tween) shown at `local` frames
+    /// into a span of `span_len` frames.
+    pub fn source_time(&self, local: u32, span_len: u32) -> f32 {
+        let index = if self.reversed { span_len.saturating_sub(1).saturating_sub(local) } else { local };
+        self.time_start + index as f32 * ((self.time_end - self.time_start) / span_len.max(1) as f32)
+    }
 }
 
 fn yes() -> bool {
@@ -608,7 +661,15 @@ impl Keyframe {
         Keyframe::with(vec![])
     }
     pub fn with(elements: Vec<Element>) -> Self {
-        Keyframe { elements, tween: Tween::None, label: None, script: None, orient_to_path: false, ease_curve: None, shape_hints: vec![], motion: None, sound: None, label_kind: LabelKind::Name, prop_eases: None, sync: false, snap: true, camera: None }
+        Keyframe { elements, tween: Tween::None, label: None, script: None, orient_to_path: false, ease_curve: None, shape_hints: vec![], motion: None, sound: None, label_kind: LabelKind::Name, prop_eases: None, sync: false, snap: true, camera: None, playback_offset: 0, playback_reversed: false, tween_boundary: None }
+    }
+    /// The graphic-symbol clock `local` frames into this keyframe's span.
+    pub fn playback_frame(&self, local: u32) -> u32 {
+        if self.playback_reversed {
+            self.playback_offset.saturating_sub(local)
+        } else {
+            self.playback_offset.saturating_add(local)
+        }
     }
     /// The label as a script/publish target (comments are author notes only).
     pub fn target_label(&self) -> Option<&str> {
@@ -669,6 +730,16 @@ pub struct Layer {
     /// the first object on that layer, and follow it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub anim_parent: Option<usize>,
+    /// Timeline row height in percent (Layer Properties › Layer height: 100, 200, 300).
+    #[serde(default = "default_row_height", skip_serializing_if = "is_default_row_height")]
+    pub row_height: u16,
+}
+
+fn default_row_height() -> u16 {
+    100
+}
+fn is_default_row_height(h: &u16) -> bool {
+    *h == 100
 }
 
 const LAYER_COLORS: [Color; 6] = [
@@ -697,6 +768,7 @@ impl Layer {
             parent: None,
             collapsed: false,
             anim_parent: None,
+            row_height: 100,
         }
     }
 
@@ -915,6 +987,9 @@ impl Document {
             for l in &mut t.layers {
                 for kf in l.keyframes.values_mut() {
                     fix(&mut kf.elements);
+                    if let Some(b) = &mut kf.tween_boundary {
+                        fix(&mut b.elements);
+                    }
                 }
             }
         }
@@ -1057,28 +1132,44 @@ impl DrawItem {
 pub fn layer_elements_at(layer: &Layer, frame: u32) -> Option<(Vec<Element>, u32)> {
     let (start, kf, next) = layer.span_at(frame)?;
     let local = frame - start;
-    let tweened = match (kf.tween, next) {
-        (Tween::Motion { ease }, _) => {
-            let len = next.unwrap_or(layer.end).min(layer.end) - start;
-            Some(motion_elements(kf, local as f32, len, ease))
+    let span_len = next.unwrap_or(layer.end).min(layer.end) - start;
+    let props_of = |tween: Tween| if matches!(tween, Tween::Classic { .. }) { kf.prop_eases.as_deref() } else { None };
+    let tweened = if let Some(b) = kf.tween_boundary.as_ref().filter(|_| kf.tween != Tween::None) {
+        // A retained piece of a longer tween: evaluate the original curve.
+        let st = b.source_time(local, span_len);
+        match kf.tween {
+            Tween::Motion { ease } => Some(motion_elements(kf, st, b.duration, ease)),
+            tween if st > 0.0 => {
+                let t = crate::motion::PropT::at(st / b.duration.max(1) as f32, tween.ease(), kf.ease_curve.as_ref(), props_of(tween));
+                let n = kf.shape_hints.len().min(b.shape_hints.len());
+                let hints = (n > 0).then(|| (&kf.shape_hints[..n], &b.shape_hints[..n]));
+                Some(interpolate_elements(&kf.elements, &b.elements, t, tween, hints))
+            }
+            _ => None,
         }
-        (Tween::None, _) | (_, None) => None,
-        (tween, Some(next_start)) if frame > start => {
-            let to = &layer.keyframes[&next_start];
-            let props = if matches!(tween, Tween::Classic { .. }) { kf.prop_eases.as_deref() } else { None };
-            let t = crate::motion::PropT::at(local as f32 / (next_start - start) as f32, tween.ease(), kf.ease_curve.as_ref(), props);
-            let n = kf.shape_hints.len().min(to.shape_hints.len());
-            let hints = (n > 0).then(|| (&kf.shape_hints[..n], &to.shape_hints[..n]));
-            Some(interpolate_elements(&kf.elements, &to.elements, t, tween, hints))
+    } else {
+        match (kf.tween, next) {
+            (Tween::Motion { ease }, _) => Some(motion_elements(kf, local as f32, span_len, ease)),
+            (Tween::None, _) | (_, None) => None,
+            (tween, Some(next_start)) if frame > start => {
+                let to = &layer.keyframes[&next_start];
+                let t = crate::motion::PropT::at(local as f32 / (next_start - start) as f32, tween.ease(), kf.ease_curve.as_ref(), props_of(tween));
+                let n = kf.shape_hints.len().min(to.shape_hints.len());
+                let hints = (n > 0).then(|| (&kf.shape_hints[..n], &to.shape_hints[..n]));
+                Some(interpolate_elements(&kf.elements, &to.elements, t, tween, hints))
+            }
+            _ => None,
         }
-        _ => None,
     };
     let mut els = tweened.unwrap_or_else(|| kf.elements.clone());
+    if let Some(b) = &kf.tween_boundary {
+        crate::tween_edit::apply(&b.pose_edits, b.source_time(local, span_len), &mut els);
+    }
     sync_first_frames(layer, start, &mut els);
     if !layer.bones.is_empty() {
         apply_bones(&layer.bones, &mut els);
     }
-    Some((els, local))
+    Some((els, kf.playback_frame(local)))
 }
 
 /// Classic tween Sync: an instance in a keyframe reached by a chain of synced
@@ -1294,16 +1385,11 @@ pub fn evaluate(ctx: &EvalCtx, tl: &Timeline, frame: u32, parent: &Matrix, alpha
         if layer.kind != LayerKind::Normal || !layer_shown(tl, li) {
             continue;
         }
-        let Some((mut elements, local)) = layer_elements_at(layer, frame) else { continue };
-        if layer.anim_parent.is_some() {
-            let pm = layer_parent_matrix(tl, li, frame);
-            for el in &mut elements {
-                el.matrix = pm.concat(&el.matrix);
-            }
-        }
-        if let Some(g) = layer_effect_parent(tl, li, LayerKind::Guide) {
-            apply_motion_guide(ctx, tl, li, g, frame, &mut elements);
-        }
+        let Some((elements, local)) = posed_elements(ctx, tl, li, frame) else { continue };
+        // Motion Blur needs where each blurred object was a frame earlier.
+        let earlier = (frame > 0 && elements.iter().any(|e| e.filters.iter().any(|f| matches!(f, Filter::MotionBlur { .. }))))
+            .then(|| posed_elements(ctx, tl, li, frame - 1).map(|(e, _)| e))
+            .flatten();
         let outline = layer.outline.then_some(layer.color);
         let layer_first = out.len();
         for (ei, el) in elements.iter().enumerate() {
@@ -1312,6 +1398,9 @@ pub fn evaluate(ctx: &EvalCtx, tl: &Timeline, frame: u32, parent: &Matrix, alpha
                 ctx.top.set(Some((li, ei)));
             }
             eval_element(ctx, el, parent, alpha, local, outline, depth, out);
+            if let Some(prev) = earlier.as_ref().and_then(|e| e.get(ei)) {
+                set_group_motion(&mut out[first..], parent, &prev.matrix, &el.matrix);
+            }
             if depth == 0 {
                 for it in &mut out[first..] {
                     it.src = Some((li, ei));
@@ -1329,6 +1418,43 @@ pub fn evaluate(ctx: &EvalCtx, tl: &Timeline, frame: u32, parent: &Matrix, alpha
                 // an empty mask frame hides everything it masks (as in Animate)
                 None => out.truncate(layer_first),
             }
+        }
+    }
+}
+
+/// A layer's objects at `frame` as drawn: tweens resolved, layer parenting and
+/// the classic motion guide applied.
+fn posed_elements(ctx: &EvalCtx, tl: &Timeline, li: usize, frame: u32) -> Option<(Vec<Element>, u32)> {
+    let layer = &tl.layers[li];
+    let (mut elements, local) = layer_elements_at(layer, frame)?;
+    if layer.anim_parent.is_some() {
+        let pm = layer_parent_matrix(tl, li, frame);
+        for el in &mut elements {
+            el.matrix = pm.concat(&el.matrix);
+        }
+    }
+    if let Some(g) = layer_effect_parent(tl, li, LayerKind::Guide) {
+        apply_motion_guide(ctx, tl, li, g, frame, &mut elements);
+    }
+    Some((elements, local))
+}
+
+/// Give the object's own effect group (the outermost group its items gained
+/// in `eval_element`) its motion since the previous frame, in stage space.
+fn set_group_motion(items: &mut [DrawItem], parent: &Matrix, prev: &Matrix, cur: &Matrix) {
+    let Some(g) = items.first().and_then(|it| it.fx.first()).filter(|g| g.filters.iter().any(|f| matches!(f, Filter::MotionBlur { .. }))).cloned() else { return };
+    let (now, then) = (parent.concat(cur), parent.concat(prev));
+    let Some(inv) = now.invert() else { return };
+    let motion = then.concat(&inv);
+    if motion == Matrix::IDENTITY {
+        return;
+    }
+    let mut ng = (*g).clone();
+    ng.motion = Some(motion);
+    let ng = Arc::new(ng);
+    for it in items.iter_mut() {
+        if it.fx.first().is_some_and(|f| Arc::ptr_eq(f, &g)) {
+            it.fx[0] = ng.clone();
         }
     }
 }
@@ -1479,7 +1605,9 @@ pub fn eval_element(ctx: &EvalCtx, el: &Element, parent: &Matrix, alpha: f32, lo
     }
     // Filters and blend modes: everything this element drew is one layer.
     if (!el.filters.is_empty() || el.blend != BlendMode::Normal) && outline.is_none() {
-        let fx = Arc::new(FxGroup { filters: el.filters.clone(), blend: el.blend });
+        let mut g = FxGroup::new(el.filters.clone(), el.blend);
+        g.time = local as f32 / ctx.doc.fps.max(1.0);
+        let fx = Arc::new(g);
         for it in &mut out[first..] {
             it.fx.insert(0, fx.clone());
         }
@@ -1507,9 +1635,22 @@ pub fn element_local_center(ctx: &EvalCtx, el: &Element) -> Pt {
 /// transformation point to the path at both keyframes).
 fn apply_motion_guide(ctx: &EvalCtx, tl: &Timeline, li: usize, g: usize, frame: u32, els: &mut [Element]) {
     let layer = &tl.layers[li];
-    let Some((start, kf, Some(next))) = layer.span_at(frame) else { return };
+    let Some((start, kf, next)) = layer.span_at(frame) else { return };
     let Tween::Classic { ease, .. } = kf.tween else { return };
     let snap = kf.snap;
+    // the tween's end: the next keyframe, or a retained piece's original end
+    let (to_els, t) = match (&kf.tween_boundary, next) {
+        (Some(b), _) => {
+            let len = next.unwrap_or(layer.end).min(layer.end) - start;
+            let st = b.source_time(frame - start, len);
+            (&b.elements, crate::motion::PropT::at(st / b.duration.max(1) as f32, ease, kf.ease_curve.as_ref(), kf.prop_eases.as_deref()).pos)
+        }
+        (None, Some(next)) => (
+            &layer.keyframes[&next].elements,
+            if frame >= next { 1.0 } else { crate::motion::PropT::at((frame - start) as f32 / (next - start) as f32, ease, kf.ease_curve.as_ref(), kf.prop_eases.as_deref()).pos },
+        ),
+        (None, None) => return,
+    };
     let Some((gels, _)) = layer_elements_at(&tl.layers[g], frame) else { return };
     let Some(guide) = gels.iter().find_map(|e| match &e.kind {
         ElementKind::Shape(s) => Some(s.path.transformed(&e.matrix)),
@@ -1517,10 +1658,8 @@ fn apply_motion_guide(ctx: &EvalCtx, tl: &Timeline, li: usize, g: usize, frame: 
     }) else {
         return;
     };
-    let to = &layer.keyframes[&next];
-    let t = if frame >= next { 1.0 } else { crate::motion::PropT::at((frame - start) as f32 / (next - start) as f32, ease, kf.ease_curve.as_ref(), kf.prop_eases.as_deref()).pos };
     for (i, el) in els.iter_mut().enumerate() {
-        let (Some(a), Some(b)) = (kf.elements.get(i), to.elements.get(i)) else { continue };
+        let (Some(a), Some(b)) = (kf.elements.get(i), to_els.get(i)) else { continue };
         let c = element_local_center(ctx, a);
         let (pa, pb) = (a.matrix.apply(c), b.matrix.apply(c));
         let (Some((ta, _)), Some((tb, _))) = (crate::deform::nearest_t(&guide, pa), crate::deform::nearest_t(&guide, pb)) else { continue };
@@ -1620,7 +1759,7 @@ pub fn named_center(doc: &Document, tl: &Timeline, frame: u32, name: &str) -> Op
 
 /// The camera's colour effect and filters apply to everything it sees.
 pub fn apply_camera_effects(items: &mut [DrawItem], cam: &Element) {
-    let fx = (!cam.filters.is_empty() || cam.blend != BlendMode::Normal).then(|| Arc::new(FxGroup { filters: cam.filters.clone(), blend: cam.blend }));
+    let fx = (!cam.filters.is_empty() || cam.blend != BlendMode::Normal).then(|| Arc::new(FxGroup::new(cam.filters.clone(), cam.blend)));
     for it in items {
         it.alpha *= cam.alpha;
         if it.tint.is_none() {
@@ -1655,8 +1794,25 @@ pub fn default_camera(doc: &Document) -> Element {
 
 pub fn apply_view(items: &mut [DrawItem], view: &Matrix) {
     let mut done: HashMap<*const Clip, Arc<Clip>> = HashMap::new();
+    let mut moved: HashMap<*const FxGroup, Arc<FxGroup>> = HashMap::new();
+    let inv = view.invert();
     for it in items {
         it.matrix = view.concat(&it.matrix);
+        // Motion-blur deltas live in the items' space: carry them into the view.
+        for g in &mut it.fx {
+            if let (Some(m), Some(inv)) = (g.motion, inv) {
+                let k = Arc::as_ptr(g);
+                let n = moved
+                    .entry(k)
+                    .or_insert_with(|| {
+                        let mut ng = (**g).clone();
+                        ng.motion = Some(view.concat(&m).concat(&inv));
+                        Arc::new(ng)
+                    })
+                    .clone();
+                *g = n;
+            }
+        }
         for c in &mut it.clips {
             let k = Arc::as_ptr(c);
             let n = done.entry(k).or_insert_with(|| Arc::new(Clip { shapes: c.shapes.iter().map(|(p, m)| (p.clone(), view.concat(m))).collect() })).clone();

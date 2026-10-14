@@ -26,7 +26,7 @@ files.
 | Symbols | ~82% | 9-slice, Visible / Cache as bitmap |
 | Animation | ~88% | tween presets, copy/paste motion, rig mapping, bone springs |
 | Text | ~40% | dynamic/input text, rich text, paragraph options |
-| Media | ~68% | envelope editing, video, AI/PSD import, Trace Bitmap |
+| Media | ~78% | envelope editing, video, AI import, bitmap compression settings |
 | Scripting | 🟡 different by design | ActionScript 3 (won't do), full CreateJS API, Code Snippets, debugger, rest of JSFL |
 | Publish / export | ~82% | publish profiles, WebGL, AIR, SWF |
 | File formats | ~65% | a corpus of real .fla files, legacy binary .fla |
@@ -146,17 +146,17 @@ The two engine milestones that unlock most of the rest:
 | Guide layers and **Classic motion guides** (orient to path, snap) | Yes | Yes (guides don't export; Orient to path) | ✅ | |
 | **Layer parenting** (parent layer view) | Yes | Layer menu ▸ Parent Layer and Show Parenting View (drag link dots) | ✅ | |
 | Layer depth (2.5D, with camera) | Yes | — | ❌ | P2 |
-| Layer properties dialog; layer effects (filters on layers) | Yes | Properties dialog; no layer effects | 🟡 | P2 |
+| Layer properties dialog; layer effects (filters on layers) | Yes | Properties dialog incl. layer height 100/200/300 %; no layer effects | 🟡 | P2 |
 | Frames: insert/remove (F5), keyframe (F6), blank (F7), clear, convert | Yes | Yes | ✅ | |
 | Select frames, copy/cut/paste/move frames, labels | Yes | Yes | ✅ | |
 | Frame label types: Name / Comment / Anchor | Yes | All three (comments are never jump targets) | ✅ | |
 | Reverse Frames, Synchronize Symbols, Insert Blank Keyframe on ranges | Yes | Reverse Frames, ranges | 🟡 | P2 (Synchronize Symbols) |
 | Drag the end of a span to extend / shorten it | Yes | Any span (Ctrl, or any motion tween); later keyframes move | ✅ | |
 | Auto Keyframe toggle | Yes | Edits auto-key | 🟡 | P2 |
-| Copy / Paste Layers (with folders) | Yes | Duplicate Layer | 🟡 | P1 |
-| Onion skin: range markers, Advanced settings, colours, outline mode | Yes | Draggable/anchored markers, Onion 2/5/All, outlines | 🟡 | P3 (colour settings) |
+| Copy / Paste Layers (with folders) | Yes | Copy/Cut/Paste Layers (folders, masks, parenting kept), Duplicate Layer | ✅ | (cross-document with multiple documents, 5.6) |
+| Onion skin: range markers, Advanced settings, colours, outline mode | Yes | Draggable/anchored markers, Onion 2/5/All, outlines; Shift & Trace ghosts (from OpenToonz) | 🟡 | P3 (colour settings) |
 | **Edit multiple frames** | Yes | Keyframes between markers shown and moved together | ✅ | |
-| Frame view sizes (tiny…large), preview thumbnails, timeline zoom | Yes | One size | ❌ | P2 |
+| Frame view sizes (tiny…large), preview thumbnails, timeline zoom | Yes | Preview / Preview in Context thumbnails, per-layer height | 🟡 | P2 (frame widths, timeline zoom) |
 | Frame-rate change with "scale spans", time display (s / frames) | Yes | FPS only | 🟡 | P2 |
 | Loop playback range, play in a range | Yes | Whole timeline loop | 🟡 | P2 |
 | Scenes (add, duplicate, reorder, Scene panel) | Yes | Yes; exports play every scene | ✅ | |
@@ -173,7 +173,7 @@ The two engine milestones that unlock most of the rest:
 | Swap Symbol | Yes | Properties ▸ Symbol | ✅ | |
 | Duplicate Symbol and swap | Yes | Duplicate only | 🟡 | P2 |
 | Colour effects: Brightness, Tint, Advanced (RGBA multiply/offset), Alpha | Yes | All five, tweenable | ✅ | |
-| **Filters**: Drop Shadow, Blur, Glow, Bevel, Gradient Glow, Gradient Bevel, Adjust Color; presets; filter tweening | Yes | All seven, presets, tweening (and motion-tween tracks); SVG export of blur/shadow/glow; HTML5 renders gradient filters per pixel (exact) | ✅ | |
+| **Filters**: Drop Shadow, Blur, Glow, Bevel, Gradient Glow, Gradient Bevel, Adjust Color; presets; filter tweening | Yes | All seven, presets, tweening (and motion-tween tracks); SVG export of blur/shadow/glow; HTML5 renders gradient filters per pixel (exact); plus Motion Blur and ~200 EffectCraft effects (beyond Animate) | ✅ | |
 | **Blend modes** (Normal, Layer, Darken, Multiply, Lighten, Screen, Overlay, Hard Light, Add, Subtract, Difference, Invert, Alpha, Erase) | Yes | All 14 | ✅ | |
 | Render: Original / Cache as Bitmap / Export as Bitmap; Visible flag | Yes | — | ❌ | P2 |
 | 9-slice scaling guides | Yes | — | ❌ | P2 |
@@ -197,7 +197,7 @@ The two engine milestones that unlock most of the rest:
 | Bones: IK poses on keyframes, joint rotation/translation constraints, **springiness / damping**, bone ease, runtime vs authoring | Yes | Poses + IK | 🟡 | P2 |
 | Asset Warp: pins, mesh density, tween warped poses, **Create Warped Asset / Reset** | Yes | Pins, rigid MLS | 🟡 | P2 |
 | Camera: tween, colour effects, attach layers, layer depth | Yes | Tweenable pan/zoom/rotate, brightness/tint/alpha/blur, VCam follow + shake (beyond Animate) | 🟡 | P2 (attach layers, depth) |
-| **Auto lip-sync** (map visemes from audio) | Yes | Properties ▸ Lip Syncing with a Mouth-shapes picker; FFT-band heuristic (no speech recognition), `lipsync.apply` | 🟡 | P3 (better analysis) |
+| **Auto lip-sync** (map visemes from audio) | Yes | Properties ▸ Lip Syncing with a Mouth-shapes picker; Rhubarb Lip Sync (speech-based, external program) when installed, FFT-band heuristic otherwise; `lipsync.apply` | ✅ | |
 | **Rig mapping** (map a rig onto symbols) | Yes | — | ❌ | P3 |
 | Frame-by-frame workflow helpers (onion skin keyframes-only, Ctrl+Alt+L loop) | Yes | Basic | 🟡 | P1 |
 
@@ -219,9 +219,9 @@ The two engine milestones that unlock most of the rest:
 | Feature | Animate | AnimationCraft | Status | Pri |
 |---|---|---|---|---|
 | Import bitmaps (PNG, JPG, GIF, BMP, TIFF) to stage / library | Yes | PNG, JPG, GIF, BMP (library + stage, smoothing) | ✅ | |
-| Bitmap properties (smoothing, compression, quality), Trace Bitmap | Yes | — | ❌ | P1 (Trace P2) |
+| Bitmap properties (smoothing, compression, quality), Trace Bitmap | Yes | Smoothing; Trace Bitmap (threshold, minimum area, curve fit, corners) | 🟡 | P2 (compression settings) |
 | Import image sequences | Yes | Yes | ✅ | |
-| Import SVG, Illustrator (.ai), Photoshop (.psd) with layer options | Yes | SVG (shapes, gradients, text as outlines) | 🟡 | P2 (.ai/.psd) |
+| Import SVG, Illustrator (.ai), Photoshop (.psd) with layer options | Yes | SVG (shapes, gradients, text as outlines); PSD (bitmap per layer, visibility, opacity) | 🟡 | P2 (.ai; PSD editable text/vector options) |
 | Import audio (WAV, MP3, AIFF), sound properties, edit envelope | Yes | WAV, MP3, OGG Vorbis, FLAC, AIFF (Symphonia); library preview with waveform; no envelope editor | 🟡 | P3 |
 | Import video (embedded or FLVPlayback), video layers | Yes | — | ❌ | P3 |
 | Import animated GIF as frames | Yes | Yes | ✅ | |

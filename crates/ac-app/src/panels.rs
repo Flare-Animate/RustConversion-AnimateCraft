@@ -984,6 +984,21 @@ fn lip_sync_section(app: &mut App, ui: &mut egui::Ui, symbol: ac_core::SymbolId)
         });
     });
     ui.ctx().data_mut(|d| d.insert_temp(map_id, map.clone()));
+    // speech-based analysis when Rhubarb Lip Sync is installed (separate program, MIT)
+    let rhubarb = ac_audio::rhubarb::find();
+    let mut use_rh = ac_audio::rhubarb::preferred();
+    ui.horizontal(|ui| {
+        ui.add_enabled_ui(rhubarb.is_some(), |ui| {
+            if ui.checkbox(&mut use_rh, "Use Rhubarb Lip Sync").changed() {
+                ac_audio::rhubarb::set_preferred(use_rh);
+            }
+        });
+        let note = match &rhubarb {
+            Some(p) => format!("found: {}", p.display()),
+            None => "not installed — using the built-in analysis (put rhubarb on PATH or next to AnimationCraft, or set AC_RHUBARB)".into(),
+        };
+        ui.add(egui::Label::new(RichText::new(note).small().color(Color32::from_gray(140))).wrap());
+    });
     if ui.button("Lip Sync").on_hover_text("Keyframe this instance to the voice: each frame shows the mouth shape heard, using the frames chosen under Mouth shapes").clicked() {
         let pairs: Vec<(ac_core::sound::Viseme, u32)> = ac_core::sound::Viseme::ALL.iter().zip(&map).map(|(v, f)| (*v, f.saturating_sub(1))).collect();
         app.status = match app.ed.lip_sync(pick, &pairs) {
@@ -2103,6 +2118,55 @@ fn font_style_picker(ui: &mut egui::Ui, family: Option<&str>, weight: u16, itali
     pick
 }
 
+/// One EffectCraft parameter editor. Returns the widget's response for
+/// drag/undo tracking (None for widgets that only change on click).
+fn effect_param_ui(ui: &mut egui::Ui, kind: &ac_render::effectcraft::ParamKind, v: &mut ac_core::EffectValue, salt: (usize, &str)) -> Option<egui::Response> {
+    use ac_core::EffectValue as V;
+    use ac_render::effectcraft::ParamKind as K;
+    match (kind, v) {
+        (K::Number { min, max, decimals }, V::Num(n)) => Some(ui.add(egui::DragValue::new(n).speed(((max - min) / 300.0).max(0.01)).max_decimals(*decimals as usize))),
+        (K::Pixels, V::Num(n)) => Some(ui.add(egui::DragValue::new(n).speed(0.5).suffix(" px").max_decimals(1))),
+        (K::Angle, V::Num(n)) => Some(ui.add(egui::DragValue::new(n).speed(1.0).suffix("°").max_decimals(1))),
+        (K::Percent, V::Num(n)) => Some(ui.add(egui::DragValue::new(n).speed(0.5).suffix("%").max_decimals(1))),
+        (K::Checkbox, V::Bool(b)) => {
+            ui.checkbox(b, "");
+            None
+        }
+        (K::Popup(opts), V::Num(n)) => {
+            let i = (*n as usize).min(opts.len().saturating_sub(1));
+            egui::ComboBox::from_id_salt(("fxpop", salt.0, salt.1)).selected_text(opts.get(i).cloned().unwrap_or_default()).show_ui(ui, |ui| {
+                for (j, o) in opts.iter().enumerate() {
+                    if ui.selectable_label(j == i, o).clicked() {
+                        *n = j as f64;
+                    }
+                }
+            });
+            None
+        }
+        (K::Color, V::Color(c)) => {
+            let mut c32v = c32(*c);
+            if ui.color_edit_button_srgba(&mut c32v).changed() {
+                *c = from32(c32v);
+            }
+            None
+        }
+        (K::Point, V::Vec2(p)) => {
+            let r = ui
+                .horizontal(|ui| {
+                    let a = ui.add(egui::DragValue::new(&mut p[0]).speed(0.005).range(-2.0..=3.0).prefix("x ").max_decimals(3));
+                    let b = ui.add(egui::DragValue::new(&mut p[1]).speed(0.005).range(-2.0..=3.0).prefix("y ").max_decimals(3));
+                    a | b
+                })
+                .inner;
+            Some(r)
+        }
+        _ => {
+            ui.label(RichText::new("—").color(Color32::from_gray(140)));
+            None
+        }
+    }
+}
+
 /// Properties › Filters and Blending (applies to all selected objects).
 fn filters_section(app: &mut App, ui: &mut egui::Ui, el: &Element) {
     section(ui, "Filters and blending");
@@ -2121,7 +2185,11 @@ fn filters_section(app: &mut App, ui: &mut egui::Ui, el: &Element) {
         }
     };
     for (k, f) in list.iter_mut().enumerate() {
-        egui::CollapsingHeader::new(RichText::new(f.name()).color(Color32::from_gray(220))).id_salt(("filter", k)).default_open(true).show(ui, |ui| {
+        let title = match &*f {
+            Filter::Effect { id, .. } => ac_render::effectcraft::info(id).map_or_else(|| format!("Effect: {id} (not available)"), |e| e.name.to_string()),
+            other => other.name().to_string(),
+        };
+        egui::CollapsingHeader::new(RichText::new(title).color(Color32::from_gray(220))).id_salt(("filter", k)).default_open(true).show(ui, |ui| {
             let dv = |ui: &mut egui::Ui, label: &str, v: &mut f32, lo: f32, hi: f32, suffix: &str| {
                 ui.label(label);
                 let r = ui.add(egui::DragValue::new(v).range(lo..=hi).speed(0.5).suffix(suffix).max_decimals(1));
@@ -2136,6 +2204,8 @@ fn filters_section(app: &mut App, ui: &mut egui::Ui, el: &Element) {
                 }
                 ch
             };
+            let mut footer_slot: Option<String> = None;
+            let footer = &mut footer_slot;
             egui::Grid::new(("fgrid", k)).num_columns(2).spacing([6.0, 3.0]).show(ui, |ui| match f {
                 Filter::Blur { blur_x, blur_y, quality } => {
                     track(dv(ui, "Blur X", blur_x, 0.0, 255.0, " px"), &mut changed);
@@ -2269,7 +2339,47 @@ fn filters_section(app: &mut App, ui: &mut egui::Ui, el: &Element) {
                     track(dv(ui, "Saturation", saturation, -100.0, 100.0, ""), &mut changed);
                     track(dv(ui, "Hue", hue, -180.0, 180.0, "°"), &mut changed);
                 }
+                Filter::MotionBlur { shutter, samples } => {
+                    track(dv(ui, "Shutter angle", shutter, 0.0, 720.0, "°"), &mut changed);
+                    ui.label("Samples");
+                    let mut n = *samples as i32;
+                    let r = ui.add(egui::DragValue::new(&mut n).range(2..=64).speed(0.2));
+                    *samples = n as u8;
+                    track(r, &mut changed);
+                    ui.end_row();
+                    *footer = Some("Blurs along the object's movement since the previous frame; 180° = half a frame.".into());
+                }
+                Filter::Effect { id, params } => match ac_render::effectcraft::info(id) {
+                    None => {
+                        ui.label(RichText::new("This EffectCraft effect isn't in this build.").small().color(Color32::from_gray(160)));
+                        ui.end_row();
+                    }
+                    Some(info) => {
+                        for p in &info.params {
+                            let cur = params.iter().find(|(k, _)| k == p.id).map(|(_, v)| v.clone()).unwrap_or_else(|| p.default.clone());
+                            let mut v = cur.clone();
+                            ui.label(p.name);
+                            let r = effect_param_ui(ui, &p.kind, &mut v, (k, p.id));
+                            ui.end_row();
+                            if v != cur {
+                                match params.iter_mut().find(|(k, _)| k == p.id) {
+                                    Some(slot) => slot.1 = v,
+                                    None => params.push((p.id.to_string(), v)),
+                                }
+                            }
+                            if let Some(r) = r {
+                                track(r, &mut changed);
+                            } else if params.iter().any(|(k, w)| k == p.id && *w != cur) {
+                                changed = true;
+                            }
+                        }
+                        *footer = Some(format!("EffectCraft · {} · {}", info.category, info.id));
+                    }
+                },
             });
+            if let Some(t) = footer.take() {
+                ui.add(egui::Label::new(RichText::new(t).small().color(Color32::from_gray(145))).wrap());
+            }
             if ui.small_button("Remove filter").clicked() {
                 remove = Some(k);
             }
@@ -2293,6 +2403,42 @@ fn filters_section(app: &mut App, ui: &mut egui::Ui, el: &Element) {
                     ui.close_menu();
                 }
             }
+            ui.separator();
+            ui.menu_button("EffectCraft effects", |ui| {
+                ui.add(egui::TextEdit::singleline(&mut app.effect_search).hint_text("Search effects").desired_width(180.0));
+                let q = app.effect_search.trim().to_lowercase();
+                let mut pick = None;
+                let cat = ac_render::effectcraft::catalog();
+                if q.is_empty() {
+                    let mut cats: Vec<&str> = cat.iter().map(|e| e.category).collect();
+                    cats.dedup();
+                    for c in cats {
+                        ui.menu_button(c, |ui| {
+                            egui::ScrollArea::vertical().max_height(420.0).show(ui, |ui| {
+                                for e in cat.iter().filter(|e| e.category == c) {
+                                    if ui.button(e.name).clicked() {
+                                        pick = Some(e.id);
+                                    }
+                                }
+                            });
+                        });
+                    }
+                } else {
+                    egui::ScrollArea::vertical().max_height(420.0).show(ui, |ui| {
+                        for e in cat.iter().filter(|e| e.name.to_lowercase().contains(&q) || e.category.to_lowercase().contains(&q)) {
+                            if ui.button(format!("{}  ·  {}", e.name, e.category)).clicked() {
+                                pick = Some(e.id);
+                            }
+                        }
+                    });
+                }
+                if let Some(id) = pick {
+                    list.push(Filter::Effect { id: id.to_string(), params: vec![] });
+                    changed = true;
+                    label = "Add Effect";
+                    ui.close_menu();
+                }
+            });
         });
         if ui.add_enabled(!list.is_empty(), egui::Button::new("Remove all")).clicked() {
             list.clear();

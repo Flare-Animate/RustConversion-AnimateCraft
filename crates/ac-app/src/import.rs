@@ -53,6 +53,65 @@ pub(crate) fn import_image(app: &mut App, path: &str) -> Result<String, String> 
     Ok(format!("Imported {name} ({w}×{h}) to the stage and library"))
 }
 
+/// File › Import › Import Photoshop (PSD): each pixel layer becomes a library
+/// bitmap on its own timeline layer at its position on the canvas (the PSD
+/// canvas maps onto the stage at 0,0), keeping its name, visibility and
+/// opacity. Groups are flattened into their layers. (psd crate, MIT/Apache.)
+pub(crate) fn import_psd(app: &mut App, path: &str) -> Result<String, String> {
+    let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
+    let psd = psd::Psd::from_bytes(&bytes).map_err(|e| format!("not a PSD this build can read: {e}"))?;
+    let (pw, ph) = (psd.width(), psd.height());
+    let mark = app.ed.undo_depth();
+    let mut made = 0;
+    // psd lists layers top first; add bottom first so each goes above the last
+    for layer in psd.layers().iter().rev() {
+        // bounds: right/bottom are the last pixel (inclusive)
+        let (l, t) = (layer.layer_left().max(0), layer.layer_top().max(0));
+        let (r, b) = ((layer.layer_right() + 1).min(pw as i32), (layer.layer_bottom() + 1).min(ph as i32));
+        if r <= l || b <= t {
+            continue; // empty or off-canvas
+        }
+        let full = layer.rgba();
+        if full.len() < (pw * ph * 4) as usize {
+            continue;
+        }
+        let (w, h) = ((r - l) as u32, (b - t) as u32);
+        let mut crop = Vec::with_capacity((w * h * 4) as usize);
+        for y in t..b {
+            let row = (y as u32 * pw + l as u32) as usize * 4;
+            crop.extend_from_slice(&full[row..row + w as usize * 4]);
+        }
+        let name = if layer.name().trim().is_empty() { format!("Layer {}", made + 1) } else { layer.name().to_string() };
+        let asset = ac_core::bitmap::BitmapAsset::from_rgba(0, &name, w, h, &crop)?;
+        let id = app.ed.add_bitmap(asset);
+        app.ed.add_layer();
+        let li = app.ed.layer;
+        app.ed.rename_layer(li, &name);
+        if let Some(s) = app.ed.place_bitmap(id, ac_core::pt(l as f32, t as f32)) {
+            let a = layer.opacity() as f32 / 255.0;
+            if a < 1.0 {
+                let f = app.ed.frame;
+                let l = &mut app.ed.timeline_mut().layers[s.layer];
+                if let Some(start) = l.span_at(f).map(|(st, _, _)| st) {
+                    if let Some(e) = l.keyframes.get_mut(&start).and_then(|k| k.elements.get_mut(s.element)) {
+                        e.alpha = a;
+                    }
+                }
+            }
+        }
+        // psd 0.3 reports the raw flag bit; Photoshop sets it on *hidden* layers
+        if layer.visible() {
+            app.ed.toggle_layer_flag(li, ac_core::LayerFlag::Visible);
+        }
+        made += 1;
+    }
+    app.ed.squash_undo(mark, "Import PSD");
+    if made == 0 {
+        return Err("the PSD has no pixel layers".into());
+    }
+    Ok(format!("Imported {made} Photoshop layer{} ({pw}×{ph})", if made == 1 { "" } else { "s" }))
+}
+
 /// Animated GIF → one keyframe per frame on a new layer. None = not animated.
 fn import_animated_gif(app: &mut App, path: &str) -> Option<Result<String, String>> {
     use image::AnimationDecoder;

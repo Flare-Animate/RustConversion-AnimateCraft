@@ -73,6 +73,7 @@ Status: ✅ in the demo · 🟡 partial · ⬜ planned
 - ✅ Width tool on merge-shape lines (profiles survive cuts/splits); camera colour effects + blur
 - ✅ Free camera (VCam) mode: the camera is an orange frame on the stage you move, zoom and rotate,
   with follow (named object, lag, offset), shake and Preview through camera; all exports match
+- ✅ Trace Bitmap (colour threshold, minimum area, curve fit, corners → merge-shape fills; approach from OpenToonz)
 - ⬜ Toolbar gaps: Art/Pattern brushes, pressure/tilt, Asset Warp on symbols/bitmaps, layer depth
 - ✅ Groups, bitmaps (PNG/JPG/GIF/BMP, animated GIF, sequences), SVG import, system fonts with styles and weights (simulated when missing)
 - ⬜ Dynamic/input text
@@ -88,6 +89,9 @@ Status: ✅ in the demo · 🟡 partial · ⬜ planned
 - ✅ Layer parenting (layer menu ▸ Parent Layer), onion markers (drag, anchor, Onion 2/5/All, outlines),
   Edit Multiple Frames, Reverse Frames, Convert to Frame-by-Frame, Ctrl+drag a layer's end
 - ✅ Frame label types (Name/Comment/Anchor), Show Parenting View, drag any span's end
+- ✅ Paste Frames vs Paste and Overwrite Frames, Copy/Cut/Paste Layers, layer height %, Frame View
+  Preview / Preview in Context thumbnails, Shift & Trace (OpenToonz), graphic symbols keep playing through
+  an inserted keyframe; optional Flare semantics: Keep Tween Curves When Splitting (`TweenBoundary`)
 - ⬜ Layer depth (2.5D)
 
 **Symbols**
@@ -95,6 +99,7 @@ Status: ✅ in the demo · 🟡 partial · ⬜ planned
   first frame), Movie Clip (own clock), Button (Up/Over/Down/Hit; Control ▸ Enable Simple Buttons)
 - ✅ Convert to Symbol (F8), New Symbol (Ctrl+F8), nested symbols, Library
 - ✅ Filters (drop shadow, blur, glow, bevel, gradient glow, gradient bevel, adjust color; tweenable; presets) and all 14 blend modes; instance names readable/settable from frame scripts
+- ✅ Motion Blur filter (real movement, shutter/samples) and ~200 EffectCraft effects as filters (git dependency)
 - ✅ Swap Symbol; colour effects None / Brightness / Tint / Advanced / Alpha
 - ⬜ 9-slice scaling, cache-as-bitmap
 
@@ -124,13 +129,15 @@ Status: ✅ in the demo · 🟡 partial · ⬜ planned
 - ✅ `.fla` (CS5+, zipped XFL) and XFL folders: read + write (`ac-xfl`), round-trip tested on a
   hand-written fixture; unsupported parts are reported, never silently dropped
 - 🟡 needs a corpus of real .fla files; motion-object tweens import static
-- ⬜ legacy binary FLA (pre-CS5 compound file) read-only, AI/PSD import
+- ✅ PSD import (one bitmap layer per Photoshop layer), XDTS timing-sheet export
+- ⬜ legacy binary FLA (pre-CS5 compound file) read-only, AI import
 
 **Sound**
 - ✅ Import WAV/MP3/OGG/FLAC, keyframe sounds (Event/Start/Stop/Stream, repeat/loop), waveform
   in the timeline, playback, auto lip-sync (heuristic) on graphic instances
 - ✅ Sound effects (left/right, fades), sounds inside symbols, AIFF
-- ⬜ custom envelopes; better lip sync (Phase 5.10)
+- ✅ Lip sync can use Rhubarb Lip Sync (external program, MIT) when installed; heuristic fallback
+- ⬜ custom envelopes
 
 **Scripting** (see SCRIPTING.md)
 - ✅ Command registry (`ac_core::commands`, ~50 dotted commands, 1-based frames)
@@ -146,10 +153,12 @@ Status: ✅ in the demo · 🟡 partial · ⬜ planned
 
 ```
 crates/
-  ac-core    model, timeline evaluation, tweens (motion.rs), merge drawing (merge.rs), shape armatures (rig.rs), sounds (sound.rs), editor commands   (no UI, wasm-portable)
+  ac-core    model, timeline evaluation, tweens (motion.rs), merge drawing (merge.rs), shape armatures (rig.rs), sounds (sound.rs), editor commands,
+             Trace Bitmap (trace.rs), XDTS (xdts.rs), retained tween curves from Flare (tween_edit.rs)   (no UI, wasm-portable)
   ac-render  tiny-skia rasteriser shared by stage + exports (filters, blend modes, masks);
              SVG, GIF, PNG, PNG sequence, video via ffmpeg (with sound); HTML5 Canvas (html5.rs +
-             html5_runtime.js), sprite sheets / Lottie (formats.rs), animated SVG; system fonts
+             html5_runtime.js), sprite sheets / Lottie (formats.rs), animated SVG; system fonts;
+             EffectCraft bridge (effectcraft.rs; effectcraft-* are git dependencies, not copies)
   ac-audio   Symphonia decoding, Animate-rule sound mixing, waveforms, lip-sync analysis, cpal playback (feature)
   ac-xfl     .fla / XFL read + write (edges, .dat bitmaps, zip)
   ac-package native .acx package (ZIP of JSON parts + media files)
@@ -212,3 +221,7 @@ The full feature-by-feature comparison with Animate and the current build order
   and for UI work run `AC_SCREENSHOT=out.png cargo run -p ac-app` (works under
   Xvfb) and look at the result. Append a devlog entry.
 - Demo content must be original or public domain.
+- Ported code says where it came from (file header + THIRD-PARTY-NOTICES.md + devlog). Flare is folded in
+  (one engine with Flare's Studio) except its Ghidra-derived theme code and GPL/AGPL-referenced readers.
+- Windows: `sh tools/build-windows.sh` (exe + NSIS installer from Linux); CI: `.github/workflows/windows-release.yml`.
+- Big debug builds: set `CARGO_PROFILE_DEV_DEBUG=line-tables-only` when disk is tight.

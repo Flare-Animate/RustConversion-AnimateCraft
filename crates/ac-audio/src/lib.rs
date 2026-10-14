@@ -369,7 +369,24 @@ pub fn visemes(p: &Pcm, t0: f32, fps: f32, n: usize) -> Vec<Viseme> {
 #[cfg(test)]
 mod tests;
 
-/// Give ac-core the decoders it needs for Lip-Sync and sound lengths.
+pub mod rhubarb;
+
+/// Give ac-core the decoders it needs for Lip-Sync and sound lengths. Lip-Sync
+/// uses Rhubarb Lip Sync when it's installed (and preferred), else the
+/// built-in heuristic.
 pub fn register() {
-    ac_core::sound::set_analyzer(|s, t0, fps, n| pcm(s).map(|p| visemes(&p, t0, fps, n)), |s| pcm(s).map(|p| p.seconds()));
+    ac_core::sound::set_analyzer(
+        |s, t0, fps, n| {
+            let p = pcm(s)?;
+            if rhubarb::preferred() {
+                if let Some(exe) = rhubarb::find() {
+                    if let Ok(v) = rhubarb::visemes(&exe, &p, t0, fps, n) {
+                        return Some(v);
+                    }
+                }
+            }
+            Some(visemes(&p, t0, fps, n))
+        },
+        |s| pcm(s).map(|p| p.seconds()),
+    );
 }

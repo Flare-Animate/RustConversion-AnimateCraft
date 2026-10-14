@@ -7,9 +7,21 @@ Tools / Stage / Timeline / Properties / Library workspace.
 
 Not affiliated with Adobe.
 
-## Run it
+## Install (Windows)
 
-Requires Rust 1.80+ (https://rustup.rs).
+Download `AnimationCraft-<version>-setup.exe` from the repository's Releases (or
+the **Windows build** workflow run under Actions) and run it. It installs for
+your user only (no admin prompt), adds Start Menu and Desktop shortcuts, opens
+`.acx` files with AnimationCraft, and can be removed from *Apps & features*. A
+portable zip (`animationcraft.exe` + `animationcraft-cli.exe`) is published too.
+
+Build them yourself: on Windows, `cargo build --release -p ac-app -p ac-cli`
+then `makensis packaging/windows/installer.nsi`; from Linux,
+`sh tools/build-windows.sh` (MinGW + NSIS).
+
+## Run it (from source)
+
+Requires Rust 1.95+ (https://rustup.rs; EffectCraft needs it).
 
 ```sh
 cargo run --release -p ac-app          # the editor (opens the demo scene)
@@ -139,6 +151,22 @@ tools. Options for the active tool are in Properties ▸ **Tool**.
 - **Generate Sprite Sheet** (PNG + JSON hash / JSON array / Starling XML,
   trimmed, duplicates shared), **Animated SVG** (SMIL, plays in browsers) and
   **Lottie** JSON.
+
+### Effects, motion blur, tracing
+
+- **Motion Blur** (Properties › Filters › Add filter): blurs an object along its
+  real movement since the previous frame (shutter angle, samples), through tweens,
+  motion guides, nested symbols and the camera.
+- **EffectCraft effects** (Add filter › EffectCraft effects, with search): about 200
+  effects from ArtCraft's EffectCraft — blurs, distortions, stylize, generators,
+  colour, keying. EffectCraft is a git dependency: `cargo update -p effectcraft-effects`
+  brings in its latest version. They render in the stage and every raster export.
+- **Trace Bitmap** (Modify › Trace Bitmap…): colour threshold, minimum area, curve fit
+  and corner threshold; the bitmap becomes merge-shape fills that meet exactly.
+- **Shift & Trace** (timeline toolbar): the previous and next keyframes as ghosts you
+  slide (drag; Shift+drag for the next one) and turn (Alt+drag) under your drawing.
+- **Import Photoshop (PSD)**: one bitmap layer per Photoshop layer, in place.
+- **Export Timing Sheet (XDTS)**: layer timing for Clip Studio Paint / OpenToonz.
 
 ### Sound
 

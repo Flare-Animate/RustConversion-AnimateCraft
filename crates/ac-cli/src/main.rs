@@ -15,6 +15,8 @@
 //!   animationcraft-cli save-demo <out.acx.json>
 //!   animationcraft-cli run <script.js|.py|.mjs|.rb> [--doc <doc|demo>] [--save out.acx.json] [--gif out.gif]
 //!   animationcraft-cli commands            (list scriptable commands)
+//!   animationcraft-cli effects [search]    (EffectCraft effects usable as object filters)
+//!   animationcraft-cli xdts <doc> <out.xdts> (XDTS timing sheet)
 
 use ac_core::{demo::demo_document, Document, ElementKind, Tween};
 use std::path::Path;
@@ -161,6 +163,12 @@ fn run(args: &[String]) -> Result<(), String> {
             std::fs::write(arg(2)?, json).map_err(|e| e.to_string())?;
             println!("wrote {}", arg(2)?);
         }
+        "xdts" => {
+            // xdts <doc> <out.xdts>: timing sheet of the first scene
+            let d = load(arg(1)?)?;
+            std::fs::write(arg(2)?, ac_core::xdts::export(&d, &d.scene)).map_err(|e| e.to_string())?;
+            println!("wrote {}", arg(2)?);
+        }
         "convert" => {
             let d = load(arg(1)?)?;
             save_any(&d, arg(2)?)?;
@@ -169,6 +177,17 @@ fn run(args: &[String]) -> Result<(), String> {
         "save-demo" => {
             save_any(&demo_document(), arg(1)?)?;
             println!("wrote {}", arg(1)?);
+        }
+        "effects" => {
+            // effects [search]: the EffectCraft effects usable as object filters
+            let q = args.get(1).map(|s| s.to_lowercase());
+            for e in ac_render::effectcraft::catalog() {
+                if q.as_ref().is_some_and(|q| !(e.id.to_lowercase().contains(q) || e.name.to_lowercase().contains(q) || e.category.to_lowercase().contains(q))) {
+                    continue;
+                }
+                let ps: Vec<String> = e.params.iter().map(|p| p.id.to_string()).collect();
+                println!("{:<18} {:<34} {:<32} {}", e.category, e.id, e.name, ps.join(", "));
+            }
         }
         "commands" => {
             print!("{}", ac_script::reference());
@@ -208,7 +227,7 @@ fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     ac_audio::register();
     if args.is_empty() {
-        eprintln!("usage: animationcraft-cli <info|gif|png|png-seq|video|svg|svg-anim|html5|sprites|lottie|xfl|convert|save-demo|run|commands> ...  (use 'demo' as the document for the built-in scene)");
+        eprintln!("usage: animationcraft-cli <info|gif|png|png-seq|video|svg|svg-anim|html5|sprites|lottie|xfl|convert|save-demo|run|commands|effects|xdts> ...  (use 'demo' as the document for the built-in scene)");
         std::process::exit(2);
     }
     if let Err(e) = run(&args) {

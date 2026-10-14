@@ -144,6 +144,26 @@ ac.import.image({ path: "badge.png", x: 20, y: 20 });  // PNG into the library +
 ac.draw.text({ x: 40, y: 40, text: "Hi", font: "DejaVu Serif" }); // any installed font
 ```
 
+### Motion blur, EffectCraft effects, Trace Bitmap, layer clipboard
+
+```js
+ac.selection.add_filter({ type: "motion_blur", shutter: 180, samples: 12 }); // blur along the real movement
+// any EffectCraft effect by id (`animationcraft-cli effects blur` lists them with their parameters);
+// numbers, booleans, [x, y] points (fractions of the object's bounds) and "#RRGGBBAA" colours
+ac.selection.add_filter({ type: "effect", id: "ec.blur.radial", params: { amount: 30, type: 1, center: [0.5, 0.5] } });
+ac.select.all();
+ac.bitmap.trace({ color_threshold: 100, min_area: 8, curve_fit: "smooth", corners: "normal" }); // → fills
+ac.timeline.paste_frames({ frame: 10 });                  // later frames move along
+ac.timeline.paste_frames({ frame: 10, overwrite: true }); // Paste and Overwrite Frames
+ac.layer.copy({ layer: "Rig" });                          // with everything inside the folder
+ac.layer.paste({ layer: "Background" });                  // pasted above it
+```
+
+Timeline semantics: by default splitting a tween works as in Animate. A host can
+switch on Flare's curve-retaining behaviour (`frames::set_retain_tween_curves`,
+Modify › Timeline › Keep Tween Curves When Splitting); scripts run on the same thread
+as the app, so they follow that setting.
+
 ### Eases, motion tweens, scenes and buttons
 
 ```js

@@ -929,6 +929,27 @@ fn stage_input(app: &mut App, ui: &egui::Ui, rect: Rect, resp: &egui::Response) 
         }
     }
 
+    // Shift and Trace › Edit Shift: drags move/turn a ghost instead of using the tool
+    if app.onion_opts.shift_trace && app.onion_opts.shift_edit {
+        if resp.drag_started() {
+            app.onion_opts.shift_pivot = Some(p0);
+        }
+        if resp.dragged() {
+            let k = usize::from(shift);
+            let prev = app.to_doc(rect, pos - resp.drag_delta());
+            let pivot = app.onion_opts.shift_pivot.unwrap_or(p0);
+            let m = &mut app.onion_opts.shift[k];
+            if alt {
+                // turn about where the drag started
+                let c = pivot;
+                let a = (p.y - c.y).atan2(p.x - c.x) - (prev.y - c.y).atan2(prev.x - c.x);
+                *m = Matrix::translate(c.x, c.y).concat(&Matrix::rotate(a)).concat(&Matrix::translate(-c.x, -c.y)).concat(m);
+            } else {
+                *m = Matrix::translate(p.x - prev.x, p.y - prev.y).concat(m);
+            }
+        }
+        return;
+    }
     let pressed = resp.drag_started() || (resp.clicked() && matches!(app.drag, Drag::None));
     if pressed {
         app.playing = false;
@@ -2361,6 +2382,18 @@ fn render_stage(app: &mut App, ui: &egui::Ui, rect: Rect) {
             ac_render::draw_items(&mut pix.as_mut(), &items, &opts);
         }
     }
+    // Shift and Trace: previous / next keyframe ghosts with their own offsets
+    if app.onion_opts.shift_trace && !app.playing {
+        for (k, f) in shift_trace_frames(app).into_iter().enumerate() {
+            let Some(f) = f else { continue };
+            // only the current layer's drawing, as in OpenToonz
+            let mut items = app.ed.evaluate_current(f);
+            items.retain(|it| it.src.is_some_and(|s| s.0 == app.ed.layer));
+            let col = if k == 0 { Color::rgb(0xE0, 0x40, 0x40) } else { Color::rgb(0x30, 0xA0, 0xE0) };
+            let view = content_view.concat(&app.onion_opts.shift[k]);
+            ac_render::draw_items(&mut pix.as_mut(), &items, &ac_render::RenderOpts { view, alpha: 0.45, tint: Some((col, 0.8)) });
+        }
+    }
     let mut items = app.ed.evaluate_current(app.ed.frame);
     crate::scripting::apply_overrides(app, &mut items);
     ac_render::draw_items(&mut pix.as_mut(), &items, &ac_render::RenderOpts { view: content_view, ..Default::default() });
@@ -2985,4 +3018,14 @@ fn app_snap(view: &crate::rulers::ViewOpts, guides: &ac_core::Guides, v: f32, ve
         consider((v / g).round() * g);
     }
     best.unwrap_or(v)
+}
+
+/// Shift and Trace ghosts: the current layer's previous and next keyframes.
+fn shift_trace_frames(app: &App) -> [Option<u32>; 2] {
+    let Some(l) = app.ed.timeline().layers.get(app.ed.layer) else { return [None, None] };
+    let cur = app.ed.frame;
+    let start = l.span_at(cur).map(|(s, _, _)| s).unwrap_or(cur);
+    let prev = l.keyframes.range(..start).next_back().map(|(&k, _)| k);
+    let next = l.keyframes.range(cur + 1..).next().map(|(&k, _)| k).filter(|&k| k < l.end);
+    [prev, next]
 }

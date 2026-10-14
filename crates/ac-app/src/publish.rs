@@ -159,9 +159,11 @@ pub(crate) fn run_file_action(app: &mut App, action: FileAction, path: &str) -> 
             }
             Ok(format!("Exported Lottie to {}{}", p.display(), if warn.is_empty() { String::new() } else { format!(" ({} notes, see Output)", warn.len()) }))
         }
+        FileAction::ExportXdts => std::fs::write(&p, ac_core::xdts::export(&doc, app.ed.scene_tl())).map_err(|e| e.to_string()).map(|_| format!("Exported timing sheet to {}", p.display())),
         FileAction::ImportImage => crate::import::import_image(app, path),
         FileAction::ImportSvg => crate::import::import_svg(app, path),
         FileAction::ImportSequence => crate::import::import_sequence(app, path),
+        FileAction::ImportPsd => crate::import::import_psd(app, path),
         _ => Err("unsupported".into()),
     }
 }
