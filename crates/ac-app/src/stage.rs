@@ -107,9 +107,90 @@ fn seg_dist(p: Pos2, a: Pos2, b: Pos2) -> f32 {
     p.distance(a + ab * t)
 }
 
+/// Edit in place: one level of symbol/group editing opened from the stage,
+/// drawn where it sits with the rest of the scene dimmed behind it.
+#[derive(Clone, Copy, Debug)]
+pub struct InPlace {
+    /// The symbol being edited at this level (the group's temporary symbol for groups).
+    pub symbol: ac_core::SymbolId,
+    /// Object → stage transform of this level (parents included).
+    pub matrix: Matrix,
+    /// Scene frame and the scene object opened (outermost level).
+    pub scene_frame: u32,
+    pub scene_obj: Option<Selection>,
+}
+
 impl App {
+    /// The in-place transform, if the current editing level was opened in place.
+    pub(crate) fn in_place(&self) -> Option<Matrix> {
+        let last = self.place.last()?;
+        (self.ed.editing == Some(last.symbol)).then_some(last.matrix)
+    }
+
+    /// Double-click on the stage: edit a symbol instance or a group in place.
+    pub(crate) fn edit_in_place(&mut self, h: Selection) -> bool {
+        let Some(el) = self.ed.element_at(h) else { return false };
+        let parent = self.in_place().unwrap_or(Matrix::IDENTITY);
+        if self.ed.editing.is_some() && self.in_place().is_none() {
+            self.place.clear(); // isolated editing: nested levels stay isolated
+        }
+        let (scene_frame, scene_obj) = match self.place.first() {
+            Some(p) => (p.scene_frame, p.scene_obj),
+            None if self.ed.editing.is_none() => (self.ed.frame, Some(h)),
+            None => (0, None),
+        };
+        let m = parent.concat(&el.matrix);
+        match el.kind {
+            ElementKind::Instance(i) => {
+                if self.ed.doc.symbol(i.symbol).is_none() {
+                    return false;
+                }
+                self.ed.enter_symbol(i.symbol);
+                self.place.push(InPlace { symbol: i.symbol, matrix: m, scene_frame, scene_obj });
+                self.status = format!("Editing {} in place. Esc or double-click empty space to go back.", self.ed.doc.symbol(i.symbol).map(|s| s.name.clone()).unwrap_or_default());
+            }
+            ElementKind::Group(_) => {
+                if !self.ed.enter_group(h) {
+                    return false;
+                }
+                let Some(id) = self.ed.editing else { return false };
+                self.place.push(InPlace { symbol: id, matrix: m, scene_frame, scene_obj });
+                self.status = "Editing group. Esc or double-click empty space to go back.".into();
+            }
+            _ => return false,
+        }
+        true
+    }
+
+    /// Esc / breadcrumb: leave the innermost group, else go back to the scene.
+    pub(crate) fn exit_editing(&mut self, all: bool) {
+        if !all && !self.ed.group_edit.is_empty() {
+            self.ed.exit_group();
+            self.place.pop();
+            if self.in_place().is_none() && !self.place.is_empty() {
+                self.place.clear();
+            }
+            return;
+        }
+        let back = self.place.first().copied();
+        self.ed.exit_to_scene();
+        self.place.clear();
+        match back {
+            Some(p) => {
+                self.ed.set_frame(p.scene_frame);
+                if let Some(s) = p.scene_obj {
+                    self.ed.layer = s.layer;
+                    self.ed.selection = vec![s];
+                }
+            }
+            None => self.fit_pending = true,
+        }
+    }
+
     fn content_offset(&self) -> Vec2 {
-        if self.ed.editing.is_some() {
+        if self.in_place().is_some() {
+            Vec2::ZERO
+        } else if self.ed.editing.is_some() {
             vec2(self.ed.doc.width / 2.0, self.ed.doc.height / 2.0)
         } else {
             Vec2::ZERO
@@ -121,7 +202,11 @@ impl App {
     }
     fn view_content(&self) -> Matrix {
         let o = self.content_offset();
-        self.view_base().concat(&Matrix::translate(o.x, o.y))
+        let v = self.view_base().concat(&Matrix::translate(o.x, o.y));
+        match self.in_place() {
+            Some(m) => v.concat(&m),
+            None => v,
+        }
     }
     pub(crate) fn to_screen(&self, rect: Rect, p: Pt) -> Pos2 {
         let q = self.view_content().apply(p);
@@ -630,8 +715,7 @@ pub fn stage(app: &mut App, ctx: &egui::Context) {
                     }
                     let icon = if i == 0 { "🎬" } else { "🔷" };
                     if ui.link(format!("{icon} {c}")).clicked() && i == 0 && app.ed.editing.is_some() {
-                        app.ed.exit_to_scene();
-                        app.fit_pending = true;
+                        app.exit_editing(true);
                     }
                 }
                 if app.ed.camera_view {
@@ -771,9 +855,10 @@ fn stage_input(app: &mut App, ui: &egui::Ui, rect: Rect, resp: &egui::Response) 
                 }
                 if let Some(h) = app.ed.hit_test(p) {
                     match app.ed.element_at(h).map(|e| e.kind) {
-                        Some(ElementKind::Instance(i)) => {
-                            app.edit_symbol(i.symbol);
-                            return;
+                        Some(ElementKind::Instance(_) | ElementKind::Group(_)) => {
+                            if app.edit_in_place(h) {
+                                return;
+                            }
                         }
                         Some(ElementKind::Text(t)) => {
                             app.set_tool(Tool::Text);
@@ -783,6 +868,11 @@ fn stage_input(app: &mut App, ui: &egui::Ui, rect: Rect, resp: &egui::Response) 
                         }
                         _ => {}
                     }
+                } else if app.in_place().is_some() || !app.ed.group_edit.is_empty() {
+                    // double-click outside the edited object: back one level
+                    app.exit_editing(false);
+                    app.drag = Drag::None;
+                    return;
                 }
             }
             Tool::Pen => {
@@ -1016,6 +1106,8 @@ fn press(app: &mut App, rect: Rect, tool: Tool, origin: Pos2, p0: Pt, shift: boo
             if let ElementKind::Text(t) = &mut el.kind {
                 t.font = app.topts.text_font;
                 t.align = app.topts.text_align;
+                t.weight = if app.topts.text_bold { 700 } else { 400 };
+                t.italic = app.topts.text_italic;
             }
             match app.ed.add_element(el) {
                 Some(s) => app.text_edit = Some(TextEdit { sel: s, buffer: String::new(), mark, focus_requested: false }),
@@ -1275,7 +1367,6 @@ fn select_press(app: &mut App, p0: Pt, shift: bool) {
     }
 }
 
-/// Width tool target: a stroked shape whose outline is near `p` → (shape, position along it).
 /// An interior width point of a selected shape near the screen position `at`: (shape, index).
 fn width_point_at(app: &App, rect: Rect, at: Pos2) -> Option<(Selection, usize)> {
     let mut cands = app.ed.selection.clone();
@@ -1300,6 +1391,7 @@ fn width_point_at(app: &App, rect: Rect, at: Pos2) -> Option<(Selection, usize)>
     None
 }
 
+/// Width tool target: a stroked shape whose outline is near `p` → (shape, position along it).
 fn stroked_shape_at(app: &App, p: Pt) -> Option<(Selection, f32)> {
     let mut cands: Vec<Selection> = app.ed.selection.clone();
     if let Some(h) = app.ed.hit_test(p) {
@@ -1499,11 +1591,20 @@ fn drag(app: &mut App, ui: &egui::Ui, rect: Rect, pos: Pos2, p: Pt, shift: bool,
             let mut want = *raw;
             app.snap_guides = (None, None);
             if let (true, Some((lo, hi))) = (snap_on, *start) {
-                let thr = 6.0 / zoom;
+                let thr = app.view.snap_px / zoom;
                 let (ax, gx) = snap_axis([lo.x + raw.x, (lo.x + hi.x) / 2.0 + raw.x, hi.x + raw.x], &targets.0, thr);
                 let (ay, gy) = snap_axis([lo.y + raw.y, (lo.y + hi.y) / 2.0 + raw.y, hi.y + raw.y], &targets.1, thr);
                 want = pt(raw.x + ax, raw.y + ay);
                 app.snap_guides = (gx, gy);
+            }
+            if let (true, Some((lo, _))) = (app.view.snap_pixels, *start) {
+                // Snap to Pixels: the selection's top-left lands on a whole pixel
+                if app.snap_guides.0.is_none() {
+                    want.x = (lo.x + want.x).round() - lo.x;
+                }
+                if app.snap_guides.1.is_none() {
+                    want.y = (lo.y + want.y).round() - lo.y;
+                }
             }
             let inc = pt(want.x - applied.x, want.y - applied.y);
             *applied = want;
@@ -2082,7 +2183,8 @@ fn render_stage(app: &mut App, ui: &egui::Ui, rect: Rect) {
     pix.fill(sk::Color::from_rgba8(0x3C, 0x3C, 0x3C, 255));
     let view = Matrix::scale(ppp, ppp).concat(&app.view_base());
     let d = &app.ed.doc;
-    let stage_dim = app.ed.editing.is_some();
+    let in_place = app.in_place().is_some();
+    let stage_dim = app.ed.editing.is_some() && !in_place;
     for (off, a) in [(6.0, 40u8), (3.0, 60)] {
         if let Some(r) = sk::Rect::from_xywh(off, off, d.width, d.height) {
             let mut paint = sk::Paint::default();
@@ -2095,6 +2197,18 @@ fn render_stage(app: &mut App, ui: &egui::Ui, rect: Rect) {
         let bg = d.background;
         paint.set_color(sk::Color::from_rgba8(bg.r, bg.g, bg.b, if stage_dim { 90 } else { 255 }));
         pix.fill_rect(r, &paint, to_ts(&view), None);
+    }
+    if in_place {
+        // the scene behind, dimmed, without the object being edited
+        if let Some(first) = app.place.first().copied() {
+            let ctx = ac_core::EvalCtx::new(&app.ed.doc, first.scene_frame);
+            let mut items = Vec::new();
+            ac_core::evaluate(&ctx, app.ed.scene_tl(), first.scene_frame, &Matrix::IDENTITY, 1.0, 0, &mut items);
+            if let Some(o) = first.scene_obj {
+                items.retain(|it| it.src != Some((o.layer, o.element)));
+            }
+            ac_render::draw_items(&mut pix.as_mut(), &items, &ac_render::RenderOpts { view, alpha: 0.35, tint: None });
+        }
     }
     let content_view = Matrix::scale(ppp, ppp).concat(&app.view_content());
     let n = app.ed.frame_count();

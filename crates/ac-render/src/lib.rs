@@ -205,6 +205,64 @@ pub fn export_png(doc: &Document, frame: u32, scale: f32, path: &std::path::Path
     render_frame(doc, frame, scale).save_png(path).map_err(|e| e.to_string())
 }
 
+/// File ▸ Export ▸ Export Image: the format of a single-frame export.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum StillFormat {
+    /// `transparent`: keep the stage transparent.
+    Png { transparent: bool },
+    /// Quality 1–100; `progressive` is accepted for parity but written baseline.
+    Jpeg { quality: u8 },
+    /// `colors`: palette size 2–256; `transparent`: stage colour becomes transparent.
+    Gif { colors: u16, transparent: bool },
+}
+
+/// Export one frame as PNG, JPEG or GIF (Export Image).
+pub fn export_still(doc: &Document, frame: u32, scale: f32, format: StillFormat, path: &std::path::Path) -> Result<(), String> {
+    let bytes = still_bytes(doc, frame, scale, format)?;
+    std::fs::write(path, bytes).map_err(|e| e.to_string())
+}
+
+/// The encoded bytes of `export_still`.
+pub fn still_bytes(doc: &Document, frame: u32, scale: f32, format: StillFormat) -> Result<Vec<u8>, String> {
+    match format {
+        StillFormat::Png { transparent } => render_frame_opts(doc, frame, scale, transparent).encode_png().map_err(|e| e.to_string()),
+        StillFormat::Jpeg { quality } => {
+            let pix = render_frame_opts(doc, frame, scale, false);
+            let rgb: Vec<u8> = unpremultiplied(&pix).chunks(4).flat_map(|c| [c[0], c[1], c[2]]).collect();
+            let mut out = Vec::new();
+            let enc = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, quality.clamp(1, 100));
+            use image::ImageEncoder;
+            enc.write_image(&rgb, pix.width(), pix.height(), image::ExtendedColorType::Rgb8).map_err(|e| e.to_string())?;
+            Ok(out)
+        }
+        StillFormat::Gif { colors, transparent } => {
+            let pix = render_frame_opts(doc, frame, scale, transparent);
+            let rgba = unpremultiplied(&pix);
+            let (w, h) = (pix.width() as u16, pix.height() as u16);
+            let n = colors.clamp(2, 256) as usize;
+            // NeuQuant on the opaque pixels; transparent pixels get their own index
+            let opaque: Vec<u8> = rgba.chunks(4).filter(|c| c[3] >= 128).flatten().copied().collect();
+            let slots = if transparent { n - 1 } else { n };
+            let nq = color_quant::NeuQuant::new(10, slots.max(2), if opaque.is_empty() { &[0, 0, 0, 255] } else { &opaque });
+            let mut palette: Vec<u8> = nq.color_map_rgb();
+            palette.truncate(slots.max(2) * 3);
+            let tindex = transparent.then_some((palette.len() / 3) as u8);
+            if transparent {
+                palette.extend_from_slice(&[0, 0, 0]);
+            }
+            let indices: Vec<u8> = rgba.chunks(4).map(|c| if c[3] < 128 { tindex.unwrap_or(nq.index_of(c) as u8) } else { nq.index_of(c) as u8 }).collect();
+            let mut out = Vec::new();
+            {
+                let mut enc = gif::Encoder::new(&mut out, w, h, &palette).map_err(|e| e.to_string())?;
+                let mut fr = gif::Frame::from_indexed_pixels(w, h, indices, tindex);
+                fr.palette = None;
+                enc.write_frame(&fr).map_err(|e| e.to_string())?;
+            }
+            Ok(out)
+        }
+    }
+}
+
 /// Options shared by the multi-frame exporters (Publish Settings).
 #[derive(Clone, Debug)]
 pub struct ExportOpts {

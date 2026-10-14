@@ -2,7 +2,7 @@
 //!
 //!   animationcraft-cli info   <doc.acx.json | demo>
 //!   animationcraft-cli gif    <doc | demo> <out.gif> [scale]
-//!   animationcraft-cli png    <doc | demo> <frame> <out.png> [scale]
+//!   animationcraft-cli png    <doc | demo> <frame> <out.png|.jpg|.gif> [scale] [--quality N] [--colors N] [--transparent]
 //!   animationcraft-cli svg    <doc | demo> <frame> <out.svg>
 //!   animationcraft-cli png-seq <doc | demo> <out-dir> [scale]
 //!   animationcraft-cli video  <doc | demo> <out.mp4|.webm|.mov> [scale]   (needs ffmpeg)
@@ -97,11 +97,20 @@ fn run(args: &[String]) -> Result<(), String> {
             eprintln!();
             println!("wrote {}", arg(2)?);
         }
-        "png" => {
+        "png" | "image" => {
+            // png <doc> <frame> <out.png|.jpg|.gif> [scale] [--quality N] [--colors N] [--transparent]
             let d = load(arg(1)?)?;
             let f: u32 = arg(2)?.parse().map_err(|_| "frame must be a number (1-based)")?;
-            let scale = args.get(4).and_then(|s| s.parse().ok()).unwrap_or(1.0);
-            ac_render::export_png(&d, f.saturating_sub(1), scale, Path::new(arg(3)?))?;
+            let scale = args.get(4).filter(|s| !s.starts_with("--")).and_then(|s| s.parse().ok()).unwrap_or(1.0);
+            let flag = |name: &str| args.iter().position(|a| a == name).and_then(|i| args.get(i + 1)).and_then(|v| v.parse::<u16>().ok());
+            let transparent = args.iter().any(|a| a == "--transparent");
+            let out = Path::new(arg(3)?);
+            let fmt = match out.extension().and_then(|e| e.to_str()).map(|e| e.to_ascii_lowercase()).as_deref() {
+                Some("jpg") | Some("jpeg") => ac_render::StillFormat::Jpeg { quality: flag("--quality").unwrap_or(80).min(100) as u8 },
+                Some("gif") => ac_render::StillFormat::Gif { colors: flag("--colors").unwrap_or(256), transparent },
+                _ => ac_render::StillFormat::Png { transparent },
+            };
+            ac_render::export_still(&d, f.saturating_sub(1), scale, fmt, out)?;
             println!("wrote {}", arg(3)?);
         }
         "svg" => {

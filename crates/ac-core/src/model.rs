@@ -341,11 +341,26 @@ pub struct TextEl {
     /// System font family (falls back to `font` if it isn't installed).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub family: Option<String>,
+    /// Font weight 100–900 (400 regular, 700 bold); faked when the family lacks it.
+    #[serde(default = "w400", skip_serializing_if = "is_w400")]
+    pub weight: u16,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub italic: bool,
+}
+
+fn w400() -> u16 {
+    400
+}
+fn is_w400(w: &u16) -> bool {
+    *w == 400
 }
 
 impl TextEl {
     pub fn outline(&self) -> Path {
-        crate::text::text_path_family(&self.text, self.size, self.family.as_deref(), self.font, self.align, self.letter_spacing)
+        if self.weight == 400 && !self.italic {
+            return crate::text::text_path_family(&self.text, self.size, self.family.as_deref(), self.font, self.align, self.letter_spacing);
+        }
+        crate::text::text_path_styled(&self.text, self.size, self.family.as_deref(), self.font, self.weight, self.italic, self.align, self.letter_spacing)
     }
 }
 
@@ -467,7 +482,7 @@ impl Element {
         Element::base(name, Matrix::IDENTITY, ElementKind::Shape(shape))
     }
     pub fn text(text: &str, size: f32, color: Color, at: Pt) -> Self {
-        Element::base("Text", Matrix::translate(at.x, at.y), ElementKind::Text(TextEl { text: text.into(), size, color, font: Default::default(), align: Default::default(), letter_spacing: 0.0, family: None }))
+        Element::base("Text", Matrix::translate(at.x, at.y), ElementKind::Text(TextEl { text: text.into(), size, color, font: Default::default(), align: Default::default(), letter_spacing: 0.0, family: None, weight: 400, italic: false }))
     }
     pub fn instance(name: &str, symbol: SymbolId, matrix: Matrix) -> Self {
         Element::base(name, matrix, ElementKind::Instance(Instance { symbol, loop_mode: LoopMode::Loop, first_frame: 0 }))

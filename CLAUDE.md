@@ -30,11 +30,11 @@ Status: ✅ in the demo · 🟡 partial · ⬜ planned
 - ✅ Stage with pasteboard, zoom/pan, document size, FPS, stage colour
 - ✅ Panels: Tools, Timeline, Properties (context-sensitive), Library (search,
   sortable columns, animated preview; fills the column or docks left), Transform
-- ✅ Scenes breadcrumb + edit-symbol mode, multiple scenes (Scene panel, Shift+F2) · ⬜ edit-in-place
+- ✅ Scenes breadcrumb + edit-symbol mode, multiple scenes (Scene panel, Shift+F2), edit in place (symbols and groups)
 - ✅ Multi-select (click, Shift+click, marquee, Select All), move/scale/rotate groups, arrow nudge,
   cut/copy/paste/paste-in-place/duplicate, Delete, Break Apart, stage right-click menu
 - ✅ Library: drag to stage, rename, duplicate, change type, delete (removes instances)
-- ✅ Rulers, guides, grid + snapping, Align panel, Info panel; native file dialogs, recent files, autosave + crash recovery
+- ✅ Rulers, guides (Edit Guides), grid + snapping (incl. Snap to Pixels), Align panel, Info panel; native file dialogs, recent files, autosave + crash recovery
 - ✅ Motion Editor (per-property graphs, key drag/retime, smooth/corner points, per-property eases)
 - ⬜ Docking/workspaces, Color & Swatches, History, preferences
 
@@ -72,7 +72,7 @@ Status: ✅ in the demo · 🟡 partial · ⬜ planned
   copy/paste, Break Apart on text and bitmaps, bitmap fills on merge shapes
 - ⬜ Toolbar gaps: Art/Pattern brushes, pressure/tilt, Width tool on merge lines,
   Asset Warp on symbols/bitmaps, camera colour filters and layer depth
-- ✅ Groups, bitmaps (PNG/JPG/GIF/BMP, animated GIF, sequences), SVG import, system fonts
+- ✅ Groups, bitmaps (PNG/JPG/GIF/BMP, animated GIF, sequences), SVG import, system fonts with styles and weights (simulated when missing)
 - ⬜ Dynamic/input text
 
 **Timeline**
@@ -92,7 +92,7 @@ Status: ✅ in the demo · 🟡 partial · ⬜ planned
 - ✅ Graphic (synced to parent timeline: Loop / Play Once / Single Frame,
   first frame), Movie Clip (own clock), Button (Up/Over/Down/Hit; Control ▸ Enable Simple Buttons)
 - ✅ Convert to Symbol (F8), New Symbol (Ctrl+F8), nested symbols, Library
-- ✅ Filters (drop shadow, blur, glow, bevel, adjust color; tweenable) and all 14 blend modes; instance names readable/settable from frame scripts
+- ✅ Filters (drop shadow, blur, glow, bevel, gradient glow, gradient bevel, adjust color; tweenable; presets) and all 14 blend modes; instance names readable/settable from frame scripts
 - ✅ Swap Symbol; colour effects None / Brightness / Tint / Advanced / Alpha
 - ⬜ 9-slice scaling, cache-as-bitmap
 
@@ -111,7 +111,7 @@ Status: ✅ in the demo · 🟡 partial · ⬜ planned
   properties and gradients all tween with Classic tweens
 
 **Output**
-- ✅ Animated GIF, PNG frame, SVG frame (same rasteriser as the stage)
+- ✅ Animated GIF, image frame (PNG / JPEG / GIF with options), SVG frame (same rasteriser as the stage)
 - ✅ PNG sequence, MP4/WebM/MOV via ffmpeg, GIF options, Publish Settings, background export jobs
 - ✅ HTML5 Canvas publish (own runtime: display lists, scripts, buttons, sounds; folder or one
   .html), sprite sheet + atlas (JSON hash/array, Starling XML), animated SVG (SMIL), Lottie JSON,

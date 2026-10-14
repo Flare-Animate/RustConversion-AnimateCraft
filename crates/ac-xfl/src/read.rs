@@ -385,6 +385,25 @@ impl Reader<'_> {
                     },
                 },
                 "AdjustColorFilter" => Filter::AdjustColor { brightness: f(x, "brightness", 0.0), contrast: f(x, "contrast", 0.0), saturation: f(x, "saturation", 0.0), hue: f(x, "hue", 0.0) },
+                tag @ ("GradientGlowFilter" | "GradientBevelFilter") => {
+                    let stops: Vec<(f32, Color)> = kids(x, "GradientEntry").map(|e| (f(e, "ratio", 0.0).clamp(0.0, 1.0), color(e, "color", "alpha", Color::rgb(0, 0, 0)))).collect();
+                    let glow = tag == "GradientGlowFilter";
+                    let kind = match x.attribute("type") {
+                        Some("outer") => BevelType::Outer,
+                        Some("full") => BevelType::Full,
+                        Some("inner") => BevelType::Inner,
+                        _ if glow => BevelType::Outer,
+                        _ => BevelType::Inner,
+                    };
+                    let (angle, distance, knockout) = (f(x, "angle", 45.0), f(x, "distance", 5.0), flag(x, "knockout"));
+                    let d = Filter::default_of(if glow { "gradient glow" } else { "gradient bevel" }).unwrap();
+                    let stops = if stops.len() >= 2 { stops } else if let Filter::GradientGlow { stops, .. } | Filter::GradientBevel { stops, .. } = d { stops } else { vec![] };
+                    if glow {
+                        Filter::GradientGlow { blur_x: bx, blur_y: by, strength, quality: q, angle, distance, knockout, kind, stops }
+                    } else {
+                        Filter::GradientBevel { blur_x: bx, blur_y: by, strength, quality: q, angle, distance, knockout, kind, stops }
+                    }
+                }
                 other => {
                     self.warn.push(format!("{other} not supported"));
                     continue;
@@ -427,7 +446,11 @@ impl Reader<'_> {
         }
         let m = matrix_of(n).concat(&Matrix::translate(f(n, "left", 0.0), f(n, "top", 0.0)));
         let mono = face.as_deref().is_some_and(|s| s.to_lowercase().contains("mono") || s.to_lowercase().contains("courier"));
-        let t = TextEl { text, size, color: col, font: if mono { ac_core::text::FontFace::Mono } else { ac_core::text::FontFace::Sans }, align, letter_spacing: ls, family: face };
+        let (family, weight, italic) = match face.as_deref() {
+            Some(f) => split_face(f),
+            None => (None, 400, false),
+        };
+        let t = TextEl { text, size, color: col, font: if mono { ac_core::text::FontFace::Mono } else { ac_core::text::FontFace::Sans }, align, letter_spacing: ls, family, weight, italic };
         Some(el(n.attribute("name").unwrap_or(""), m, ElementKind::Text(t)))
     }
 
@@ -850,4 +873,60 @@ pub(crate) fn dedup(v: Vec<String>) -> Vec<String> {
 #[allow(dead_code)]
 pub(crate) fn path_of(chains: &[(Vec<Piece>, bool)]) -> Path {
     edges::chains_path(chains)
+}
+
+/// An XFL text face ("Arial-BoldItalicMT", "TimesNewRomanPSMT", "Ubuntu Light")
+/// → (family, weight, italic).
+pub(crate) fn split_face(face: &str) -> (Option<String>, u16, bool) {
+    let (fam, style) = match face.split_once('-') {
+        Some((a, b)) => (a.to_string(), b.to_string()),
+        None => (face.to_string(), String::new()),
+    };
+    let strip = |s: &str| -> String {
+        let mut s = s.to_string();
+        for suf in ["PSMT", "MT", "PS"] {
+            if s.len() > suf.len() + 2 && s.ends_with(suf) {
+                s.truncate(s.len() - suf.len());
+                break;
+            }
+        }
+        s
+    };
+    let fam = strip(&fam);
+    // "TimesNewRoman" → "Times New Roman" (PostScript names drop the spaces)
+    let fam = if fam.contains(' ') {
+        fam
+    } else {
+        let mut out = String::new();
+        let cs: Vec<char> = fam.chars().collect();
+        for (i, c) in cs.iter().enumerate() {
+            if i > 0 && c.is_uppercase() && cs[i - 1].is_lowercase() {
+                out.push(' ');
+            }
+            out.push(*c);
+        }
+        out
+    };
+    let st = strip(&style).to_ascii_lowercase();
+    let weight = if st.contains("black") || st.contains("heavy") {
+        900
+    } else if st.contains("extrabold") || st.contains("ultrabold") {
+        800
+    } else if st.contains("semibold") || st.contains("demi") {
+        600
+    } else if st.contains("bold") {
+        700
+    } else if st.contains("medium") {
+        500
+    } else if st.contains("extralight") || st.contains("ultralight") {
+        200
+    } else if st.contains("light") {
+        300
+    } else if st.contains("thin") {
+        100
+    } else {
+        400
+    };
+    let italic = st.contains("italic") || st.contains("oblique");
+    (Some(fam).filter(|f| !f.is_empty()), weight, italic)
 }

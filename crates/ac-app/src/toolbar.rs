@@ -186,6 +186,8 @@ pub struct ToolOpts {
     pub fill2: Color32,
     pub text_size: f32,
     pub text_font: FontFace,
+    pub text_bold: bool,
+    pub text_italic: bool,
     pub text_align: Align,
     pub snap: bool,
     /// Object Drawing (J): new shapes are separate drawing objects. Off =
@@ -230,6 +232,8 @@ impl Default for ToolOpts {
             fill2: Color32::WHITE,
             text_size: 28.0,
             text_font: FontFace::Sans,
+            text_bold: false,
+            text_italic: false,
             text_align: Align::Left,
             snap: true,
             object_draw: false,

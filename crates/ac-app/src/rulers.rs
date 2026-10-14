@@ -7,7 +7,6 @@ use ac_core::{pt, Pt};
 use eframe::egui::{self, pos2, vec2, Align2, Color32, FontId, Pos2, Rect, Sense, Stroke};
 
 pub const RULER: f32 = 18.0;
-const GUIDE: Color32 = Color32::from_rgb(0x40, 0xD0, 0xE0);
 
 pub struct ViewOpts {
     pub rulers: bool,
@@ -19,11 +18,32 @@ pub struct ViewOpts {
     pub lock_guides: bool,
     pub snap_guides: bool,
     pub edit_grid_open: bool,
+    /// View › Guides › Edit Guides…
+    pub edit_guides_open: bool,
+    pub guide_color: Color32,
+    /// Snap accuracy in screen px (Animate: Must be close 3 / Normal 6 / Can be distant 12).
+    pub snap_px: f32,
+    /// View › Snapping › Snap to Pixels: drawing and moving land on whole pixels.
+    pub snap_pixels: bool,
 }
 
 impl Default for ViewOpts {
     fn default() -> Self {
-        ViewOpts { rulers: false, grid: false, snap_grid: false, grid_size: 10.0, grid_color: Color32::from_rgba_unmultiplied(0x80, 0x80, 0x80, 90), guides: true, lock_guides: false, snap_guides: true, edit_grid_open: false }
+        ViewOpts {
+            rulers: false,
+            grid: false,
+            snap_grid: false,
+            grid_size: 10.0,
+            grid_color: Color32::from_rgba_unmultiplied(0x80, 0x80, 0x80, 90),
+            guides: true,
+            lock_guides: false,
+            snap_guides: true,
+            edit_grid_open: false,
+            edit_guides_open: false,
+            guide_color: Color32::from_rgb(0x40, 0xD0, 0xE0),
+            snap_px: 6.0,
+            snap_pixels: false,
+        }
     }
 }
 
@@ -140,7 +160,7 @@ pub fn draw(app: &App, painter: &egui::Painter, stage: Rect) {
         }
     }
     if app.view.guides {
-        let st = Stroke::new(1.0_f32, GUIDE);
+        let st = Stroke::new(1.0_f32, app.view.guide_color);
         for x in &app.ed.doc.guides.x {
             painter.line_segment([app.to_screen(stage, pt(*x, -1e5)), app.to_screen(stage, pt(*x, 1e5))], st);
         }
@@ -182,7 +202,7 @@ impl App {
 
     /// Snap one coordinate to guides / grid (within 6 screen px).
     pub(crate) fn snap_scalar(&self, v: f32, vertical: bool, objects_too: bool) -> f32 {
-        let thr = 6.0 / self.zoom;
+        let thr = self.view.snap_px / self.zoom;
         let mut best: Option<f32> = None;
         let mut consider = |t: f32| {
             if (t - v).abs() <= thr && best.map(|b| (t - v).abs() < (b - v).abs()).unwrap_or(true) {
@@ -199,7 +219,7 @@ impl App {
             consider((v / g).round() * g);
         }
         let _ = objects_too;
-        best.unwrap_or(v)
+        best.unwrap_or(if self.view.snap_pixels { v.round() } else { v })
     }
 
     /// Snap a drawing point to guides and the grid.
@@ -231,6 +251,50 @@ impl App {
                 y += g;
             }
         }
+    }
+}
+
+/// View › Guides › Edit Guides…
+pub fn edit_guides_window(app: &mut App, ctx: &egui::Context) {
+    if !app.view.edit_guides_open {
+        return;
+    }
+    let mut open = true;
+    let mut clear = false;
+    egui::Window::new("Guides").open(&mut open).resizable(false).show(ctx, |ui| {
+        let v = &mut app.view;
+        ui.horizontal(|ui| {
+            ui.label("Colour");
+            ui.color_edit_button_srgba(&mut v.guide_color);
+        });
+        ui.checkbox(&mut v.guides, "Show guides");
+        ui.checkbox(&mut v.snap_guides, "Snap to guides");
+        ui.checkbox(&mut v.lock_guides, "Lock guides");
+        ui.horizontal(|ui| {
+            ui.label("Snap accuracy");
+            let name = |px: f32| if px <= 3.0 { "Must be close" } else if px >= 12.0 { "Can be distant" } else { "Normal" };
+            egui::ComboBox::from_id_salt("snap-acc").selected_text(name(v.snap_px)).show_ui(ui, |ui| {
+                for px in [3.0, 6.0, 12.0] {
+                    ui.selectable_value(&mut v.snap_px, px, name(px));
+                }
+            });
+        });
+        ui.horizontal(|ui| {
+            if ui.button("Clear All").clicked() {
+                clear = true;
+            }
+            if ui.button("Restore defaults").clicked() {
+                let d = ViewOpts::default();
+                (v.guide_color, v.guides, v.snap_guides, v.lock_guides, v.snap_px) = (d.guide_color, d.guides, d.snap_guides, d.lock_guides, d.snap_px);
+            }
+        });
+        ui.label(egui::RichText::new(format!("{} vertical, {} horizontal guide(s). Drag from a ruler to add one, drag it back to remove it.", app.ed.doc.guides.x.len(), app.ed.doc.guides.y.len())).small().color(Color32::from_gray(150)));
+    });
+    if clear {
+        app.ed.clear_guides();
+    }
+    if !open {
+        app.view.edit_guides_open = false;
     }
 }
 

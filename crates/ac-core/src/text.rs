@@ -35,7 +35,8 @@ fn font(face: FontFace) -> &'static FontRef<'static> {
     }
 }
 
-type Loader = fn(&str) -> Option<Vec<u8>>;
+/// Font loader: (family, weight 100–900, italic) → (font file, its weight, its italic).
+type Loader = fn(&str, u16, bool) -> Option<(Vec<u8>, u16, bool)>;
 static LOADER: OnceLock<Loader> = OnceLock::new();
 
 /// Let the host provide font files by family name (the desktop app and CLI
@@ -46,14 +47,52 @@ pub fn set_font_loader(f: Loader) {
 
 /// A font by family name: explicitly registered, or found by the loader.
 pub fn family_font(family: &str) -> Option<Arc<FontVec>> {
-    static CACHE: OnceLock<Mutex<HashMap<String, Option<Arc<FontVec>>>>> = OnceLock::new();
+    styled_font(family, 400, false).map(|(f, _, _)| f)
+}
+
+/// The closest face of `family` to the weight/italic asked for, with the
+/// weight and italic it actually has.
+pub fn styled_font(family: &str, weight: u16, italic: bool) -> Option<(Arc<FontVec>, u16, bool)> {
+    type Cache = Mutex<HashMap<(String, u16, bool), Option<(Arc<FontVec>, u16, bool)>>>;
+    static CACHE: OnceLock<Cache> = OnceLock::new();
     let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
-    if let Some(f) = cache.lock().ok()?.get(family) {
+    let key = (family.to_string(), weight, italic);
+    if let Some(f) = cache.lock().ok()?.get(&key) {
         return f.clone();
     }
-    let f = LOADER.get().and_then(|l| l(family)).and_then(|b| FontVec::try_from_vec(b).ok()).map(Arc::new);
-    cache.lock().ok()?.insert(family.to_string(), f.clone());
+    let f = LOADER.get().and_then(|l| l(family, weight, italic)).and_then(|(b, w, i)| FontVec::try_from_vec(b).ok().map(|f| (Arc::new(f), w, i)));
+    cache.lock().ok()?.insert(key, f.clone());
     f
+}
+
+/// Outline with a weight and italic: uses the matching face when the family
+/// has one, otherwise fakes them (bold grows the outline, italic slants it).
+#[allow(clippy::too_many_arguments)]
+pub fn text_path_styled(text: &str, size: f32, family: Option<&str>, face: FontFace, weight: u16, italic: bool, align: Align, letter_spacing: f32) -> Path {
+    let (path, have_w, have_i, ascent) = match family.and_then(|fam| styled_font(fam, weight, italic)) {
+        Some((f, w, i)) => (outline_with(&*f, text, size, align, letter_spacing), w, i, f.as_scaled(size.max(1.0)).ascent()),
+        None => {
+            let base_w = if face == FontFace::Sans { 300 } else { 400 };
+            (text_path(text, size, face, align, letter_spacing), base_w, false, font(face).as_scaled(size.max(1.0)).ascent())
+        }
+    };
+    let mut path = path;
+    let extra = weight as f32 - have_w as f32;
+    if extra >= 150.0 {
+        // faux bold: grow the glyphs (about 3.5% of the size from regular to bold)
+        let r = size * 0.035 * (extra / 300.0).min(1.5) / 2.0;
+        let polys = crate::merge::path_polygons(&path);
+        let grown = crate::merge::grow_polygons(&polys, r);
+        if !grown.is_empty() {
+            path = crate::merge::polys_path(&grown);
+        }
+    }
+    if italic && !have_i {
+        // faux italic: slant 12° about the first baseline
+        let k = 12f32.to_radians().tan();
+        path = path.transformed(&crate::geom::Matrix { a: 1.0, b: 0.0, c: -k, d: 1.0, tx: k * ascent, ty: 0.0 });
+    }
+    path
 }
 
 /// Outline `text` with its top-left at (0, 0). Lines split on '\n'.

@@ -972,6 +972,20 @@ pub fn bool_polys(a: &[Vec<Pt>], b: &[Vec<Pt>], op: BoolOp) -> Vec<Vec<Pt>> {
     r.iter().flat_map(contours_of).collect()
 }
 
+/// Grow filled polygons outward by `r` (faux bold text).
+pub fn grow_polygons(polys: &[Vec<Pt>], r: f32) -> Vec<Vec<Pt>> {
+    use i_overlay::mesh::float::outline::offset::OutlineOffset;
+    use i_overlay::mesh::float::style::OutlineStyle;
+    let st = OutlineStyle::new(r as f64);
+    let mut out = vec![];
+    for f in &normalize(polys) {
+        for s in f.outline(&st) {
+            out.extend(contours_of(&s));
+        }
+    }
+    out
+}
+
 /// Contours → a closed straight-segment path.
 pub fn polys_path(polys: &[Vec<Pt>]) -> Path {
     FillRegion { fill: None, gradient: None, bitmap: None, contours: polys.to_vec() }.path()

@@ -237,3 +237,40 @@ fn artistic_strokes_render_as_geometry() {
         assert!(n > solid / 10 && n != solid, "{d:?}: {n} px vs solid {solid}");
     }
 }
+
+#[test]
+fn still_images_in_three_formats() {
+    use ac_render::{still_bytes, StillFormat};
+    let sh = Shape::new(Path::rect(0.0, 0.0, 100.0, 100.0), Some(Color::rgb(200, 30, 30)), None);
+    let doc = doc_with(vec![layer("a", vec![Element::shape("", sh)])]);
+    let png = still_bytes(&doc, 0, 0.5, StillFormat::Png { transparent: true }).unwrap();
+    assert_eq!(&png[1..4], b"PNG");
+    let jpg = still_bytes(&doc, 0, 0.5, StillFormat::Jpeg { quality: 90 }).unwrap();
+    assert_eq!(&jpg[..2], &[0xFF, 0xD8]);
+    let small = still_bytes(&doc, 0, 0.5, StillFormat::Jpeg { quality: 10 }).unwrap();
+    assert!(small.len() < jpg.len(), "lower quality, smaller file");
+    let gif = still_bytes(&doc, 0, 0.5, StillFormat::Gif { colors: 4, transparent: true }).unwrap();
+    assert_eq!(&gif[..3], b"GIF");
+    let d = gif::DecodeOptions::new().read_info(std::io::Cursor::new(&gif)).unwrap();
+    assert!(d.global_palette().unwrap().len() <= 4 * 3, "palette limited to 4 colours");
+}
+
+#[test]
+fn gradient_glow_and_bevel_use_their_ramp() {
+    let mk = |f: Filter| {
+        let mut e = Element::shape("", Shape::new(Path::rect(60.0, 60.0, 80.0, 80.0), Some(Color::rgb(128, 128, 128)), None));
+        e.filters = vec![f];
+        doc_with(vec![layer("a", vec![e])])
+    };
+    // outer glow, transparent → pure green ramp, no offset: just outside the edge is greenish
+    let glow = Filter::GradientGlow { blur_x: 10.0, blur_y: 10.0, strength: 200.0, quality: 1, angle: 0.0, distance: 0.0, knockout: false, kind: BevelType::Outer, stops: vec![(0.0, Color { r: 0, g: 255, b: 0, a: 0 }), (1.0, Color::rgb(0, 255, 0))] };
+    let p = px(&mk(glow), 0, 57, 100);
+    assert!(p[1] as i32 - p[0] as i32 > 80 && p[1] as i32 - p[2] as i32 > 80, "green glow outside (over the white stage): {p:?}");
+    let inside = px(&mk(Filter::default_of("gradient glow").unwrap()), 0, 100, 100);
+    assert_eq!(&inside[..3], &[128, 128, 128], "outer glow leaves the object alone");
+    // inner bevel lit from the top-left (angle 45): top-left edge light, bottom-right dark
+    let bevel = Filter::GradientBevel { blur_x: 6.0, blur_y: 6.0, strength: 200.0, quality: 1, angle: 45.0, distance: 4.0, knockout: false, kind: BevelType::Inner, stops: vec![(0.0, Color::rgb(255, 255, 255)), (0.5, Color { r: 0, g: 0, b: 0, a: 0 }), (1.0, Color::rgb(0, 0, 0))] };
+    let d = mk(bevel);
+    let (tl, br) = (px(&d, 0, 62, 62), px(&d, 0, 137, 137));
+    assert!(tl[0] > 150 && br[0] < 100, "light {tl:?} dark {br:?}");
+}

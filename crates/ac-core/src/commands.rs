@@ -73,7 +73,7 @@ cmds! {
     "draw.line", "x1, y1, x2, y2, stroke?, stroke_width?", "Straight line";
     "draw.polystar", "cx, cy, r, sides? (5), star? (false), inner? (0.5), fill?, stroke?", "Polygon or star";
     "draw.path", "points [[x,y]...], closed?, smooth?, fill?, stroke?, stroke_width?", "Path through points";
-    "draw.text", "x, y, text, size? (24), color?, font? ('sans'|'mono'|system family), align?", "Static text";
+    "draw.text", "x, y, text, size? (24), color?, font? ('sans'|'mono'|system family), align?, weight? (100–900), bold?, italic?", "Static text";
     "select.all", "", "Select everything editable on the current frame";
     "select.none", "", "Clear the selection";
     "select.layer", "layer?", "Select every object on one layer (default: current) at the current frame";
@@ -88,7 +88,7 @@ cmds! {
     "selection.set_position", "x, y", "Move the selection's top-left to x, y";
     "selection.scale", "sx, sy?", "Scale around the selection centre";
     "selection.rotate", "degrees", "Rotate around the selection centre";
-    "selection.set", "fill?, stroke?, stroke_width?, alpha?, tint?, tint_amount?, name?, text?, size?", "Change properties of every selected object";
+    "selection.set", "fill?, stroke?, stroke_width?, alpha?, tint?, tint_amount?, name?, text?, size?, weight? (100–900), bold?, italic?", "Change properties of every selected object";
     "selection.delete", "", "Delete the selection";
     "selection.duplicate", "", "Duplicate (offset by 10 px)";
     "selection.to_symbol", "name, kind? ('graphic'|'movieclip'|'button')", "F8: convert to symbol; returns its id";
@@ -126,7 +126,7 @@ cmds! {
     "selection.group", "", "Ctrl+G: group the selection (per layer)";
     "selection.ungroup", "", "Ctrl+Shift+G: ungroup";
     "selection.align", "op ('left'|'hcenter'|'right'|'top'|'vcenter'|'bottom'|'dist_left'|'dist_hcenter'|'dist_right'|'dist_top'|'dist_vcenter'|'dist_bottom'|'match_width'|'match_height'|'match_size'|'space_h'|'space_v'), to_stage?", "Align panel";
-    "selection.add_filter", "type ('drop_shadow'|'blur'|'glow'|'bevel'|'adjust_color'), …filter fields (blur_x, blur_y, strength, angle, distance, color, brightness, contrast, saturation, hue…)", "Add a filter to the selected objects";
+    "selection.add_filter", "type ('drop_shadow'|'blur'|'glow'|'bevel'|'gradient_glow'|'gradient_bevel'|'adjust_color'), …filter fields (blur_x, blur_y, strength, angle, distance, color, kind, stops [[pos, '#RRGGBBAA']…], brightness, contrast, saturation, hue…)", "Add a filter to the selected objects";
     "selection.clear_filters", "", "Remove all filters";
     "selection.set_blend", "mode ('normal'|'multiply'|'screen'|…)", "Blend mode";
     "import.image", "path (PNG), x?, y?, place? (true)", "Import a PNG into the library (and place it)";
@@ -141,6 +141,8 @@ cmds! {
     "library.delete", "symbol", "Delete a library item and its instances";
     "symbol.edit", "symbol", "Enter a symbol's timeline";
     "symbol.exit", "", "Return to the main scene";
+    "group.edit", "", "Edit the selected group (its objects open like a symbol; group.exit closes it)";
+    "group.exit", "", "Close the innermost group being edited";
     "edit.undo", "", "Undo";
     "edit.redo", "", "Redo";
 }
@@ -772,7 +774,7 @@ pub fn execute(ed: &mut Editor, id: &str, a: &Value) -> Result<Value, String> {
         "selection.add_filter" => {
             need_selection(ed)?;
             let ty = string(a, "type").ok_or("missing 'type'")?;
-            let mut f = crate::fx::Filter::default_of(ty).ok_or_else(|| format!("unknown filter '{ty}' (drop_shadow, blur, glow, bevel, adjust_color)"))?;
+            let mut f = crate::fx::Filter::default_of(ty).ok_or_else(|| format!("unknown filter '{ty}' (drop_shadow, blur, glow, bevel, gradient_glow, gradient_bevel, adjust_color)"))?;
             // overlay given fields onto the defaults
             let mut v = serde_json::to_value(&f).map_err(|e| e.to_string())?;
             if let (Some(obj), Some(args)) = (v.as_object_mut(), a.as_object()) {
@@ -782,6 +784,22 @@ pub fn execute(ed: &mut Editor, id: &str, a: &Value) -> Result<Value, String> {
                     }
                     let val = match (k.as_str(), val.as_str().and_then(Color::from_hex)) {
                         ("color" | "shadow" | "highlight", Some(c)) => serde_json::to_value(c).map_err(|e| e.to_string())?,
+                        // gradient filters: [[position 0..1, "#RRGGBBAA"], …]
+                        ("stops", _) => {
+                            let mut st: Vec<(f32, Color)> = vec![];
+                            for s in val.as_array().ok_or("stops: [[position, \"#RRGGBBAA\"], …]")? {
+                                let pos = s.get(0).and_then(|v| v.as_f64()).ok_or("stop position")? as f32;
+                                let c = s.get(1).and_then(|v| v.as_str()).and_then(Color::from_hex).ok_or("stop colour")?;
+                                st.push((pos.clamp(0.0, 1.0), c));
+                            }
+                            st.sort_by(|a, b| a.0.total_cmp(&b.0));
+                            serde_json::to_value(st).map_err(|e| e.to_string())?
+                        }
+                        ("kind", _) => match val.as_str().map(|x| x.to_ascii_lowercase()).as_deref() {
+                            Some("outer") => json!("Outer"),
+                            Some("full") => json!("Full"),
+                            _ => json!("Inner"),
+                        },
                         _ => val.clone(),
                     };
                     obj.insert(k.clone(), val);
@@ -830,6 +848,10 @@ pub fn execute(ed: &mut Editor, id: &str, a: &Value) -> Result<Value, String> {
                     Some("right") => crate::text::Align::Right,
                     _ => crate::text::Align::Left,
                 };
+                if let Some(w) = text_weight(a) {
+                    t.weight = w;
+                }
+                t.italic = boolean(a, "italic").unwrap_or(false);
             }
             let s = ed.add_element(el).ok_or("current layer is locked or hidden")?;
             Ok(json!({ "layer": s.layer + 1, "index": s.element }))
@@ -999,6 +1021,12 @@ pub fn execute(ed: &mut Editor, id: &str, a: &Value) -> Result<Value, String> {
                         }
                         if let Some(v) = size {
                             t.size = v.max(1.0);
+                        }
+                        if let Some(w) = text_weight(a) {
+                            t.weight = w;
+                        }
+                        if let Some(i) = boolean(a, "italic") {
+                            t.italic = i;
                         }
                     }
                     ElementKind::Instance(_) | ElementKind::Group(_) | ElementKind::Bitmap(_) => {}
@@ -1448,6 +1476,19 @@ pub fn execute(ed: &mut Editor, id: &str, a: &Value) -> Result<Value, String> {
             ed.enter_symbol(id);
             Ok(Value::Null)
         }
+        "group.edit" => {
+            let s = *ed.selection.first().ok_or("select a group first")?;
+            if !ed.enter_group(s) {
+                return Err("the selection is not an editable group".into());
+            }
+            Ok(Value::Null)
+        }
+        "group.exit" => {
+            if !ed.exit_group() {
+                return Err("no group is being edited".into());
+            }
+            Ok(Value::Null)
+        }
         "symbol.exit" => {
             ed.exit_to_scene();
             Ok(Value::Null)
@@ -1465,6 +1506,11 @@ pub fn reference() -> String {
         s += &format!("{:<32} {:<60} {}\n", c.id, c.args, c.summary);
     }
     s
+}
+
+/// `weight: 100…900` or `bold: true/false` (700 / 400).
+fn text_weight(a: &Value) -> Option<u16> {
+    num(a, "weight").map(|w| (w.clamp(100.0, 900.0) / 100.0).round() as u16 * 100).or_else(|| boolean(a, "bold").map(|b| if b { 700 } else { 400 }))
 }
 
 fn prop_arg(a: &Value) -> Result<crate::motion::Prop, String> {

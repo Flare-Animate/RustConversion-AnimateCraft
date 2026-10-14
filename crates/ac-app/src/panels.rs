@@ -494,6 +494,12 @@ fn object_properties(app: &mut App, ui: &mut egui::Ui) {
                     }
                 });
                 ui.horizontal(|ui| {
+                    ui.label("Style");
+                    if let Some((w, i)) = font_style_picker(ui, t.family.as_deref(), t.weight, t.italic) {
+                        app.ed.modify_selected("Font Style", move |e| if let ElementKind::Text(t) = &mut e.kind { t.weight = w; t.italic = i });
+                    }
+                });
+                ui.horizontal(|ui| {
                     for (a, l) in [(Align::Left, "⬅"), (Align::Center, "↔"), (Align::Right, "➡")] {
                         if ui.selectable_value(&mut align, a, l).changed() {
                             app.ed.modify_selected("Align", move |e| if let ElementKind::Text(t) = &mut e.kind { t.align = align });
@@ -537,7 +543,7 @@ fn object_properties(app: &mut App, ui: &mut egui::Ui) {
                     let mut pick = None;
                     egui::ComboBox::from_id_salt("swap-symbol").selected_text(cur).show_ui(ui, |ui| {
                         for sym in &app.ed.doc.library {
-                            if Some(sym.id) == app.ed.editing {
+                            if Some(sym.id) == app.ed.editing || sym.name == ac_core::editor::GROUP_EDIT_NAME {
                                 continue; // a symbol can't contain itself
                             }
                             if ui.selectable_label(sym.id == id, &sym.name).clicked() && sym.id != id {
@@ -1166,7 +1172,7 @@ fn library(app: &mut App, ui: &mut egui::Ui) {
     let total_h = ui.available_height();
     ui.horizontal(|ui| {
         ui.add(egui::TextEdit::singleline(&mut app.lib.search).hint_text("🔍 Search library").desired_width(ui.available_width() - 70.0));
-        ui.label(RichText::new(format!("{} items", app.ed.doc.library.len() + app.ed.doc.bitmaps.len() + app.ed.doc.sounds.len())).small().color(Color32::from_gray(150)));
+        ui.label(RichText::new(format!("{} items", app.ed.doc.library.iter().filter(|s| s.name != ac_core::editor::GROUP_EDIT_NAME).count() + app.ed.doc.bitmaps.len() + app.ed.doc.sounds.len())).small().color(Color32::from_gray(150)));
     });
     // Preview with play controls
     let prev_h = (total_h * 0.32).clamp(90.0, 260.0);
@@ -1226,7 +1232,7 @@ fn library(app: &mut App, ui: &mut egui::Ui) {
         .doc
         .library
         .iter()
-        .filter(|s| q.is_empty() || s.name.to_lowercase().contains(&q))
+        .filter(|s| s.name != ac_core::editor::GROUP_EDIT_NAME && (q.is_empty() || s.name.to_lowercase().contains(&q)))
         .map(|s| (s.id, s.name.clone(), s.kind, s.timeline.frame_count(), app.ed.symbol_usage(s.id)))
         .collect();
     let kind_name = |k: SymbolKind| match k { SymbolKind::Graphic => "Graphic", SymbolKind::MovieClip => "Movie Clip", SymbolKind::Button => "Button" };
@@ -1242,7 +1248,7 @@ fn library(app: &mut App, ui: &mut egui::Ui) {
     let list_h = (ui.available_height() - 34.0).max(60.0);
     egui::ScrollArea::vertical().id_salt("lib-list").max_height(list_h).auto_shrink([false, false]).show(ui, |ui| {
         if syms.is_empty() && app.ed.doc.bitmaps.is_empty() && app.ed.doc.sounds.is_empty() {
-            hint(ui, if app.ed.doc.library.is_empty() { "Empty. Select objects and press F8 to make a symbol." } else { "No items match the search." });
+            hint(ui, if app.ed.doc.library.iter().all(|s| s.name == ac_core::editor::GROUP_EDIT_NAME) { "Empty. Select objects and press F8 to make a symbol." } else { "No items match the search." });
         }
         let sounds: Vec<(u32, String, usize)> = app.ed.doc.sounds.iter().filter(|s| q.is_empty() || s.name.to_lowercase().contains(&q)).map(|s| (s.id, s.name.clone(), app.ed.sound_usage(s.id))).collect();
         for (id, name, uses) in sounds {
@@ -1577,7 +1583,11 @@ fn tool_properties(app: &mut App, ui: &mut egui::Ui) {
                 ui.selectable_value(&mut o.text_align, Align::Center, "↔");
                 ui.selectable_value(&mut o.text_align, Align::Right, "➡");
             });
-            hint(ui, "Text uses the fill colour.");
+            ui.horizontal(|ui| {
+                ui.toggle_value(&mut o.text_bold, RichText::new("B").strong());
+                ui.toggle_value(&mut o.text_italic, RichText::new("I").italics());
+            });
+            hint(ui, "Text uses the fill colour. Bold and italic use the family's own faces when it has them (Properties › Object › Style lists them).");
         }
         Tool::Select | Tool::Subselect => {
             section(ui, "Snapping");
@@ -1912,6 +1922,30 @@ fn font_picker(ui: &mut egui::Ui, search: &mut String, family: Option<&str>, fac
     picked
 }
 
+/// Style dropdown for a text family: the faces it has, plus simulated Bold /
+/// Italic when it lacks them. Returns the picked (weight, italic).
+fn font_style_picker(ui: &mut egui::Ui, family: Option<&str>, weight: u16, italic: bool) -> Option<(u16, bool)> {
+    let mut opts: Vec<(String, u16, bool)> = family.map(ac_render::fonts::styles).unwrap_or_default();
+    if opts.is_empty() {
+        opts.push(("Regular".into(), 400, false));
+    }
+    for (w, i) in [(400, false), (700, false), (400, true), (700, true)] {
+        if !opts.iter().any(|o| o.1 == w && o.2 == i) && !opts.iter().any(|o| (o.1 as i32 - w as i32).abs() < 100 && o.2 == i) {
+            opts.push((format!("{} (simulated)", ac_render::fonts::style_name(w, i)), w, i));
+        }
+    }
+    let cur = opts.iter().find(|o| o.1 == weight && o.2 == italic).map(|o| o.0.clone()).unwrap_or_else(|| ac_render::fonts::style_name(weight, italic));
+    let mut pick = None;
+    egui::ComboBox::from_id_salt("font-style").selected_text(cur).show_ui(ui, |ui| {
+        for (name, w, i) in &opts {
+            if ui.selectable_label(*w == weight && *i == italic, name).clicked() {
+                pick = Some((*w, *i));
+            }
+        }
+    });
+    pick
+}
+
 /// Properties › Filters and Blending (applies to all selected objects).
 fn filters_section(app: &mut App, ui: &mut egui::Ui, el: &Element) {
     section(ui, "Filters and blending");
@@ -2008,6 +2042,70 @@ fn filters_section(app: &mut App, ui: &mut egui::Ui, el: &Element) {
                     ui.end_row();
                     quality_row(ui, quality, &mut changed);
                 }
+                Filter::GradientGlow { blur_x, blur_y, strength, quality, angle, distance, knockout, kind, stops } | Filter::GradientBevel { blur_x, blur_y, strength, quality, angle, distance, knockout, kind, stops } => {
+                    track(dv(ui, "Blur X", blur_x, 0.0, 255.0, " px"), &mut changed);
+                    track(dv(ui, "Blur Y", blur_y, 0.0, 255.0, " px"), &mut changed);
+                    track(dv(ui, "Strength", strength, 0.0, 1000.0, "%"), &mut changed);
+                    track(dv(ui, "Angle", angle, -360.0, 360.0, "°"), &mut changed);
+                    track(dv(ui, "Distance", distance, -255.0, 255.0, " px"), &mut changed);
+                    ui.label("");
+                    changed |= ui.checkbox(knockout, "Knockout").changed();
+                    ui.end_row();
+                    ui.label("Type");
+                    ui.horizontal(|ui| {
+                        for (b, l) in [(ac_core::BevelType::Inner, "Inner"), (ac_core::BevelType::Outer, "Outer"), (ac_core::BevelType::Full, "Full")] {
+                            changed |= ui.selectable_value(kind, b, l).changed();
+                        }
+                    });
+                    ui.end_row();
+                    ui.label("Gradient");
+                    ui.vertical(|ui| {
+                        // the ramp, then one row per stop (position, colour with alpha)
+                        let (r, _) = ui.allocate_exact_size(egui::vec2(150.0, 12.0), egui::Sense::hover());
+                        let p = ui.painter_at(r);
+                        for i in 0..50 {
+                            let t = i as f32 / 49.0;
+                            let c = ac_core::fx::ramp(stops, t);
+                            let x0 = r.left() + r.width() * i as f32 / 50.0;
+                            let cell = egui::Rect::from_min_max(egui::pos2(x0, r.top()), egui::pos2(x0 + r.width() / 50.0 + 0.5, r.bottom()));
+                            let checker = if (i / 3) % 2 == 0 { Color32::from_gray(90) } else { Color32::from_gray(140) };
+                            p.rect_filled(cell, 0.0, checker);
+                            p.rect_filled(cell, 0.0, Color32::from_rgba_unmultiplied(c.r, c.g, c.b, c.a));
+                        }
+                        let mut del = None;
+                        let n = stops.len();
+                        for (i, (pos, c)) in stops.iter_mut().enumerate() {
+                            ui.horizontal(|ui| {
+                                let mut pct = *pos * 100.0;
+                                let r = ui.add(egui::DragValue::new(&mut pct).range(0.0..=100.0).speed(0.5).suffix("%").max_decimals(0));
+                                if r.changed() {
+                                    *pos = pct / 100.0;
+                                }
+                                track(r, &mut changed);
+                                let mut c32v = Color32::from_rgba_unmultiplied(c.r, c.g, c.b, c.a);
+                                if egui::color_picker::color_edit_button_srgba(ui, &mut c32v, egui::color_picker::Alpha::OnlyBlend).changed() {
+                                    let [r, g, b, a] = c32v.to_srgba_unmultiplied();
+                                    *c = ac_core::Color { r, g, b, a };
+                                    changed = true;
+                                }
+                                if n > 2 && ui.small_button("✕").clicked() {
+                                    del = Some(i);
+                                }
+                            });
+                        }
+                        if let Some(i) = del {
+                            stops.remove(i);
+                            changed = true;
+                        }
+                        if ui.small_button("Add colour").clicked() {
+                            stops.push((0.5, ac_core::fx::ramp(stops, 0.5)));
+                            changed = true;
+                        }
+                        stops.sort_by(|a, b| a.0.total_cmp(&b.0));
+                    });
+                    ui.end_row();
+                    quality_row(ui, quality, &mut changed);
+                }
                 Filter::AdjustColor { brightness, contrast, saturation, hue } => {
                     track(dv(ui, "Brightness", brightness, -100.0, 100.0, ""), &mut changed);
                     track(dv(ui, "Contrast", contrast, -100.0, 100.0, ""), &mut changed);
@@ -2044,6 +2142,41 @@ fn filters_section(app: &mut App, ui: &mut egui::Ui, el: &Element) {
             changed = true;
             label = "Remove Filters";
         }
+        ui.menu_button("Presets", |ui| {
+            let presets = app.settings.filter_presets.clone();
+            if presets.is_empty() {
+                ui.label(RichText::new("No presets yet").small().color(Color32::from_gray(150)));
+            }
+            for (name, fs) in &presets {
+                ui.horizontal(|ui| {
+                    if ui.button(name).on_hover_text("Apply: adds these filters").clicked() {
+                        list.extend(fs.iter().cloned());
+                        changed = true;
+                        label = "Apply Filter Preset";
+                        ui.close_menu();
+                    }
+                    if ui.small_button("✕").on_hover_text("Delete preset").clicked() {
+                        app.settings.filter_presets.retain(|(n, _)| n != name);
+                        app.settings.save();
+                    }
+                });
+            }
+            ui.separator();
+            ui.add_enabled_ui(!list.is_empty(), |ui| {
+                ui.horizontal(|ui| {
+                    ui.add(egui::TextEdit::singleline(&mut app.preset_name).hint_text("Preset name").desired_width(110.0));
+                    if ui.add_enabled(!app.preset_name.trim().is_empty(), egui::Button::new("Save As")).clicked() {
+                        let name = app.preset_name.trim().to_string();
+                        app.settings.filter_presets.retain(|(n, _)| *n != name);
+                        app.settings.filter_presets.push((name.clone(), list.clone()));
+                        app.settings.save();
+                        app.status = format!("Saved filter preset '{name}'");
+                        app.preset_name.clear();
+                        ui.close_menu();
+                    }
+                });
+            });
+        });
     });
     if stopped {
         app.prop_dragging = false;

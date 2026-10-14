@@ -33,7 +33,7 @@ impl FileAction {
             FileAction::Open => "Open document",
             FileAction::Save => "Save document as",
             FileAction::ExportGif => "Export animated GIF",
-            FileAction::ExportPng => "Export current frame as PNG",
+            FileAction::ExportPng => "Export current frame as an image (.png, .jpg or .gif)",
             FileAction::ExportSvg => "Export current frame as SVG",
             FileAction::ExportPngSequence => "Export PNG sequence (choose a folder)",
             FileAction::ExportVideo => "Export video (MP4 / WebM / MOV)",
@@ -75,7 +75,7 @@ impl FileAction {
             FileAction::ExportAnimatedSvg => ("SVG", &["svg"]),
             FileAction::ExportLottie => ("Lottie JSON", &["json"]),
             FileAction::ExportGif => ("Animated GIF", &["gif"]),
-            FileAction::ExportPng => ("PNG image", &["png"]),
+            FileAction::ExportPng => ("Image", &["png", "jpg", "jpeg", "gif"]),
             FileAction::ExportSvg | FileAction::ImportSvg => ("SVG", &["svg"]),
             FileAction::ExportPngSequence => ("Folder", &[]),
             FileAction::ExportVideo => ("Video", &["mp4", "webm", "mov"]),
@@ -117,6 +117,9 @@ pub(crate) struct Settings {
     pub last_dir: Option<String>,
     #[serde(default)]
     pub library_left: bool,
+    /// Properties › Filters › Presets: named filter lists.
+    #[serde(default)]
+    pub filter_presets: Vec<(String, Vec<ac_core::Filter>)>,
 }
 
 fn app_dir(base: Option<PathBuf>) -> Option<PathBuf> {
@@ -187,7 +190,10 @@ impl App {
 
     /// Start a file action: native dialog when available, typed path otherwise.
     pub(crate) fn file(&mut self, action: FileAction) {
-        let name = action.default_name(&self.doc_name());
+        let mut name = action.default_name(&self.doc_name());
+        if action == FileAction::ExportPng {
+            name = format!("{}.{}", self.doc_name(), ["png", "jpg", "gif"][self.publish.image_format as usize % 3]);
+        }
         if !native_dialogs() {
             self.dialog = Dialog::Path { title: action.title().into(), path: if name.is_empty() { "untitled.acx".into() } else { name }, action };
             return;
@@ -308,7 +314,10 @@ impl App {
                 clear_recovery();
                 format!("Saved {}", std::fs::canonicalize(p).map(|c| c.display().to_string()).unwrap_or(path.into()))
             }),
-            FileAction::ExportPng => ac_render::export_png(&self.ed.doc, self.ed.frame, 2.0, p).map(|_| format!("Exported frame {} to {path}", self.ed.frame + 1)),
+            FileAction::ExportPng => {
+                let fmt = self.publish.still_format(p.extension().and_then(|e| e.to_str()));
+                ac_render::export_still(&self.ed.doc, self.ed.frame, self.publish.scale.clamp(0.05, 8.0), fmt, p).map(|_| format!("Exported frame {} to {path}", self.ed.frame + 1))
+            }
             FileAction::ExportSvg => std::fs::write(p, ac_render::export_svg(&self.ed.doc, self.ed.frame)).map_err(|e| e.to_string()).map(|_| format!("Exported SVG to {path}")),
             other => crate::publish::run_file_action(self, other, path),
         };

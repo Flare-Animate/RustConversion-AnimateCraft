@@ -69,7 +69,13 @@ pub struct Editor {
     pub scene: usize,
     /// Scripts: draw.* commands draw into the merge shape instead of adding objects.
     pub script_merge: bool,
+    /// Groups being edited (innermost last): (temporary symbol, what was being
+    /// edited before, where the group sits there).
+    pub group_edit: Vec<(SymbolId, Option<SymbolId>, Selection, u32)>,
 }
+
+/// Name of the temporary symbol that holds a group while it is edited.
+pub const GROUP_EDIT_NAME: &str = "\u{2039}group\u{203A}";
 
 #[derive(Clone)]
 struct Snapshot {
@@ -99,6 +105,7 @@ impl Editor {
             clock: None,
             scene: 0,
             script_merge: false,
+            group_edit: vec![],
         }
     }
 
@@ -250,8 +257,16 @@ impl Editor {
 
     pub fn breadcrumb(&self) -> Vec<String> {
         let mut v = vec![self.scene_tl().name.clone()];
+        // symbols that hold an open group, then the current one; groups read "Group"
+        for (_, prev, _, _) in &self.group_edit {
+            if let Some(s) = prev.and_then(|id| self.doc.symbol(id)) {
+                if s.name != GROUP_EDIT_NAME && v.last() != Some(&s.name) {
+                    v.push(s.name.clone());
+                }
+            }
+        }
         if let Some(s) = self.editing.and_then(|id| self.doc.symbol(id)) {
-            v.push(s.name.clone());
+            v.push(if s.name == GROUP_EDIT_NAME { "Group".into() } else { s.name.clone() });
         }
         v
     }
@@ -291,7 +306,61 @@ impl Editor {
             self.frame_sel = None;
         }
     }
+    /// Edit a group (double-click): its contents become a temporary symbol
+    /// opened for editing; `exit_group` turns them back into the group.
+    pub fn enter_group(&mut self, s: Selection) -> bool {
+        let Some(el) = self.element_at(s) else { return false };
+        let ElementKind::Group(children) = el.kind else { return false };
+        if !self.layer_editable(s.layer) {
+            return false;
+        }
+        self.checkpoint("Edit Group");
+        let mut tl = Timeline::new("Group");
+        tl.layers[0].keyframes.insert(0, Keyframe::with(children));
+        let id = self.doc.add_symbol(GROUP_EDIT_NAME, SymbolKind::Graphic, tl);
+        let Some(key) = self.target_keyframe(s.layer, false) else { return false };
+        if let Some(e) = self.timeline_mut().layers[s.layer].keyframes.get_mut(&key).and_then(|k| k.elements.get_mut(s.element)) {
+            e.kind = ElementKind::Instance(Instance { symbol: id, loop_mode: LoopMode::SingleFrame, first_frame: 0 });
+        }
+        let prev = self.editing;
+        self.group_edit.push((id, prev, s, self.frame));
+        self.enter_symbol(id);
+        true
+    }
+
+    /// Close the innermost group being edited (its objects become the group again).
+    pub fn exit_group(&mut self) -> bool {
+        let Some((id, prev, s, frame)) = self.group_edit.pop() else { return false };
+        self.commit_floats();
+        let children: Vec<Element> = match self.doc.symbol(id) {
+            Some(sym) => sym.timeline.layers.iter().rev().filter_map(|l| layer_elements_at(l, 0).map(|(e, _)| e)).flatten().collect(),
+            None => {
+                // undone meanwhile: just go back
+                self.editing = prev;
+                self.frame = frame;
+                self.selection.clear();
+                return true;
+            }
+        };
+        self.editing = prev;
+        self.frame = frame;
+        let scene_frame = frame;
+        if let Some(key) = self.timeline().layers.get(s.layer).and_then(|l| l.span_at(scene_frame)).map(|(k, _, _)| k) {
+            if let Some(e) = self.timeline_mut().layers[s.layer].keyframes.get_mut(&key).and_then(|k| k.elements.get_mut(s.element)) {
+                if matches!(&e.kind, ElementKind::Instance(i) if i.symbol == id) {
+                    e.kind = ElementKind::Group(children);
+                }
+            }
+        }
+        self.doc.library.retain(|x| x.id != id);
+        self.layer = s.layer;
+        self.selection = vec![s];
+        self.frame_sel = None;
+        true
+    }
+
     pub fn exit_to_scene(&mut self) {
+        while self.exit_group() {}
         self.editing = None;
         self.frame = 0;
         self.layer = 0;

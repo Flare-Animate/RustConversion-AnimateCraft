@@ -81,6 +81,10 @@ pub struct App {
     pub(crate) status: String,
     pub(crate) file_path: Option<String>,
     pub(crate) settings: files::Settings,
+    /// Name typed in Filters › Presets › Save As.
+    pub(crate) preset_name: String,
+    /// Edit in place levels (innermost last).
+    pub(crate) place: Vec<crate::stage::InPlace>,
     /// Editor revision at the last save/open (dirty = different).
     pub(crate) saved_rev: u64,
     pub(crate) autosave_rev: u64,
@@ -179,6 +183,8 @@ impl App {
             status: "Demo loaded. Enter = play · click frames to select · Delete removes the selection · right-click for menus".into(),
             file_path: None,
             settings: files::Settings::load(),
+            preset_name: String::new(),
+            place: vec![],
             saved_rev: 0,
             autosave_rev: 0,
             dirty_since: None,
@@ -384,6 +390,7 @@ impl App {
     }
 
     pub(crate) fn edit_symbol(&mut self, id: SymbolId) {
+        self.place.clear();
         self.ed.enter_symbol(id);
         self.fit_pending = true;
         self.status = "Editing symbol. Press Esc or click the scene name to go back.".into();
@@ -481,8 +488,7 @@ impl App {
                 self.ed.deselect();
                 self.ed.frame_sel = None;
             } else if self.ed.editing.is_some() {
-                self.ed.exit_to_scene();
-                self.fit_pending = true;
+                self.exit_editing(false);
             }
         }
         toolbar::tool_shortcuts(self, ctx);
@@ -663,7 +669,7 @@ impl App {
                         if ui.button("Import Sound…").on_hover_text("WAV, MP3, OGG Vorbis, FLAC, AIFF").clicked() { self.file(FileAction::ImportSound); ui.close_menu(); }
                     });
                     ui.menu_button("Export", |ui| {
-                        if ui.button("Export Image (PNG)…").clicked() { self.file(FileAction::ExportPng); ui.close_menu(); }
+                        if ui.button("Export Image…").on_hover_text("The current frame as PNG, JPEG or GIF").clicked() { self.publish.image_open = true; ui.close_menu(); }
                         if ui.button("Export SVG…").clicked() { self.file(FileAction::ExportSvg); ui.close_menu(); }
                         if ui.button("Export Animated GIF…").clicked() { self.file(FileAction::ExportGif); ui.close_menu(); }
                         if ui.button("Export PNG Sequence…").clicked() { self.file(FileAction::ExportPngSequence); ui.close_menu(); }
@@ -689,7 +695,7 @@ impl App {
                     self.object_menu(ui);
                     ui.separator();
                     ui.menu_button("Timeline", |ui| timeline::frame_menu(self, ui));
-                    if ui.add_enabled(self.ed.editing.is_some(), egui::Button::new("Edit Document")).clicked() { self.ed.exit_to_scene(); self.fit_pending = true; ui.close_menu(); }
+                    if ui.add_enabled(self.ed.editing.is_some(), egui::Button::new("Edit Document")).clicked() { self.exit_editing(true); ui.close_menu(); }
                 });
                 ui.menu_button("View", |ui| {
                     if ui.add(egui::Button::new("Zoom In").shortcut_text("Ctrl+=")).clicked() { self.zoom *= 1.25; ui.close_menu(); }
@@ -705,10 +711,17 @@ impl App {
                         ui.checkbox(&mut self.view.snap_grid, "Snap to Grid  (Ctrl+Shift+')");
                         if ui.button("Edit Grid…").clicked() { self.view.edit_grid_open = true; ui.close_menu(); }
                     });
+                    ui.menu_button("Snapping", |ui| {
+                        ui.checkbox(&mut self.topts.snap, "Snap to Objects");
+                        ui.checkbox(&mut self.view.snap_grid, "Snap to Grid  (Ctrl+Shift+')");
+                        ui.checkbox(&mut self.view.snap_guides, "Snap to Guides  (Ctrl+Shift+;)");
+                        ui.checkbox(&mut self.view.snap_pixels, "Snap to Pixels");
+                    });
                     ui.menu_button("Guides", |ui| {
                         ui.checkbox(&mut self.view.guides, "Show Guides  (Ctrl+;)");
                         ui.checkbox(&mut self.view.lock_guides, "Lock Guides  (Ctrl+Alt+;)");
                         ui.checkbox(&mut self.view.snap_guides, "Snap to Guides  (Ctrl+Shift+;)");
+                        if ui.button("Edit Guides…").clicked() { self.view.edit_guides_open = true; ui.close_menu(); }
                         if ui.button("Clear Guides").clicked() { self.ed.clear_guides(); ui.close_menu(); }
                         ui.label(RichText::new("Drag from a ruler to add a guide").small().color(Color32::from_gray(140)));
                     });
@@ -1131,6 +1144,7 @@ impl eframe::App for App {
         panels::library_drag_ghost(self, ctx);
         self.dialogs(ctx);
         publish::window(self, ctx);
+        publish::image_window(self, ctx);
         scripting::windows(self, ctx);
         panels::transform_window(self, ctx);
         self.ed.multi_frame = self.onion_opts.multi.then(|| self.onion_range());
@@ -1138,6 +1152,7 @@ impl eframe::App for App {
         motion_ui::motion_editor(self, ctx);
         windows::scene_window(self, ctx);
         rulers::edit_grid_window(self, ctx);
+        rulers::edit_guides_window(self, ctx);
         windows::info_window(self, ctx);
 
         // Screenshot hook (docs/CI): wait a few frames for layout to settle.

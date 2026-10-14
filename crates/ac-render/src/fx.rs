@@ -252,9 +252,72 @@ fn combine(pix: &mut sk::Pixmap, sh: &[f32], color: Color, mode: Mode) {
     }
 }
 
+/// Paint a gradient-ramp effect: each pixel takes `ramp(values[i])`, its
+/// alpha scaled by `mask[i]`.
+fn combine_ramp(pix: &mut sk::Pixmap, values: &[f32], mask: &[f32], stops: &[(f32, Color)], mode: Mode) {
+    for ((px, v), m) in pix.data_mut().chunks_mut(4).zip(values).zip(mask) {
+        let c = ac_core::fx::ramp(stops, v.clamp(0.0, 1.0));
+        let a = c.a as f32 / 255.0 * m.clamp(0.0, 1.0);
+        let fx = [c.r as f32 / 255.0 * a, c.g as f32 / 255.0 * a, c.b as f32 / 255.0 * a, a];
+        let obj = [px[0] as f32 / 255.0, px[1] as f32 / 255.0, px[2] as f32 / 255.0, px[3] as f32 / 255.0];
+        let out = match mode {
+            Mode::Under => [obj[0] + fx[0] * (1.0 - obj[3]), obj[1] + fx[1] * (1.0 - obj[3]), obj[2] + fx[2] * (1.0 - obj[3]), obj[3] + fx[3] * (1.0 - obj[3])],
+            Mode::Over => [fx[0] + obj[0] * (1.0 - a), fx[1] + obj[1] * (1.0 - a), fx[2] + obj[2] * (1.0 - a), obj[3]],
+            Mode::Only => fx,
+        };
+        for k in 0..4 {
+            px[k] = (out[k] * 255.0).round().clamp(0.0, 255.0) as u8;
+        }
+    }
+}
+
 pub fn apply_filter(pix: &mut sk::Pixmap, f: &Filter, scale: f32) {
     let (w, h) = (pix.width() as usize, pix.height() as usize);
+    if let Filter::GradientGlow { blur_x, blur_y, strength, quality, angle, distance, knockout, kind, ref stops } = *f {
+        let alpha = plane(pix, 3);
+        let b = (blur_x * scale, blur_y * scale);
+        let st = strength / 100.0;
+        if knockout {
+            pix.data_mut().fill(0);
+        }
+        let mode = |under| if knockout { Mode::Only } else if under { Mode::Under } else { Mode::Over };
+        if kind != BevelType::Inner {
+            let g = shadow_plane(&alpha, w, h, b, quality, angle, distance * scale, st, false);
+            let mask: Vec<f32> = g.iter().zip(&alpha).map(|(v, a)| if knockout { (1.0 - a) * v.min(1.0).ceil() } else { v.min(1.0).ceil() }).collect();
+            combine_ramp(pix, &g, &mask, stops, mode(true));
+        }
+        if kind != BevelType::Outer {
+            let g = shadow_plane(&alpha, w, h, b, quality, angle, distance * scale, st, true);
+            combine_ramp(pix, &g, &alpha, stops, mode(false));
+        }
+        return;
+    }
+    if let Filter::GradientBevel { blur_x, blur_y, strength, quality, angle, distance, knockout, kind, ref stops } = *f {
+        let alpha = plane(pix, 3);
+        let b = (blur_x * scale, blur_y * scale);
+        let (d, st) = (distance * scale, strength / 100.0);
+        if knockout {
+            pix.data_mut().fill(0);
+        }
+        // 0 = highlight side, 0.5 = flat, 1 = shadow side
+        let side = |inner: bool| -> Vec<f32> {
+            let lit = shadow_plane(&alpha, w, h, b, quality, angle + 180.0, d, st, inner);
+            let dark = shadow_plane(&alpha, w, h, b, quality, angle, d, st, inner);
+            lit.iter().zip(&dark).map(|(l, k)| 0.5 + 0.5 * (if inner { l - k } else { k - l })).collect()
+        };
+        if kind != BevelType::Outer {
+            let v = side(true);
+            combine_ramp(pix, &v, &alpha, stops, if knockout { Mode::Only } else { Mode::Over });
+        }
+        if kind != BevelType::Inner {
+            let v = side(false);
+            let mask: Vec<f32> = alpha.iter().map(|a| 1.0 - a).collect();
+            combine_ramp(pix, &v, &mask, stops, if knockout { Mode::Only } else { Mode::Under });
+        }
+        return;
+    }
     match *f {
+        Filter::GradientGlow { .. } | Filter::GradientBevel { .. } => {}
         Filter::Blur { blur_x, blur_y, quality } => {
             let mut planes: Vec<Vec<f32>> = (0..4).map(|c| plane(pix, c)).collect();
             for p in &mut planes {

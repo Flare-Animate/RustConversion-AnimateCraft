@@ -130,6 +130,21 @@ fn fx_json(filters: &[Filter], blend: BlendMode) -> String {
                 f.push(format!("drop-shadow({}px {}px {b}px {})", n(-dx), n(-dy), css(*highlight, *strength)));
                 f.push(format!("drop-shadow({}px {}px {b}px {})", n(dx), n(dy), css(*shadow, *strength)));
             }
+            Filter::GradientGlow { blur_x, blur_y, strength, angle, distance, stops, .. } => {
+                // canvas filters have no ramps: a glow in the ramp's strongest colour
+                unsupported = true;
+                let c = stops.iter().max_by_key(|s| s.1.a).map(|s| s.1).unwrap_or(Color::rgb(0, 0, 0));
+                let (dx, dy) = (angle.to_radians().cos() * distance, angle.to_radians().sin() * distance);
+                f.push(format!("drop-shadow({}px {}px {}px {})", n(dx), n(dy), n((blur_x + blur_y) / 4.0), css(c, *strength)));
+            }
+            Filter::GradientBevel { blur_x, blur_y, strength, angle, distance, stops, .. } => {
+                unsupported = true;
+                let (hi, lo) = (stops.first().map(|s| s.1).unwrap_or(Color::rgb(255, 255, 255)), stops.last().map(|s| s.1).unwrap_or(Color::rgb(0, 0, 0)));
+                let (dx, dy) = (angle.to_radians().cos() * distance, angle.to_radians().sin() * distance);
+                let b = n((blur_x + blur_y) / 4.0);
+                f.push(format!("drop-shadow({}px {}px {b}px {})", n(-dx), n(-dy), css(hi, *strength)));
+                f.push(format!("drop-shadow({}px {}px {b}px {})", n(dx), n(dy), css(lo, *strength)));
+            }
             Filter::AdjustColor { brightness, contrast, saturation, hue } => {
                 f.push(format!("brightness({}) contrast({}) saturate({}) hue-rotate({}deg)", n(1.0 + brightness / 100.0), n(1.0 + contrast / 100.0), n(1.0 + saturation / 100.0), n(*hue)));
             }

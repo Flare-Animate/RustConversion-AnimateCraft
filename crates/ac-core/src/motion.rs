@@ -469,11 +469,11 @@ impl FilterParam {
         use crate::fx::Filter as F;
         use FilterParam as P;
         Some(match (f, self) {
-            (F::DropShadow { blur_x, .. } | F::Blur { blur_x, .. } | F::Glow { blur_x, .. } | F::Bevel { blur_x, .. }, P::BlurX) => blur_x,
-            (F::DropShadow { blur_y, .. } | F::Blur { blur_y, .. } | F::Glow { blur_y, .. } | F::Bevel { blur_y, .. }, P::BlurY) => blur_y,
-            (F::DropShadow { strength, .. } | F::Glow { strength, .. } | F::Bevel { strength, .. }, P::Strength) => strength,
-            (F::DropShadow { angle, .. } | F::Bevel { angle, .. }, P::Angle) => angle,
-            (F::DropShadow { distance, .. } | F::Bevel { distance, .. }, P::Distance) => distance,
+            (F::DropShadow { blur_x, .. } | F::Blur { blur_x, .. } | F::Glow { blur_x, .. } | F::Bevel { blur_x, .. } | F::GradientGlow { blur_x, .. } | F::GradientBevel { blur_x, .. }, P::BlurX) => blur_x,
+            (F::DropShadow { blur_y, .. } | F::Blur { blur_y, .. } | F::Glow { blur_y, .. } | F::Bevel { blur_y, .. } | F::GradientGlow { blur_y, .. } | F::GradientBevel { blur_y, .. }, P::BlurY) => blur_y,
+            (F::DropShadow { strength, .. } | F::Glow { strength, .. } | F::Bevel { strength, .. } | F::GradientGlow { strength, .. } | F::GradientBevel { strength, .. }, P::Strength) => strength,
+            (F::DropShadow { angle, .. } | F::Bevel { angle, .. } | F::GradientGlow { angle, .. } | F::GradientBevel { angle, .. }, P::Angle) => angle,
+            (F::DropShadow { distance, .. } | F::Bevel { distance, .. } | F::GradientGlow { distance, .. } | F::GradientBevel { distance, .. }, P::Distance) => distance,
             (F::AdjustColor { brightness, .. }, P::Brightness) => brightness,
             (F::AdjustColor { contrast, .. }, P::Contrast) => contrast,
             (F::AdjustColor { saturation, .. }, P::Saturation) => saturation,

@@ -176,3 +176,71 @@ fn copy_and_paste_a_curve() {
     assert_eq!(m.alpha.keys.len(), 1);
     assert!(!m.paste_curve(Prop::X, c, 20));
 }
+
+#[test]
+fn add_gradient_filter_by_command() {
+    use ac_core::commands::execute;
+    use serde_json::json;
+    let mut ed = Editor::new(Default::default());
+    execute(&mut ed, "draw.rect", &json!({"x": 0, "y": 0, "w": 40, "h": 40})).unwrap();
+    execute(&mut ed, "select.all", &json!({})).unwrap();
+    execute(&mut ed, "selection.add_filter", &json!({"type": "gradient_glow", "kind": "full", "stops": [[1, "#FF0000FF"], [0, "#FFFFFF00"]]})).unwrap();
+    let el = ed.element_at(ed.selection[0]).unwrap();
+    let ac_core::fx::Filter::GradientGlow { kind, stops, .. } = &el.filters[0] else { panic!("{:?}", el.filters) };
+    assert_eq!(*kind, ac_core::BevelType::Full);
+    assert_eq!(stops[0], (0.0, Color { r: 255, g: 255, b: 255, a: 0 }));
+    assert_eq!(stops[1].1, Color::rgb(255, 0, 0));
+}
+
+#[test]
+fn bold_and_italic_text_without_system_faces() {
+    let mut t = match Element::text("Hi", 40.0, Color::rgb(0, 0, 0), ac_core::pt(0.0, 0.0)).kind {
+        ElementKind::Text(t) => t,
+        _ => unreachable!(),
+    };
+    let area = |p: &Path| -> f32 {
+        ac_core::merge::path_polygons(p)
+            .iter()
+            .map(|c| {
+                let n = c.len();
+                (0..n).map(|i| c[i].x * c[(i + 1) % n].y - c[(i + 1) % n].x * c[i].y).sum::<f32>() / 2.0
+            })
+            .sum::<f32>()
+            .abs()
+    };
+    let regular = t.outline();
+    t.weight = 700;
+    let bold = t.outline();
+    assert!(area(&bold) > area(&regular) * 1.1, "bold is heavier: {} vs {}", area(&bold), area(&regular));
+    t.weight = 400;
+    t.italic = true;
+    let it = t.outline();
+    let (r0, r1) = regular.bounds().unwrap();
+    let (i0, i1) = it.bounds().unwrap();
+    assert!((i1.x - i0.x) > (r1.x - r0.x) + 3.0, "slanted glyphs are wider");
+    assert!((i0.y - r0.y).abs() < 0.5 && (i1.y - r1.y).abs() < 0.5, "same height");
+}
+
+#[test]
+fn editing_a_group_and_closing_it() {
+    use ac_core::commands::execute;
+    use serde_json::json;
+    let mut ed = Editor::new(Default::default());
+    execute(&mut ed, "draw.rect", &json!({"x": 0, "y": 0, "w": 40, "h": 40})).unwrap();
+    execute(&mut ed, "draw.oval", &json!({"x": 50, "y": 0, "w": 40, "h": 40})).unwrap();
+    execute(&mut ed, "select.all", &json!({})).unwrap();
+    execute(&mut ed, "selection.group", &json!({})).unwrap();
+    execute(&mut ed, "select.all", &json!({})).unwrap();
+    execute(&mut ed, "group.edit", &json!({})).unwrap();
+    assert_eq!(ed.breadcrumb().last().map(String::as_str), Some("Group"));
+    assert_eq!(ed.timeline().layers[0].keyframes[&0].elements.len(), 2, "the group's two objects");
+    // add a third object inside the group
+    execute(&mut ed, "draw.rect", &json!({"x": 0, "y": 50, "w": 10, "h": 10})).unwrap();
+    execute(&mut ed, "group.exit", &json!({})).unwrap();
+    assert!(ed.editing.is_none());
+    let els = &ed.timeline().layers[0].keyframes[&0].elements;
+    assert_eq!(els.len(), 1);
+    let ElementKind::Group(g) = &els[0].kind else { panic!("still a group") };
+    assert_eq!(g.len(), 3);
+    assert!(ed.doc.library.is_empty(), "the temporary symbol is gone");
+}

@@ -347,6 +347,19 @@ impl W<'_> {
                     match kind { BevelType::Inner => "inner", BevelType::Outer => "outer", BevelType::Full => "full" }
                 ),
                 Filter::AdjustColor { brightness, contrast, saturation, hue } => format!(r#"<AdjustColorFilter brightness="{}" contrast="{}" saturation="{}" hue="{}"/>"#, n(*brightness), n(*contrast), n(*saturation), n(*hue)),
+                Filter::GradientGlow { blur_x, blur_y, strength, quality, angle, distance, knockout, kind, stops } | Filter::GradientBevel { blur_x, blur_y, strength, quality, angle, distance, knockout, kind, stops } => {
+                    let tag = if matches!(f, Filter::GradientGlow { .. }) { "GradientGlowFilter" } else { "GradientBevelFilter" };
+                    let mut e = format!(
+                        r#"<{tag} blurX="{}" blurY="{}" strength="{}" quality="{quality}" angle="{}" distance="{}"{} type="{}">"#,
+                        n(*blur_x), n(*blur_y), n(strength / 100.0), n(*angle), n(*distance), b("knockout", *knockout),
+                        match kind { BevelType::Inner => "inner", BevelType::Outer => "outer", BevelType::Full => "full" }
+                    );
+                    for (r, col) in stops {
+                        let _ = write!(e, "\n{ind}    <GradientEntry color=\"{}\"{} ratio=\"{}\"/>", col.to_hex(), alpha_attr(*col, "alpha"), n(*r));
+                    }
+                    let _ = write!(e, "\n{ind}  </{tag}>");
+                    e
+                }
             };
             let _ = writeln!(s, "{ind}  {line}");
         }
@@ -424,7 +437,22 @@ impl W<'_> {
                 ElementKind::Text(t) => {
                     let bb = t.outline().bounds();
                     let (w, h) = bb.map(|(lo, hi)| (hi.x.max(1.0), hi.y.max(1.0) - lo.y.min(0.0))).unwrap_or((t.size, t.size));
-                    let face = t.family.clone().unwrap_or_else(|| if t.font == ac_core::text::FontFace::Mono { "Hack".into() } else { "Ubuntu Light".into() });
+                    let mut face = t.family.clone().unwrap_or_else(|| if t.font == ac_core::text::FontFace::Mono { "Hack".into() } else { "Ubuntu Light".into() });
+                    if t.weight != 400 || t.italic {
+                        // PostScript-style face: Family-Bold, Family-Italic, Family-BoldItalic …
+                        let w = match t.weight {
+                            0..=149 => "Thin",
+                            150..=249 => "ExtraLight",
+                            250..=349 => "Light",
+                            350..=449 => "",
+                            450..=549 => "Medium",
+                            550..=649 => "Semibold",
+                            650..=749 => "Bold",
+                            750..=849 => "ExtraBold",
+                            _ => "Black",
+                        };
+                        face = format!("{}-{w}{}", face.replace(' ', ""), if t.italic { "Italic" } else { "" });
+                    }
                     let align = match t.align {
                         ac_core::text::Align::Left => "left",
                         ac_core::text::Align::Center => "center",

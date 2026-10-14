@@ -122,6 +122,7 @@ fn round_trips_editor_features() {
     let mut inst = Element::instance("wheel", 3, Matrix::translate(10.0, 20.0));
     inst.tint = Some((Color::rgb(255, 0, 0), 0.25));
     inst.blend = ac_core::fx::BlendMode::Multiply;
+    inst.filters = vec![Filter::default_of("gradient bevel").unwrap()];
     let mut k0 = Keyframe::with(vec![inst.clone(), Element::bitmap("", 7, Matrix::translate(100.0, 0.0))]);
     k0.tween = Tween::Classic { ease: 0.0, rotate_turns: 2 };
     k0.ease_curve = Some(ac_core::motion::Ease::linear_custom());
@@ -176,6 +177,7 @@ fn round_trips_editor_features() {
     let e = &k0.elements[0];
     assert_eq!(e.tint, Some((Color::rgb(255, 0, 0), 0.25)));
     assert_eq!(e.blend, ac_core::fx::BlendMode::Multiply);
+    assert_eq!(e.filters, vec![Filter::default_of("gradient bevel").unwrap()], "gradient filter with its ramp");
     assert!(matches!(k0.elements[1].kind, ElementKind::Bitmap(_)));
     let ElementKind::Group(g) = &l[2].keyframes[&12].elements[1].kind else { panic!() };
     assert_eq!(g[0].color_fx.unwrap().add[1], 10.0);
@@ -289,4 +291,13 @@ fn reads_motion_object_tweens() {
     assert!((ball.matrix.tx - 240.0).abs() < 0.5 && (ball.matrix.ty - 70.0).abs() < 0.5, "{:?}", ball.matrix);
     let d = ball.matrix.decompose();
     assert!((d.skew_y.to_degrees() - 90.0).abs() < 0.5 && (d.scale_x - 2.0).abs() < 0.01, "{d:?}");
+}
+
+#[test]
+fn text_faces_split_into_family_weight_and_italic() {
+    use crate::read::split_face;
+    assert_eq!(split_face("Arial-BoldItalicMT"), (Some("Arial".into()), 700, true));
+    assert_eq!(split_face("TimesNewRomanPSMT"), (Some("Times New Roman".into()), 400, false));
+    assert_eq!(split_face("Ubuntu Light"), (Some("Ubuntu Light".into()), 400, false));
+    assert_eq!(split_face("OpenSans-Semibold"), (Some("Open Sans".into()), 600, false));
 }

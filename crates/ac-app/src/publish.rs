@@ -22,6 +22,12 @@ pub struct PublishSettings {
     pub sheet: ac_render::formats::SheetOpts,
     pub job: Option<Job>,
     ffmpeg_checked: Option<Option<String>>,
+    /// File › Export › Export Image… window.
+    pub image_open: bool,
+    /// 0 = PNG, 1 = JPEG, 2 = GIF.
+    pub image_format: u8,
+    pub jpeg_quality: u8,
+    pub gif_colors: u16,
 }
 
 impl Default for PublishSettings {
@@ -41,6 +47,10 @@ impl Default for PublishSettings {
             sheet: Default::default(),
             job: None,
             ffmpeg_checked: None,
+            image_open: false,
+            image_format: 0,
+            jpeg_quality: 80,
+            gif_colors: 256,
         }
     }
 }
@@ -54,6 +64,20 @@ pub struct Job {
 }
 
 impl PublishSettings {
+    /// The still-image format chosen in Export Image (or implied by `ext`).
+    pub fn still_format(&self, ext: Option<&str>) -> ac_render::StillFormat {
+        let f = match ext.map(|e| e.to_ascii_lowercase()) {
+            Some(e) if e == "jpg" || e == "jpeg" => 1,
+            Some(e) if e == "gif" => 2,
+            Some(e) if e == "png" => 0,
+            _ => self.image_format,
+        };
+        match f {
+            1 => ac_render::StillFormat::Jpeg { quality: self.jpeg_quality },
+            2 => ac_render::StillFormat::Gif { colors: self.gif_colors, transparent: self.transparent },
+            _ => ac_render::StillFormat::Png { transparent: self.transparent },
+        }
+    }
     pub fn opts(&self) -> ExportOpts {
         ExportOpts {
             scale: self.scale.clamp(0.05, 8.0),
@@ -143,6 +167,68 @@ pub(crate) fn run_file_action(app: &mut App, action: FileAction, path: &str) -> 
 }
 
 /// Poll the running job; show Publish Settings when open.
+/// File › Export › Export Image…: format, size and quality, then a file.
+pub fn image_window(app: &mut App, ctx: &egui::Context) {
+    if !app.publish.image_open {
+        return;
+    }
+    let mut open = true;
+    let mut go = false;
+    let (w, h) = (app.ed.doc.width, app.ed.doc.height);
+    egui::Window::new("Export Image").open(&mut open).resizable(false).show(ctx, |ui| {
+        let ps = &mut app.publish;
+        egui::Grid::new("img-grid").num_columns(2).spacing([10.0, 6.0]).show(ui, |ui| {
+            ui.label("Format");
+            ui.horizontal(|ui| {
+                ui.selectable_value(&mut ps.image_format, 0, "PNG");
+                ui.selectable_value(&mut ps.image_format, 1, "JPEG");
+                ui.selectable_value(&mut ps.image_format, 2, "GIF");
+            });
+            ui.end_row();
+            ui.label("Size");
+            ui.horizontal(|ui| {
+                let mut pw = (w * ps.scale).round();
+                if ui.add(egui::DragValue::new(&mut pw).range(1.0..=16000.0).suffix(" px")).changed() {
+                    ps.scale = (pw / w.max(1.0)).clamp(0.05, 8.0);
+                }
+                ui.label(format!("× {:.0} px", (h * ps.scale).round()));
+                ui.add(egui::DragValue::new(&mut ps.scale).range(0.05..=8.0).speed(0.01).prefix("scale ").max_decimals(2));
+            });
+            ui.end_row();
+            match ps.image_format {
+                1 => {
+                    ui.label("Quality");
+                    ui.add(egui::Slider::new(&mut ps.jpeg_quality, 1..=100));
+                    ui.end_row();
+                }
+                2 => {
+                    ui.label("Colours");
+                    ui.add(egui::Slider::new(&mut ps.gif_colors, 2..=256).logarithmic(true));
+                    ui.end_row();
+                    ui.label("");
+                    ui.checkbox(&mut ps.transparent, "Transparent background");
+                    ui.end_row();
+                }
+                _ => {
+                    ui.label("");
+                    ui.checkbox(&mut ps.transparent, "Transparent background");
+                    ui.end_row();
+                }
+            }
+        });
+        ui.label(RichText::new("Exports the current frame. JPEG has no transparency (the stage colour fills it).").small().color(Color32::from_gray(150)));
+        if ui.button("Export…").clicked() {
+            go = true;
+        }
+    });
+    if go {
+        app.publish.image_open = false;
+        app.file(FileAction::ExportPng);
+    } else if !open {
+        app.publish.image_open = false;
+    }
+}
+
 pub fn window(app: &mut App, ctx: &egui::Context) {
     if let Some(job) = &app.publish.job {
         if let Ok(r) = job.rx.try_recv() {
@@ -246,7 +332,7 @@ pub fn window(app: &mut App, ctx: &egui::Context) {
         ui.separator();
         ui.horizontal_wrapped(|ui| {
             ui.label("Export:");
-            for (a, l) in [(FileAction::ExportGif, "GIF…"), (FileAction::ExportPngSequence, "PNG sequence…"), (FileAction::ExportVideo, "Video…"), (FileAction::ExportPng, "PNG frame…"), (FileAction::ExportSvg, "SVG frame…"), (FileAction::ExportHtml5, "HTML5 Canvas…"), (FileAction::ExportSpriteSheet, "Sprite sheet…"), (FileAction::ExportAnimatedSvg, "Animated SVG…"), (FileAction::ExportLottie, "Lottie…"), (FileAction::ExportXfl, ".fla / XFL…")] {
+            for (a, l) in [(FileAction::ExportGif, "GIF…"), (FileAction::ExportPngSequence, "PNG sequence…"), (FileAction::ExportVideo, "Video…"), (FileAction::ExportPng, "Image (PNG/JPEG/GIF)…"), (FileAction::ExportSvg, "SVG frame…"), (FileAction::ExportHtml5, "HTML5 Canvas…"), (FileAction::ExportSpriteSheet, "Sprite sheet…"), (FileAction::ExportAnimatedSvg, "Animated SVG…"), (FileAction::ExportLottie, "Lottie…"), (FileAction::ExportXfl, ".fla / XFL…")] {
                 if ui.button(l).clicked() {
                     app.file(a);
                 }
