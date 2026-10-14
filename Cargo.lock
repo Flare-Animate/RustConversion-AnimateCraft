@@ -89,8 +89,10 @@ version = "0.1.0"
 dependencies = [
  "ac-audio",
  "ac-core",
+ "color_quant",
  "fontdb",
  "gif 0.13.3",
+ "image",
  "png 0.17.16",
  "serde_json",
  "tiny-skia",
