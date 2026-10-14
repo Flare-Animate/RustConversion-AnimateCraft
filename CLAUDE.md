@@ -129,7 +129,8 @@ Status: ✅ in the demo · 🟡 partial · ⬜ planned
 **Sound**
 - ✅ Import WAV/MP3/OGG/FLAC, keyframe sounds (Event/Start/Stop/Stream, repeat/loop), waveform
   in the timeline, playback, auto lip-sync (heuristic) on graphic instances
-- ⬜ sound effects/envelopes, sounds inside symbols, AIFF
+- ✅ Sound effects (left/right, fades), sounds inside symbols, AIFF
+- ⬜ custom envelopes; better lip sync (Phase 5.10)
 
 **Scripting** (see SCRIPTING.md)
 - ✅ Command registry (`ac_core::commands`, ~50 dotted commands, 1-based frames)

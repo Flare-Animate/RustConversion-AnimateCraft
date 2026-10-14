@@ -343,7 +343,9 @@ exact Gradient Glow/Bevel in HTML5; plus the Free camera (VCam) mode.
 
 ### Phase 5: Workspace polish
 Docking/floating panels and workspaces, preferences, a shortcut editor, the History panel,
-Swatches/Color panels, Find and Replace, multiple documents, themes, accessibility.
+Swatches/Color panels, Find and Replace, multiple documents, themes, accessibility; plus
+timeline polish from the Flare review and better lip sync. Slice order 5.0–5.10 (egui upgrade +
+UI test harness first) is in `docs/FLARE-REVIEW-PHASE5.md`.
 
 ---
 
