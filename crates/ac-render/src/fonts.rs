@@ -78,3 +78,70 @@ pub fn families() -> &'static [String] {
         v
     })
 }
+
+/// Installed fonts that cover characters the bundled UI fonts lack (CJK,
+/// full-width punctuation such as the ＂ Windows puts in file names, symbols),
+/// best first: (name, font file bytes, face index). For the editor's UI only.
+pub fn ui_fallback_fonts() -> Vec<(String, Vec<u8>, u32)> {
+    use ab_glyph::Font as _;
+    const WANT: [char; 6] = ['＂', '漢', 'あ', '한', '★', '→'];
+    const PREFERRED: [&str; 16] = [
+        "Segoe UI",
+        "Microsoft YaHei UI",
+        "Microsoft YaHei",
+        "Yu Gothic UI",
+        "Meiryo",
+        "Malgun Gothic",
+        "Segoe UI Symbol",
+        "Noto Sans CJK SC",
+        "Noto Sans CJK JP",
+        "Noto Sans CJK TC",
+        "Noto Sans CJK KR",
+        "Noto Sans",
+        "Source Han Sans",
+        "PingFang SC",
+        "Hiragino Sans",
+        "DejaVu Sans",
+    ];
+    let d = db();
+    let mut covered = [false; WANT.len()];
+    let mut out = vec![];
+    for fam in PREFERRED {
+        if covered.iter().all(|c| *c) || out.len() >= 3 {
+            break;
+        }
+        let q = fontdb::Query { families: &[fontdb::Family::Name(fam)], ..Default::default() };
+        let Some(id) = d.query(&q) else { continue };
+        let mut found = None;
+        d.with_face_data(id, |data, index| {
+            if let Ok(f) = ab_glyph::FontRef::try_from_slice_and_index(data, index) {
+                let adds: Vec<usize> = WANT.iter().enumerate().filter(|(i, c)| !covered[*i] && f.glyph_id(**c).0 != 0).map(|(i, _)| i).collect();
+                if !adds.is_empty() {
+                    found = Some((data.to_vec(), index, adds));
+                }
+            }
+        });
+        if let Some((bytes, index, adds)) = found {
+            for i in adds {
+                covered[i] = true;
+            }
+            out.push((fam.to_string(), bytes, index));
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod fallback_tests {
+    #[test]
+    fn fallback_fonts_cover_fullwidth_when_installed() {
+        use ab_glyph::Font as _;
+        let fonts = super::ui_fallback_fonts();
+        assert!(fonts.len() <= 3);
+        let any_installed = std::process::Command::new("fc-list").arg(":charset=ff02").output().map(|o| !o.stdout.is_empty()).unwrap_or(false);
+        if any_installed {
+            let ok = fonts.iter().any(|(_, b, i)| ab_glyph::FontRef::try_from_slice_and_index(b, *i).is_ok_and(|f| f.glyph_id('＂').0 != 0));
+            assert!(ok, "no fallback covers U+FF02: {:?}", fonts.iter().map(|f| &f.0).collect::<Vec<_>>());
+        }
+    }
+}

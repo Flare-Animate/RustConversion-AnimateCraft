@@ -155,6 +155,11 @@ fn intersect_shapes(a: &[Shp], b: &[Shp]) -> Vec<Shp> {
     a.overlay(&b, OverlayRule::Intersect, FillRule::NonZero)
 }
 
+fn poly_area(c: &[Pt]) -> f64 {
+    let n = c.len();
+    (0..n).map(|i| c[i].x as f64 * c[(i + 1) % n].y as f64 - c[(i + 1) % n].x as f64 * c[i].y as f64).sum::<f64>() / 2.0
+}
+
 fn shape_area(s: &Shp) -> f64 {
     s.iter()
         .map(|c| {
@@ -503,6 +508,22 @@ impl MergeShape {
         self.cut(&new, true, cut_strokes);
         self.push_regions(new, paint.fill, paint.gradient.clone(), paint.bitmap);
         self.merge_same_paint();
+    }
+
+    /// Add fill regions as they are, on top of what's there: an imported
+    /// planar shape (a Flash raw shape), whose regions never overlap each
+    /// other and whose contours already describe each region even-odd. No
+    /// boolean operations, so even shapes with tens of thousands of points load
+    /// at once; the first edit that touches them normalises them as usual.
+    /// Empty and degenerate contours are dropped.
+    pub fn add_planar(&mut self, regions: &[(Vec<Vec<Pt>>, FillRegion)]) {
+        for (polys, paint) in regions {
+            let contours: Vec<Vec<Pt>> = polys.iter().filter(|c| c.len() >= 3 && poly_area(c).abs() >= 0.01).cloned().collect();
+            if contours.is_empty() {
+                continue;
+            }
+            self.fills.push(FillRegion { contours, ..paint.clone() });
+        }
     }
 
     /// Remove `area` from fills and/or strokes.

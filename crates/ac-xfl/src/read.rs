@@ -213,34 +213,30 @@ impl Reader<'_> {
                 }
             }
         }
+        // Flash's raw shape is a planar map: its fill regions don't overlap,
+        // so they go in together (one cut of what's below, one merge)
         let mut keys: Vec<_> = fills.keys().copied().collect();
         keys.sort();
+        let mut regions = vec![];
         for k in keys {
             let pcs = Self::fill_pieces(&recs, k);
             if pcs.is_empty() {
                 continue;
             }
             let chains = edges::chain(&pcs);
-            match &fills[&k] {
-                Fill::Bitmap(bf) => {
-                    let polys: Vec<Vec<Pt>> = chains.iter().map(|(c, closed)| edges::chain_points(c, *closed)).filter(|p| p.len() >= 3).collect();
-                    let paint = ac_core::merge::FillRegion { fill: None, gradient: None, bitmap: Some(BitmapFill { bitmap: bf.bitmap, matrix: m.concat(&bf.matrix) }), contours: vec![] };
-                    canvas.add_region(&polys, &paint, false);
-                }
-                fl => {
-                    let polys: Vec<Vec<Pt>> = chains.iter().map(|(c, closed)| edges::chain_points(c, *closed)).filter(|p| p.len() >= 3).collect();
-                    let (fill, grad) = match fl {
-                        Fill::Solid(c) => (Some(*c), None),
-                        Fill::Gradient(g) => (None, Some(Gradient { matrix: m.concat(&g.matrix), ..g.clone() })),
-                        Fill::Bitmap(_) => unreachable!(),
-                    };
-                    canvas.add_fill(&polys, fill, grad, false);
-                }
-            }
+            let polys: Vec<Vec<Pt>> = chains.iter().map(|(c, closed)| edges::chain_points(c, *closed)).filter(|p| p.len() >= 3).collect();
+            let paint = match &fills[&k] {
+                Fill::Bitmap(bf) => ac_core::merge::FillRegion { fill: None, gradient: None, bitmap: Some(BitmapFill { bitmap: bf.bitmap, matrix: m.concat(&bf.matrix) }), contours: vec![] },
+                Fill::Solid(c) => ac_core::merge::FillRegion { fill: Some(*c), gradient: None, bitmap: None, contours: vec![] },
+                Fill::Gradient(g) => ac_core::merge::FillRegion { fill: None, gradient: Some(Gradient { matrix: m.concat(&g.matrix), ..g.clone() }), bitmap: None, contours: vec![] },
+            };
+            regions.push((polys, paint));
         }
+        canvas.add_planar(&regions);
         let mut sk: Vec<_> = strokes.keys().copied().collect();
         sk.sort();
-        let many = recs.iter().filter(|r| r.2 != 0).count() > 400;
+        // lines likewise: Flash's edges already meet the fills and each other
+        // at their crossings, so they go in as they are
         for k in sk {
             let pcs: Vec<Piece> = recs.iter().filter(|r| r.2 == k).flat_map(|r| r.3.iter().copied()).collect();
             let (stroke, _) = strokes[&k];
@@ -249,11 +245,7 @@ impl Reader<'_> {
                 if pts.len() < 2 {
                     continue;
                 }
-                if many {
-                    canvas.strokes.push(StrokeEdge::new(pts, closed, stroke));
-                } else {
-                    canvas.add_stroke(&pts, closed, stroke);
-                }
+                canvas.strokes.push(StrokeEdge::new(pts, closed, stroke));
             }
         }
     }
@@ -806,50 +798,114 @@ fn motion_object(fr: Node, el: &Element, fps: f32) -> Option<ac_core::motion::Mo
     motion_from_core(core, el, fps)
 }
 
+/// One property's keyframes: (time, value) anchors with Bezier handles
+/// (`previous` / `next`: time offset and absolute value), in frames.
+#[derive(Clone, Copy, Debug)]
+struct MotionKey {
+    t: f32,
+    v: f32,
+    prev: (f32, f32),
+    next: (f32, f32),
+}
+
+/// Value of a property curve at `t` (frames): each span is a cubic Bezier in
+/// (time, value) through the anchors and their handles.
+fn curve_at(keys: &[MotionKey], t: f32) -> f32 {
+    let Some(first) = keys.first() else { return 0.0 };
+    if t <= first.t {
+        return first.v;
+    }
+    let Some(i) = keys.iter().position(|k| k.t >= t) else { return keys.last().unwrap().v };
+    let (a, b) = (keys[i - 1], keys[i]);
+    if b.t - a.t <= 1e-6 {
+        return b.v;
+    }
+    // control points (handles are clamped inside the span so time stays monotonic)
+    let span = b.t - a.t;
+    let p0 = (a.t, a.v);
+    let p1 = (a.t + a.next.0.clamp(0.0, span), a.next.1);
+    let p2 = (b.t + b.prev.0.clamp(-span, 0.0), b.prev.1);
+    let p3 = (b.t, b.v);
+    let bez = |s: f32, c: [f32; 4]| {
+        let u = 1.0 - s;
+        u * u * u * c[0] + 3.0 * u * u * s * c[1] + 3.0 * u * s * s * c[2] + s * s * s * c[3]
+    };
+    let (xs, ys) = ([p0.0, p1.0, p2.0, p3.0], [p0.1, p1.1, p2.1, p3.1]);
+    let (mut lo, mut hi) = (0.0f32, 1.0f32);
+    for _ in 0..40 {
+        let mid = (lo + hi) / 2.0;
+        if bez(mid, xs) < t {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    bez((lo + hi) / 2.0, ys)
+}
+
+fn pair(k: Node, attr: &str, scale: f32, fps: f32, default: (f32, f32)) -> (f32, f32) {
+    let Some(s) = k.attribute(attr) else { return default };
+    let mut it = s.split(',').map(|x| x.trim().parse::<f32>().ok());
+    match (it.next().flatten(), it.next().flatten()) {
+        (Some(t), Some(v)) => (t / scale * fps, v),
+        _ => default,
+    }
+}
+
 fn motion_from_core(core: Node, el: &Element, fps: f32) -> Option<ac_core::motion::Motion> {
     use ac_core::motion::{Motion, PathKey, Pose};
     let scale = f(core, "TimeScale", 24000.0).max(1.0);
-    let props: std::collections::HashMap<String, Vec<(u32, f32)>> = core
+    let duration = f(core, "duration", 0.0) / scale * fps;
+    // the tween's overall ease (TimeMap strength −100…100), applied to time
+    let ease = core.descendants().find(|n| n.tag_name().name() == "TimeMap").map(|n| f(n, "strength", 0.0)).unwrap_or(0.0);
+    let props: std::collections::HashMap<String, (Vec<MotionKey>, bool)> = core
         .descendants()
         .filter(|n| n.tag_name().name() == "Property" && n.attribute("enabled") != Some("0"))
         .filter_map(|p| {
-            let keys: Vec<(u32, f32)> = kids(p, "Keyframe")
+            let keys: Vec<MotionKey> = kids(p, "Keyframe")
                 .filter_map(|k| {
-                    let t = f(k, "timevalue", 0.0);
+                    let t = f(k, "timevalue", 0.0) / scale * fps;
                     let v = k.attribute("anchor")?.split(',').next_back()?.trim().parse::<f32>().ok()?;
-                    Some(((t / scale * fps).round().max(0.0) as u32, v))
+                    Some(MotionKey { t, v, prev: pair(k, "previous", scale, fps, (0.0, v)), next: pair(k, "next", scale, fps, (0.0, v)) })
                 })
                 .collect();
-            (!keys.is_empty()).then(|| (p.attribute("id").unwrap_or("").to_string(), keys))
+            let timed = p.attribute("ignoreTimeMap") != Some("1");
+            (!keys.is_empty()).then(|| (p.attribute("id").unwrap_or("").to_string(), (keys, timed)))
         })
         .collect();
     if props.is_empty() {
         return None;
     }
-    let base = Pose::of(el, pt(0.0, 0.0));
-    let at = |keys: Option<&Vec<(u32, f32)>>, fr: u32| -> f32 {
-        let Some(k) = keys else { return 0.0 };
-        match k.iter().position(|(kf, _)| *kf >= fr) {
-            Some(0) => k[0].1,
-            Some(i) => {
-                let ((a, va), (b, vb)) = (k[i - 1], k[i]);
-                if b == a { vb } else { va + (vb - va) * (fr - a) as f32 / (b - a) as f32 }
-            }
-            None => k.last().unwrap().1,
+    // curved (handles off the straight line between anchors) or eased: sample
+    // every frame so the result matches; otherwise keep just the keys
+    let straight = |keys: &[MotionKey]| keys.windows(2).all(|w| (w[0].next.0.abs() < 1e-3 || (w[0].next.1 - w[0].v).abs() < 1e-3) && (w[1].prev.0.abs() < 1e-3 || (w[1].prev.1 - w[1].v).abs() < 1e-3));
+    let time_of = |fr: f32, timed: bool| -> f32 {
+        if !timed || ease == 0.0 || duration <= 0.0 {
+            return fr;
+        }
+        ac_core::model::apply_ease((fr / duration).clamp(0.0, 1.0), ease) * duration
+    };
+    let frames_for = |keys: &[MotionKey], timed: bool| -> Vec<u32> {
+        let last = keys.last().map(|k| k.t.round() as u32).unwrap_or(0);
+        if straight(keys) && (ease == 0.0 || !timed) {
+            keys.iter().map(|k| k.t.round().max(0.0) as u32).collect()
+        } else {
+            (0..=last).collect()
         }
     };
+    let base = Pose::of(el, pt(0.0, 0.0));
+    let value = |id: &str, fr: u32| -> f32 { props.get(id).map(|(k, timed)| curve_at(k, time_of(fr as f32, *timed))).unwrap_or(0.0) };
     let mut m = Motion::new(pt(0.0, 0.0));
-    let (xs, ys) = (props.get("Motion_X"), props.get("Motion_Y"));
-    let mut frames: Vec<u32> = xs.into_iter().chain(ys).flat_map(|k| k.iter().map(|x| x.0)).collect();
+    let mut frames: Vec<u32> = ["Motion_X", "Motion_Y"].iter().filter_map(|id| props.get(*id)).flat_map(|(k, timed)| frames_for(k, *timed)).collect();
     frames.sort();
     frames.dedup();
     for fr in frames {
-        m.path.push(PathKey { frame: fr, at: pt(base.pos.x + at(xs, fr), base.pos.y + at(ys, fr)), h_in: Pt::default(), h_out: Pt::default() });
+        m.path.push(PathKey { frame: fr, at: pt(base.pos.x + value("Motion_X", fr), base.pos.y + value("Motion_Y", fr)), h_in: Pt::default(), h_out: Pt::default() });
     }
     let track = |id: &str, f: &dyn Fn(f32) -> f32, t: &mut ac_core::motion::Track| {
-        if let Some(k) = props.get(id) {
-            for (fr, v) in k {
-                t.set(*fr, f(*v));
+        if let Some((k, timed)) = props.get(id) {
+            for fr in frames_for(k, *timed) {
+                t.set(fr, f(value(id, fr)));
             }
         }
     };
@@ -929,4 +985,25 @@ pub(crate) fn split_face(face: &str) -> (Option<String>, u16, bool) {
     };
     let italic = st.contains("italic") || st.contains("oblique");
     (Some(fam).filter(|f| !f.is_empty()), weight, italic)
+}
+
+#[cfg(test)]
+mod motion_tests {
+    use super::{curve_at, MotionKey};
+
+    #[test]
+    fn curve_follows_handles() {
+        // flat handles: plain linear ramp
+        let lin = [MotionKey { t: 0.0, v: 0.0, prev: (0.0, 0.0), next: (0.0, 0.0) }, MotionKey { t: 10.0, v: 100.0, prev: (0.0, 100.0), next: (0.0, 100.0) }];
+        assert!((curve_at(&lin, 0.0) - 0.0).abs() < 1e-3);
+        assert!((curve_at(&lin, 10.0) - 100.0).abs() < 1e-3);
+        // handles pulling the value up first (an arc): mid value above both ends
+        let arc = [MotionKey { t: 0.0, v: 0.0, prev: (0.0, 0.0), next: (3.0, -60.0) }, MotionKey { t: 10.0, v: 0.0, prev: (-3.0, -60.0), next: (0.0, 0.0) }];
+        let mid = curve_at(&arc, 5.0);
+        assert!(mid < -30.0, "arc midpoint {mid}");
+        assert!((curve_at(&arc, 10.0)).abs() < 1e-3);
+        // before the first / after the last key
+        assert_eq!(curve_at(&arc, -5.0), 0.0);
+        assert_eq!(curve_at(&arc, 50.0), 0.0);
+    }
 }

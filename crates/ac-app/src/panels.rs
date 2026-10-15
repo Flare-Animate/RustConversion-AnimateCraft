@@ -56,7 +56,7 @@ fn panel_title(ui: &mut egui::Ui, title: &str) {
 }
 
 pub fn right_panel(app: &mut App, ctx: &egui::Context) {
-    egui::SidePanel::right("props").default_width(300.0).min_width(250.0).show(ctx, |ui| {
+    egui::SidePanel::right("props").default_width(300.0).min_width(250.0).max_width((ctx.screen_rect().width() * 0.45).max(320.0)).show(ctx, |ui| {
         let lib_here = app.lib.open && !app.lib.left;
         let total = ui.available_height();
         // Properties take what they need (scrolling past a cap); the Library fills the rest.
@@ -163,6 +163,19 @@ fn section(ui: &mut egui::Ui, title: &str) {
     ui.label(RichText::new(title).strong().color(Color32::from_gray(200)));
 }
 
+/// `s` cut to `max` characters with an ellipsis in the middle (keeps the extension).
+pub(crate) fn ellipsize(s: &str, max: usize) -> String {
+    let n = s.chars().count();
+    if n <= max {
+        return s.to_string();
+    }
+    let head = max * 2 / 3;
+    let tail = max - head - 1;
+    let a: String = s.chars().take(head).collect();
+    let b: String = s.chars().skip(n - tail).collect();
+    format!("{a}…{b}")
+}
+
 fn hint(ui: &mut egui::Ui, text: &str) {
     ui.label(RichText::new(text).small().color(Color32::from_gray(150)));
 }
@@ -188,7 +201,7 @@ fn object_properties(app: &mut App, ui: &mut egui::Ui) {
             ElementKind::Instance(i) => {
                 let s = app.ed.doc.symbol(i.symbol);
                 let kind = s.map(|s| match s.kind { SymbolKind::Graphic => "Graphic", SymbolKind::MovieClip => "Movie Clip", SymbolKind::Button => "Button" }).unwrap_or("?");
-                format!("{kind} instance of “{}”", s.map(|s| s.name.as_str()).unwrap_or("?"))
+                format!("{kind} instance of “{}”", ellipsize(s.map(|s| s.name.as_str()).unwrap_or("?"), 28))
             }
             ElementKind::Group(c) => format!("Group ({} objects)", c.len()),
             ElementKind::Bitmap(b) => app.ed.doc.bitmap(b.bitmap).map(|a| format!("Bitmap “{}” {}×{}", a.name, a.width, a.height)).unwrap_or("Bitmap (missing)".into()),
@@ -548,12 +561,12 @@ fn object_properties(app: &mut App, ui: &mut egui::Ui) {
                     ui.label("Symbol");
                     let cur = app.ed.doc.symbol(id).map(|s| s.name.clone()).unwrap_or_default();
                     let mut pick = None;
-                    egui::ComboBox::from_id_salt("swap-symbol").selected_text(cur).show_ui(ui, |ui| {
+                    egui::ComboBox::from_id_salt("swap-symbol").width(ui.available_width().min(220.0)).selected_text(ellipsize(&cur, 30)).show_ui(ui, |ui| {
                         for sym in &app.ed.doc.library {
                             if Some(sym.id) == app.ed.editing || sym.name == ac_core::editor::GROUP_EDIT_NAME {
                                 continue; // a symbol can't contain itself
                             }
-                            if ui.selectable_label(sym.id == id, &sym.name).clicked() && sym.id != id {
+                            if ui.selectable_label(sym.id == id, ellipsize(&sym.name, 60)).clicked() && sym.id != id {
                                 pick = Some(sym.id);
                             }
                         }
@@ -891,12 +904,13 @@ fn sound_section(app: &mut App, ui: &mut egui::Ui, kf: &ac_core::Keyframe) {
     let mut pick: Option<Option<u32>> = None;
     ui.horizontal(|ui| {
         ui.label("Name");
-        egui::ComboBox::from_id_salt("frame-sound").selected_text(cur.as_ref().map(|s| name_of(s.sound)).unwrap_or_else(|| "None".into())).show_ui(ui, |ui| {
+        // long file names (real projects have them) must not widen the panel
+        egui::ComboBox::from_id_salt("frame-sound").width(ui.available_width().min(220.0)).selected_text(ellipsize(&cur.as_ref().map(|s| name_of(s.sound)).unwrap_or_else(|| "None".into()), 30)).show_ui(ui, |ui| {
             if ui.selectable_label(cur.is_none(), "None").clicked() {
                 pick = Some(None);
             }
             for s in &app.ed.doc.sounds {
-                if ui.selectable_label(cur.as_ref().is_some_and(|c| c.sound == s.id), &s.name).clicked() {
+                if ui.selectable_label(cur.as_ref().is_some_and(|c| c.sound == s.id), ellipsize(&s.name, 60)).on_hover_text(&s.name).clicked() {
                     pick = Some(Some(s.id));
                 }
             }

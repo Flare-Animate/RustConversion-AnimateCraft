@@ -66,3 +66,52 @@ fn retained_curves_and_clocks_round_trip_through_fla() {
     let ElementKind::Instance(i) = &back.scene.layers[0].keyframes[&7].elements[0].kind else { panic!() };
     assert_eq!(i.first_frame, 7 % 6);
 }
+
+/// Real .fla files can carry a wrong end-of-directory record (size or start of
+/// the central directory); they still open.
+#[test]
+fn damaged_zip_end_records_are_repaired() {
+    let mut pkg = ac_xfl::Package::new();
+    pkg.insert("DOMDocument.xml".into(), b"<DOMDocument/>".to_vec());
+    pkg.insert("LIBRARY/a b (c).xml".into(), b"<x/>".to_vec());
+    let good = ac_xfl::zip(&pkg).unwrap();
+    let eocd = good.windows(4).rposition(|w| w == b"PK\x05\x06").unwrap();
+    // size 54 bytes too large (as in a real file) and a wrong directory start
+    let mut bad = good.clone();
+    let size = u32::from_le_bytes(bad[eocd + 12..eocd + 16].try_into().unwrap());
+    bad[eocd + 12..eocd + 16].copy_from_slice(&(size + 54).to_le_bytes());
+    bad[eocd + 16..eocd + 20].copy_from_slice(&7u32.to_le_bytes());
+    let fixed = ac_xfl::repair_end_record(&bad).unwrap();
+    assert_eq!(fixed, good, "the record is rebuilt exactly");
+    let back = ac_xfl::unzip(&bad).unwrap();
+    assert_eq!(back.len(), 2);
+    assert_eq!(back["LIBRARY/a b (c).xml"], b"<x/>");
+    assert!(ac_xfl::unzip(b"not a zip at all").is_err());
+}
+
+/// Real-file corpus: set AC_FLA_CORPUS to a folder of .fla files (not in the
+/// repository: they belong to their authors). Each must open quickly, with
+/// every drawn item at a sane size (a misread number shows up as a huge shape).
+#[test]
+fn real_fla_corpus_opens() {
+    let Some(dir) = std::env::var_os("AC_FLA_CORPUS") else { return };
+    let mut n = 0;
+    for f in std::fs::read_dir(dir).unwrap().flatten().map(|e| e.path()).filter(|p| p.extension().is_some_and(|e| e.eq_ignore_ascii_case("fla"))) {
+        let t = std::time::Instant::now();
+        let im = ac_xfl::open(&f).unwrap_or_else(|e| panic!("{}: {e}", f.display()));
+        let secs = t.elapsed().as_secs_f32();
+        assert!(secs < 10.0, "{}: {secs:.1}s to open", f.display());
+        let d = &im.doc;
+        for frame in [0, d.scene.frame_count() / 2, d.scene.frame_count().saturating_sub(1)] {
+            for it in ac_core::evaluate_scene(d, frame) {
+                if let Some((a, b)) = it.path.transformed(&it.matrix).bounds() {
+                    let lim = 20.0 * d.width.max(d.height);
+                    assert!(b.x - a.x < lim && b.y - a.y < lim, "{} frame {}: an item spans {a:?}..{b:?}", f.display(), frame + 1);
+                }
+            }
+        }
+        eprintln!("{}: {} symbols, {} frames, {secs:.2}s, {} notes", f.display(), d.library.len(), d.scene.frame_count(), im.warnings.len());
+        n += 1;
+    }
+    eprintln!("{n} files");
+}

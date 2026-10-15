@@ -12,6 +12,7 @@ tiny-skia.workspace = true
 gif.workspace = true
 png.workspace = true
 fontdb = "0.22"
+ab_glyph = "0.2"
 image = { version = "0.25", default-features = false, features = ["jpeg"] }
 color_quant = "1.1"
 effectcraft-effects.workspace = true

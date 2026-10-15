@@ -3,7 +3,8 @@
 //!
 //! Grammar (from observing files written by the authoring tool):
 //! - coordinates are twips (1/20 px): decimal (`-22.5`) or hex fixed point
-//!   `#XX.YY` (two's-complement integer part, 8-bit fraction)
+//!   `#XX.YY` (two's-complement integer part — 24-bit, so `#FFFE40.06` is
+//!   negative — and an 8-bit fraction)
 //! - `!x y` move to, `|x y` or `/x y` line to, `[cx cy x y` or `]cx cy x y`
 //!   quadratic curve to
 //! - `S<n>` selection markers are ignored; the separate `cubics` attribute
@@ -57,7 +58,22 @@ fn number(s: &[u8], i: &mut usize) -> Result<f32, String> {
         }
         let tok = std::str::from_utf8(&s[hs..*i]).unwrap_or("");
         let (int, frac) = tok.split_once('.').unwrap_or((tok, ""));
-        let iv = if int.is_empty() { 0 } else { u32::from_str_radix(int, 16).map_err(|e| format!("bad hex '{tok}': {e}"))? as i32 };
+        // the integer part is two's complement: 24-bit as written by the
+        // authoring tool (#FFFE40.06 = -447.98), 32-bit when 7–8 digits appear
+        let iv = if int.is_empty() {
+            0
+        } else {
+            let u = u32::from_str_radix(int, 16).map_err(|e| format!("bad hex '{tok}': {e}"))?;
+            if int.len() <= 6 {
+                if u >= 0x80_0000 {
+                    u as i32 - 0x100_0000
+                } else {
+                    u as i32
+                }
+            } else {
+                u as i32
+            }
+        };
         let fv = if frac.is_empty() { 0 } else { u32::from_str_radix(frac, 16).map_err(|e| format!("bad hex '{tok}': {e}"))? };
         let fscale = 16f32.powi(frac.len() as i32);
         // fixed point: the fraction always adds (FFFFFFFF.80 = -0.5)
@@ -320,6 +336,10 @@ mod tests {
         let h = parse("!#14.00 #28.80|#-14 0").unwrap();
         assert!((h[0].a.x - 1.0).abs() < 1e-5 && (h[0].a.y - 2.025).abs() < 1e-5);
         assert!((h[0].b.x + 1.0).abs() < 1e-5);
+        // 24-bit two's complement integer part, as real files write it
+        let n24 = parse("!#FFFE40.06 0|#FFFFEC 0").unwrap();
+        assert!((n24[0].a.x - (-448.0 + 6.0 / 256.0) / 20.0).abs() < 1e-4, "{:?}", n24[0].a);
+        assert!((n24[0].b.x + 1.0).abs() < 1e-5);
         // 32-bit two's complement integer part
         let n = parse("!#FFFFFFEC 0|0 0").unwrap();
         assert!((n[0].a.x + 1.0).abs() < 1e-5);

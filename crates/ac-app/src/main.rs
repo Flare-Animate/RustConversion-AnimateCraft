@@ -165,6 +165,21 @@ impl App {
     fn new(cc: &eframe::CreationContext) -> Self {
         // timeline semantics for this (the UI) thread, from the saved setting
         ac_core::frames::set_retain_tween_curves(files::Settings::load().retain_tween_curves);
+        // installed fonts as fallbacks for characters the UI font lacks
+        // (CJK names, the full-width ＂ Windows puts in file names, symbols)
+        let fallbacks = ac_render::fonts::ui_fallback_fonts();
+        if !fallbacks.is_empty() {
+            let mut fonts = egui::FontDefinitions::default();
+            for (name, bytes, index) in fallbacks {
+                let mut fd = egui::FontData::from_owned(bytes);
+                fd.index = index;
+                fonts.font_data.insert(name.clone(), fd);
+                for fam in [egui::FontFamily::Proportional, egui::FontFamily::Monospace] {
+                    fonts.families.entry(fam).or_default().push(name.clone());
+                }
+            }
+            cc.egui_ctx.set_fonts(fonts);
+        }
         let mut v = egui::Visuals::dark();
         v.panel_fill = Color32::from_gray(0x32);
         v.window_fill = Color32::from_gray(0x2B);

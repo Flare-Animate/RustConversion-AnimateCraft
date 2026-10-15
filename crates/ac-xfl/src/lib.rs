@@ -39,9 +39,56 @@ pub fn write_package(doc: &Document) -> (Package, Vec<String>) {
     write::write(doc)
 }
 
-/// Unzip a `.fla`.
+/// Unzip a `.fla`. Archives whose end record is slightly off (real files
+/// from the authoring tool can state the central directory's size wrongly,
+/// which strict readers reject) are repaired in memory first.
 pub fn unzip(bytes: &[u8]) -> Result<Package, String> {
-    let mut z = zip::ZipArchive::new(Cursor::new(bytes)).map_err(|e| format!("not a CS5+ .fla (ZIP) file: {e}"))?;
+    let mut z = match zip::ZipArchive::new(Cursor::new(bytes)) {
+        Ok(z) => z,
+        Err(first) => {
+            let fixed = repair_end_record(bytes).ok_or_else(|| format!("not a CS5+ .fla (ZIP) file: {first}"))?;
+            return unzip_strict(&fixed).map_err(|e| format!("damaged .fla (ZIP) file: {first}; after repair: {e}"));
+        }
+    };
+    read_all(&mut z)
+}
+
+fn unzip_strict(bytes: &[u8]) -> Result<Package, String> {
+    let mut z = zip::ZipArchive::new(Cursor::new(bytes)).map_err(|e| e.to_string())?;
+    read_all(&mut z)
+}
+
+/// Rewrite the end-of-central-directory record so its size and entry counts
+/// match the central directory that is actually there. None if it can't be found.
+pub fn repair_end_record(bytes: &[u8]) -> Option<Vec<u8>> {
+    let eocd = bytes.windows(4).rposition(|w| w == b"PK\x05\x06")?;
+    if eocd + 22 > bytes.len() {
+        return None;
+    }
+    let u32_at = |i: usize| u32::from_le_bytes([bytes[i], bytes[i + 1], bytes[i + 2], bytes[i + 3]]) as usize;
+    let u16_at = |i: usize| u16::from_le_bytes([bytes[i], bytes[i + 1]]) as usize;
+    // the stated directory start, or failing that the first central header
+    let stated = u32_at(eocd + 16);
+    let cd = if bytes.get(stated..stated + 4) == Some(b"PK\x01\x02") { stated } else { bytes.windows(4).position(|w| w == b"PK\x01\x02")? };
+    // count the central headers that are really there
+    let (mut k, mut n) = (cd, 0usize);
+    while k + 46 <= eocd && &bytes[k..k + 4] == b"PK\x01\x02" {
+        k += 46 + u16_at(k + 28) + u16_at(k + 30) + u16_at(k + 32);
+        n += 1;
+    }
+    if n == 0 || n > 0xFFFF {
+        return None;
+    }
+    let mut out = bytes.to_vec();
+    out[eocd + 8..eocd + 10].copy_from_slice(&(n as u16).to_le_bytes());
+    out[eocd + 10..eocd + 12].copy_from_slice(&(n as u16).to_le_bytes());
+    out[eocd + 12..eocd + 16].copy_from_slice(&((k - cd) as u32).to_le_bytes());
+    out[eocd + 16..eocd + 20].copy_from_slice(&(cd as u32).to_le_bytes());
+    out.truncate(eocd + 22 + u16_at(eocd + 20).min(bytes.len() - eocd - 22));
+    Some(out)
+}
+
+fn read_all(z: &mut zip::ZipArchive<Cursor<&[u8]>>) -> Result<Package, String> {
     let mut pkg = Package::new();
     for i in 0..z.len() {
         let mut f = z.by_index(i).map_err(|e| e.to_string())?;

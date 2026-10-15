@@ -10,6 +10,7 @@ name = "flare-cli"
 path = "src/main.rs"
 
 [dependencies]
+tiny-skia.workspace = true
 ac-core.workspace = true
 ac-render.workspace = true
 ac-script.workspace = true
