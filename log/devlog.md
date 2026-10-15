@@ -259,3 +259,6 @@ P2 is done in groups of five, each checked before the next.
 
 ## 2026-10-15 — Handoff document
 `docs/HANDOFF.md` for developers picking up the work: status at `e2a6aa3`, what has been done (phases → P2 group 1), the step process (groups of five; tests, clippy, Xvfb check, docs, commit, report, push on confirmation), the P2 group plan with notes for group 2, the open gaps (Gaps to close, remaining P2, P3 summary, known small issues), and environment/UI-testing commands and gotchas. Linked from README and CLAUDE.md.
+
+## 2026-10-15 — Function sources list
+`docs/FUNCTION-SOURCES.md`: every feature by crate with its file, origin (own / port / approach / dependency / external / algorithm) and source or reference (OpenToonz files, Flare, PhotoCraft, EffectCraft, crates, published algorithms, public Animate/XFL/CreateJS docs), plus a table of the projects we draw from. Linked from HANDOFF.md.
