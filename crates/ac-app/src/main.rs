@@ -732,6 +732,7 @@ impl App {
     fn menu_bar(&mut self, ctx: &egui::Context) {
         egui::TopBottomPanel::top("menu").show(ctx, |ui| {
             egui::menu::bar(ui, |ui| {
+                self.brand(ui);
                 ui.menu_button("File", |ui| {
                     if ui.add(egui::Button::new("New…").shortcut_text("Ctrl+N")).clicked() { self.guarded(files::Pending::New); ui.close_menu(); }
                     if ui.add(egui::Button::new("Open…").shortcut_text("Ctrl+O")).clicked() { self.guarded(files::Pending::Open); ui.close_menu(); }
@@ -897,6 +898,20 @@ impl App {
                 });
             });
         });
+    }
+
+    /// Flare's icon and wordmark at the left of the menu bar (as in Flare
+    /// Studio); clicking it shows About.
+    fn brand(&mut self, ui: &mut egui::Ui) {
+        let text = RichText::new("Flare").strong().size(14.0).color(Color32::from_rgb(0xE8, 0x7A, 0x3C));
+        let button = match startup::icon_texture(ui.ctx()) {
+            Some(t) => egui::Button::image_and_text(egui::Image::new(&t).fit_to_exact_size(egui::vec2(16.0, 16.0)), text),
+            None => egui::Button::new(text),
+        };
+        if ui.add(button.frame(false)).on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text("About Flare").clicked() {
+            self.dialog = Dialog::About;
+        }
+        ui.add_space(6.0);
     }
 
     /// The Workspace menu at the right of the menu bar: where each dock sits.

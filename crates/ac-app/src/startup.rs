@@ -58,7 +58,7 @@ pub(crate) fn at_launch(app: &App, opened_file: bool) -> bool {
     !opened_file && app.settings.show_startup && std::env::var_os("AC_SCREENSHOT").is_none() && std::env::var_os("AC_NO_STARTUP").is_none_or(|v| v.is_empty())
 }
 
-fn icon_texture(ctx: &egui::Context) -> Option<egui::TextureHandle> {
+pub(crate) fn icon_texture(ctx: &egui::Context) -> Option<egui::TextureHandle> {
     let id = egui::Id::new("flare.startup.icon");
     if let Some(t) = ctx.data(|d| d.get_temp::<egui::TextureHandle>(id)) {
         return Some(t);
