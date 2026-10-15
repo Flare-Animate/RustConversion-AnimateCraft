@@ -11,6 +11,7 @@ mod panels;
 mod publish;
 mod rulers;
 mod scripting;
+mod startup;
 mod stage;
 mod timeline;
 mod toolbar;
@@ -81,6 +82,10 @@ pub struct App {
     pub(crate) drag: stage::Drag,
     pub(crate) prop_dragging: bool,
     pub(crate) dialog: Dialog,
+    /// The Startup window (new scene / open existing), when shown.
+    pub(crate) startup: Option<startup::Startup>,
+    /// Name given in the Startup window to a document not saved yet.
+    pub(crate) untitled_name: Option<String>,
     pub(crate) status: String,
     pub(crate) file_path: Option<String>,
     pub(crate) settings: files::Settings,
@@ -249,6 +254,8 @@ impl App {
             info_cache: None,
             last_sel: (vec![], None),
             screenshot: None,
+            startup: None,
+            untitled_name: None,
         };
         app.lib.left = app.settings.library_left;
         // `flare file.acx.json` opens that document
@@ -258,6 +265,12 @@ impl App {
         }
         if std::env::var_os("AC_SCREENSHOT").is_none() && arg.is_none() {
             app.check_recovery();
+        }
+        // Startup window (Flare's): new scene or open one; a blank document behind it
+        if startup::at_launch(&app, arg.is_some()) && matches!(app.dialog, Dialog::None) {
+            app.load_doc(ac_core::Document::default(), None);
+            app.startup = Some(startup::Startup::new(&app));
+            app.status = "Create a new scene or open one (Window › Startup Window… shows this again).".into();
         }
         // Headless screenshot hook used by CI/docs: AC_SCREENSHOT=out.png [AC_SCREENSHOT_FRAME=n]
         if let Ok(p) = std::env::var("AC_SCREENSHOT") {
@@ -677,7 +690,7 @@ impl App {
         egui::TopBottomPanel::top("menu").show(ctx, |ui| {
             egui::menu::bar(ui, |ui| {
                 ui.menu_button("File", |ui| {
-                    if ui.add(egui::Button::new("New").shortcut_text("Ctrl+N")).clicked() { self.guarded(files::Pending::New); ui.close_menu(); }
+                    if ui.add(egui::Button::new("New…").shortcut_text("Ctrl+N")).clicked() { self.guarded(files::Pending::New); ui.close_menu(); }
                     if ui.add(egui::Button::new("Open…").shortcut_text("Ctrl+O")).clicked() { self.guarded(files::Pending::Open); ui.close_menu(); }
                     ui.menu_button("Open Recent", |ui| {
                         if self.settings.recent.is_empty() {
@@ -824,6 +837,7 @@ impl App {
                     if ui.button("Script Console").clicked() { self.scripting.console_open = true; ui.close_menu(); }
                     if ui.button("Command Reference").clicked() { self.scripting.reference_open = true; ui.close_menu(); }
                     ui.separator();
+                    if ui.button("Startup Window…").on_hover_text("New scene or open an existing one").clicked() { self.startup = Some(startup::Startup::new(self)); ui.close_menu(); }
                     if ui.button("Edit Toolbar…").clicked() { self.topts.edit_toolbar_open = true; ui.close_menu(); }
                 });
                 ui.menu_button("Help", |ui| {
@@ -1251,6 +1265,7 @@ impl eframe::App for App {
         stage::stage(self, ctx);
         panels::library_drag_ghost(self, ctx);
         self.dialogs(ctx);
+        startup::window(self, ctx);
         publish::window(self, ctx);
         publish::image_window(self, ctx);
         scripting::windows(self, ctx);

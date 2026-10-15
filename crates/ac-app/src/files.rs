@@ -114,12 +114,12 @@ pub(crate) fn is_xfl(p: &Path) -> bool {
 }
 
 /// Native dialogs can be turned off (headless UI tests): AC_NO_NATIVE_DIALOGS=1.
-fn native_dialogs() -> bool {
+pub(crate) fn native_dialogs() -> bool {
     std::env::var_os("AC_NO_NATIVE_DIALOGS").is_none()
 }
 
 /// Persistent app settings (config dir / Flare / settings.json).
-#[derive(Serialize, Deserialize, Default, Clone)]
+#[derive(Serialize, Deserialize, Clone)]
 pub(crate) struct Settings {
     #[serde(default)]
     pub recent: Vec<String>,
@@ -134,6 +134,19 @@ pub(crate) struct Settings {
     /// semantics). Off = Animate's behaviour.
     #[serde(default)]
     pub retain_tween_curves: bool,
+    /// Startup window at launch (its "Show this at startup" box).
+    #[serde(default = "yes")]
+    pub show_startup: bool,
+}
+
+fn yes() -> bool {
+    true
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Settings { recent: vec![], last_dir: None, library_left: false, filter_presets: vec![], retain_tween_curves: false, show_startup: true }
+    }
 }
 
 fn app_dir(base: Option<PathBuf>) -> Option<PathBuf> {
@@ -206,6 +219,7 @@ impl App {
             .as_deref()
             .and_then(|p| Path::new(p).file_name())
             .map(|n| n.to_string_lossy().trim_end_matches(".json").trim_end_matches(".acx").trim_end_matches(".fla").trim_end_matches(".xfl").to_string())
+            .or_else(|| self.untitled_name.clone())
             .unwrap_or_else(|| "Untitled".into())
     }
     pub(crate) fn dirty(&self) -> bool {
@@ -260,7 +274,8 @@ impl App {
 
     pub(crate) fn run_pending(&mut self, p: Pending) {
         match p {
-            Pending::New => self.load_doc(Document::default(), None),
+            // File › New: the Startup window's Create a New Scene
+            Pending::New => self.startup = Some(crate::startup::Startup::new(self)),
             Pending::OpenDemo => self.load_doc(demo_document(), None),
             Pending::Open => self.file(FileAction::Open),
             Pending::OpenPath(path) => self.do_file(FileAction::Open, &path),
@@ -276,6 +291,7 @@ impl App {
         self.saved_rev = self.ed.revision;
         self.autosave_rev = self.ed.revision;
         self.file_path = path;
+        self.untitled_name = None;
         self.fit_pending = true;
         self.lib_selected = None;
         self.ft_pivot = None;

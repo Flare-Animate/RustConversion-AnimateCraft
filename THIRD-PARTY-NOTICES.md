@@ -24,8 +24,10 @@ descend from OpenToonz's, © DWANGO Co., Ltd. and OpenToonz contributors):
 
 - `assets/icon/flare.png`, `flare.ico`: Flare's application icon
   (`flare/sources/flare/Flare.ico`; the .ico here adds resampled small sizes).
-- `assets/flare-icons/tools/*.svg`: 21 tool icons from
-  `flare/sources/flare/icons/dark/tools/20x20/`, unchanged (tinted at runtime).
+- `assets/flare-icons/tools/*.svg`: 28 tool icons from
+  `flare/sources/flare/icons/dark/tools/20x20/` and `icons/dark/actions/`,
+  unchanged (tinted at runtime). Our own icons for the other tools are in
+  `assets/icons/tools` (original, this project's licence).
 
 Neither was taken from Adobe software.
 Not taken from Flare: its Qt theme materials (derived from studying Adobe

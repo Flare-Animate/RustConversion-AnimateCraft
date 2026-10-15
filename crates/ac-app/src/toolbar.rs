@@ -479,8 +479,11 @@ fn color_controls(app: &mut App, ui: &mut egui::Ui) {
     ui.horizontal(|ui| {
         ui.add_space(4.0);
         ui.toggle_value(&mut app.topts.snap, "Snap").on_hover_text("Snap to objects and the stage (hold Alt to bypass)");
-        if ui.selectable_label(true, "Obj").on_hover_text("Object Drawing (J): always on for now; Merge Drawing is planned").clicked() {
-            app.status = "Object Drawing is always on in this version; Merge Drawing is on the roadmap (M2).".into();
+        let obj = app.topts.object_draw;
+        let tip = if obj { "Object Drawing is on: each new shape is its own object (J toggles Merge Drawing)" } else { "Merge Drawing: new shapes cut and merge with the layer's shape (J toggles Object Drawing)" };
+        if ui.selectable_label(obj, "Obj").on_hover_text(tip).clicked() {
+            app.topts.object_draw = !obj;
+            app.status = if app.topts.object_draw { "Object Drawing on: each shape is a separate object" } else { "Merge Drawing: shapes cut and merge with the layer's shape" }.into();
         }
     });
 }
@@ -494,7 +497,35 @@ fn flare_icon_svg(t: Tool) -> Option<(&'static str, &'static str)> {
             Some(($n, include_str!(concat!("../../../assets/flare-icons/tools/", $n, ".svg"))))
         };
     }
+    // our own icons in the same style, for tools Flare has none for
+    macro_rules! own {
+        ($n:literal) => {
+            Some(($n, include_str!(concat!("../../../assets/icons/tools/", $n, ".svg"))))
+        };
+    }
     match t {
+        Tool::Lasso => svg!("selection_freehand"),
+        Tool::PolyLasso => svg!("selection_polyline"),
+        Tool::Line => svg!("geometric_line"),
+        Tool::Rect => svg!("geometric_rectangle"),
+        Tool::Oval => svg!("geometric_ellipse"),
+        Tool::PolyStar => svg!("geometric_polygon"),
+        Tool::Camera => svg!("camera"),
+        Tool::Pen => own!("pen"),
+        Tool::AddAnchor => own!("pen_add"),
+        Tool::DeleteAnchor => own!("pen_delete"),
+        Tool::ConvertAnchor => own!("convert_anchor"),
+        Tool::Pencil => own!("pencil"),
+        Tool::FluidBrush => own!("fluid_brush"),
+        Tool::Width => own!("width"),
+        Tool::InkBottle => own!("ink_bottle"),
+        Tool::GradientTransform => own!("gradient_transform"),
+        Tool::Rotate3D => own!("rotate_3d"),
+        Tool::Translate3D => own!("translate_3d"),
+        Tool::MagicWand => own!("magic_wand"),
+        Tool::RectPrimitive => own!("rect_primitive"),
+        Tool::OvalPrimitive => own!("oval_primitive"),
+        Tool::Particles => own!("particles"),
         Tool::Select => svg!("selection"),
         Tool::Subselect => svg!("controlpointeditor"),
         Tool::FreeTransform => svg!("animate"),
@@ -516,7 +547,6 @@ fn flare_icon_svg(t: Tool) -> Option<(&'static str, &'static str)> {
         Tool::Hand => svg!("hand"),
         Tool::RotateView => svg!("rotate"),
         Tool::Zoom => svg!("zoom"),
-        _ => None,
     }
 }
 
@@ -538,7 +568,16 @@ fn flare_icon_texture(ctx: &egui::Context, t: Tool) -> Option<egui::TextureHandl
                 let sz = tree.size();
                 let k = PX as f32 / sz.width().max(sz.height()).max(1.0);
                 resvg::render(&tree, tiny_skia::Transform::from_scale(k, k), &mut pm.as_mut());
-                let px: Vec<Color32> = pm.pixels().iter().map(|p| Color32::from_rgba_unmultiplied(255, 255, 255, p.alpha())).collect();
+                // ink = dark and opaque: white parts of an icon are cut-outs
+                let px: Vec<Color32> = pm
+                    .pixels()
+                    .iter()
+                    .map(|p| {
+                        let c = p.demultiply();
+                        let lum = (c.red() as u32 * 3 + c.green() as u32 * 6 + c.blue() as u32) / 10;
+                        Color32::from_rgba_unmultiplied(255, 255, 255, ((c.alpha() as u32 * (255 - lum)) / 255) as u8)
+                    })
+                    .collect();
                 let img = egui::ColorImage { size: [PX as usize, PX as usize], pixels: px };
                 Some(ctx.load_texture(format!("flare-tool-{name}"), img, egui::TextureOptions::LINEAR))
             })
