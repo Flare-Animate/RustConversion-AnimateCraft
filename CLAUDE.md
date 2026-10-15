@@ -185,7 +185,7 @@ crates/
   ac-package native .acx package (ZIP of JSON parts + media files)
   ac-script  scripting: sandboxed frame scripts (QuickJS), authoring scripts (JS embedded, JSFL shim, others via JSON bridge)
   ac-cli     headless: info / gif / png / svg / svg-anim / html5 / sprites / lottie / xfl / convert / run / commands
-  ac-app     egui desktop editor (Animate "Essentials" layout)
+  ac-app     egui desktop editor (movable docks: dock.rs)
 ```
 
 - **Document model** mirrors Animate's DOM so XFL maps 1:1:

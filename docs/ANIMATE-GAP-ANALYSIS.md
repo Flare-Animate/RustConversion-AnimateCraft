@@ -53,7 +53,7 @@ The two engine milestones that unlock most of the rest:
 | Grid (show, snap, spacing, colour) | Yes | Yes (Edit Grid) | ✅ | |
 | Snapping: objects, pixels, align (smart guides), guides, grid | Yes | Objects, stage, guides, grid, pixels (View › Snapping) | 🟡 | P3 (smart-guide preferences) |
 | Panel docking, floating panels, tabs, collapse to icons | Yes | Fixed layout (Library can dock left) | 🟡 | P1 |
-| Workspaces (Essentials, Animator, Designer, Developer…, save/reset) | Yes | — | ❌ | P2 |
+| Workspaces (Essentials, Animator, Designer, Developer…, save/reset) | Yes | — | 🟡 movable docks (Tools/Properties L·R, Timeline top·bottom, Library column), saved, Reset Layout; no named/saved workspaces or floating panels yet | P2 |
 | UI themes (dark / light / colour) | Yes | Dark only | ❌ | P3 |
 | Properties panel (context-sensitive, Tool/Object/Frame/Doc tabs) | Yes | Yes | ✅ | |
 | Library: folders, search, sort, preview, linkage, Use Count | Yes | Search, sort, preview, use count | 🟡 | P1 (folders, linkage, Update/Properties dialog) |

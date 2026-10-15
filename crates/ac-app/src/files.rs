@@ -137,6 +137,9 @@ pub(crate) struct Settings {
     /// Startup window at launch (its "Show this at startup" box).
     #[serde(default = "yes")]
     pub show_startup: bool,
+    /// Dock layout (Workspace menu / panel grips); None = standard.
+    #[serde(default)]
+    pub layout: Option<crate::dock::Layout>,
 }
 
 fn yes() -> bool {
@@ -145,7 +148,7 @@ fn yes() -> bool {
 
 impl Default for Settings {
     fn default() -> Self {
-        Settings { recent: vec![], last_dir: None, library_left: false, filter_presets: vec![], retain_tween_curves: false, show_startup: true }
+        Settings { recent: vec![], last_dir: None, library_left: false, filter_presets: vec![], retain_tween_curves: false, show_startup: true, layout: None }
     }
 }
 

@@ -1,4 +1,4 @@
-//! Properties panel (right), Library (below Properties or docked left) and
+//! Properties panel (right by default), Library (below Properties or in its own column) and
 //! the Transform panel.
 
 use crate::toolbar::{FtMode, PencilMode, Tool};
@@ -13,8 +13,6 @@ use tiny_skia as sk;
 /// Library panel state.
 pub struct LibraryState {
     pub open: bool,
-    /// Dock the Library in its own panel on the left instead of under Properties.
-    pub left: bool,
     pub search: String,
     pub play: bool,
     pub frame: u32,
@@ -30,7 +28,7 @@ pub struct LibraryState {
 
 impl Default for LibraryState {
     fn default() -> Self {
-        LibraryState { open: true, left: false, search: String::new(), play: false, frame: 0, accum: 0.0, sort: (0, true), bitmap: None, drag_bitmap: None, sound: None, drag_sound: None }
+        LibraryState { open: true, search: String::new(), play: false, frame: 0, accum: 0.0, sort: (0, true), bitmap: None, drag_bitmap: None, sound: None, drag_sound: None }
     }
 }
 
@@ -48,20 +46,23 @@ impl Default for TransformPanel {
     }
 }
 
-fn panel_title(ui: &mut egui::Ui, title: &str) {
-    egui::Frame::none().fill(Color32::from_gray(0x2A)).inner_margin(egui::Margin::symmetric(6.0, 3.0)).show(ui, |ui| {
+/// A panel's title bar, with its grip for moving the panel (dock.rs).
+fn panel_title(app: &mut App, ui: &mut egui::Ui, module: crate::dock::Module, title: &str) {
+    egui::Frame::none().fill(Color32::from_gray(0x2A)).inner_margin(egui::Margin::symmetric(4.0, 2.0)).show(ui, |ui| {
         ui.set_width(ui.available_width());
-        ui.label(RichText::new(title).strong());
+        ui.horizontal(|ui| {
+            crate::dock::grip(app, ui, module, Some(title));
+        });
     });
 }
 
 pub fn right_panel(app: &mut App, ctx: &egui::Context) {
-    egui::SidePanel::right("props").default_width(300.0).min_width(250.0).max_width((ctx.screen_rect().width() * 0.45).max(320.0)).show(ctx, |ui| {
-        let lib_here = app.lib.open && !app.lib.left;
+    egui::SidePanel::new(app.layout.props_side(), "props").default_width(300.0).min_width(250.0).max_width((ctx.screen_rect().width() * 0.45).max(320.0)).show(ctx, |ui| {
+        let lib_here = app.lib.open && app.layout.library == crate::dock::LibraryDock::WithProperties;
         let total = ui.available_height();
         // Properties take what they need (scrolling past a cap); the Library fills the rest.
         let props_max = if lib_here { (total - 220.0).max(160.0) } else { total - 30.0 };
-        panel_title(ui, "Properties");
+        panel_title(app, ui, crate::dock::Module::Properties, "Properties");
         egui::ScrollArea::vertical().id_salt("props-scroll").max_height(props_max).auto_shrink([false, true]).show(ui, |ui| {
             ui.horizontal(|ui| {
                 for (t, name) in [(PropsTab::Tool, "Tool"), (PropsTab::Object, "Object"), (PropsTab::Frame, "Frame"), (PropsTab::Doc, "Doc")] {
@@ -85,19 +86,24 @@ pub fn right_panel(app: &mut App, ctx: &egui::Context) {
         });
         if lib_here {
             ui.add_space(2.0);
-            panel_title(ui, "Library");
+            panel_title(app, ui, crate::dock::Module::Library, "Library");
             library(app, ui);
         }
     });
 }
 
-/// The Library docked on the left (View › Library position).
-pub fn left_library(app: &mut App, ctx: &egui::Context) {
-    if !(app.lib.open && app.lib.left) {
+/// The Library in its own column, left or right (Workspace › Library).
+pub fn library_column(app: &mut App, ctx: &egui::Context) {
+    let side = match app.layout.library {
+        crate::dock::LibraryDock::Left => egui::panel::Side::Left,
+        crate::dock::LibraryDock::Right => egui::panel::Side::Right,
+        crate::dock::LibraryDock::WithProperties => return,
+    };
+    if !app.lib.open {
         return;
     }
-    egui::SidePanel::left("library-left").default_width(270.0).min_width(220.0).show(ctx, |ui| {
-        panel_title(ui, "Library");
+    egui::SidePanel::new(side, "library-left").default_width(270.0).min_width(220.0).show(ctx, |ui| {
+        panel_title(app, ui, crate::dock::Module::Library, "Library");
         library(app, ui);
     });
 }

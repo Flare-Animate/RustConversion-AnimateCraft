@@ -260,13 +260,15 @@ impl App {
     }
     pub(crate) fn fit(&mut self, rect: Rect) {
         let d = &self.ed.doc;
-        let (w, h) = (d.width, d.height);
+        // the stage, or (View › Show All) a given box
+        let (lo, hi) = self.fit_bounds.take().unwrap_or((pt(0.0, 0.0), pt(d.width, d.height)));
+        let (w, h) = ((hi.x - lo.x).max(1.0), (hi.y - lo.y).max(1.0));
         let (c, s) = (self.view_rot.cos().abs(), self.view_rot.sin().abs());
         let (bw, bh) = (w * c + h * s, w * s + h * c);
-        self.zoom = ((rect.width() - 60.0) / bw).min((rect.height() - 60.0) / bh).clamp(0.1, 8.0);
+        self.zoom = ((rect.width() - 60.0) / bw).min((rect.height() - 60.0) / bh).clamp(0.05, 8.0);
         self.pan = Vec2::ZERO;
         let o = self.content_offset();
-        let center = pt(w / 2.0 - o.x, h / 2.0 - o.y);
+        let center = pt(lo.x + w / 2.0 - o.x, lo.y + h / 2.0 - o.y);
         let now = self.to_screen(rect, center);
         self.pan += rect.center() - now;
     }
@@ -765,10 +767,10 @@ pub fn stage(app: &mut App, ctx: &egui::Context) {
                     ui.label(egui::RichText::new("🎥 Camera view").color(Color32::from_rgb(0xFF, 0xA0, 0x30)));
                 }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.small_button("Fit").clicked() {
-                        app.fit_pending = true;
-                    }
-                    ui.label(format!("{:.0}%", app.zoom * 100.0));
+                    ui.toggle_value(&mut app.view.clip, "Clip").on_hover_text("Clip content outside the stage (Ctrl+Shift+W)");
+                    ui.toggle_value(&mut app.view.rulers, "Rulers").on_hover_text("Rulers (Ctrl+Alt+Shift+R)");
+                    ui.separator();
+                    zoom_menu(app, ui);
                     if app.view_rot.abs() > 1e-4
                         && ui.small_button(format!("⟲ {:.0}°", app.view_rot.to_degrees())).on_hover_text("View rotated (Rotation tool). Click to reset").clicked() {
                             let r = app.stage_rect;
@@ -2771,6 +2773,78 @@ fn eyedrop(app: &mut App, p: Pt) {
     }
 }
 
+/// Clip Content Outside Stage: paint the pasteboard back over everything
+/// off the stage (in `view`, which may be rotated), then its drop shadow.
+fn clip_outside_stage(pix: &mut sk::Pixmap, view: &Matrix, w: f32, h: f32) {
+    let quad = |x: f32, y: f32| [view.apply(Pt { x, y }), view.apply(Pt { x: x + w, y }), view.apply(Pt { x: x + w, y: y + h }), view.apply(Pt { x, y: y + h })];
+    let ring = |pb: &mut sk::PathBuilder, q: [Pt; 4]| {
+        pb.move_to(q[0].x, q[0].y);
+        for p in &q[1..] {
+            pb.line_to(p.x, p.y);
+        }
+        pb.close();
+    };
+    let stage = quad(0.0, 0.0);
+    let (pw, ph) = (pix.width() as f32, pix.height() as f32);
+    let mut pb = sk::PathBuilder::new();
+    if let Some(r) = sk::Rect::from_xywh(0.0, 0.0, pw, ph) {
+        pb.push_rect(r);
+    }
+    ring(&mut pb, stage);
+    let mut paint = sk::Paint::default();
+    paint.set_color(sk::Color::from_rgba8(0x3C, 0x3C, 0x3C, 255));
+    if let Some(p) = pb.finish() {
+        pix.fill_path(&p, &paint, sk::FillRule::EvenOdd, sk::Transform::identity(), None);
+    }
+    for (off, a) in [(6.0, 40u8), (3.0, 60)] {
+        let mut pb = sk::PathBuilder::new();
+        ring(&mut pb, quad(off, off));
+        ring(&mut pb, stage);
+        paint.set_color(sk::Color::from_rgba8(0, 0, 0, a));
+        if let Some(p) = pb.finish() {
+            pix.fill_path(&p, &paint, sk::FillRule::EvenOdd, sk::Transform::identity(), None);
+        }
+    }
+}
+
+/// Zoom presets in the edit bar.
+pub(crate) const ZOOM_PRESETS: [f32; 9] = [0.25, 0.5, 1.0, 2.0, 4.0, 8.0, 0.0, -1.0, -2.0];
+
+fn zoom_menu(app: &mut App, ui: &mut egui::Ui) {
+    egui::ComboBox::from_id_salt("edit-bar.zoom").width(76.0).selected_text(format!("{:.0}%", app.zoom * 100.0)).show_ui(ui, |ui| {
+        for z in ZOOM_PRESETS {
+            let label = match z {
+                0.0 => "Fit in Window".to_string(),
+                -1.0 => "Show Frame".to_string(),
+                -2.0 => "Show All".to_string(),
+                _ => format!("{:.0}%", z * 100.0),
+            };
+            if ui.selectable_label(z > 0.0 && (app.zoom - z).abs() < 1e-3, label).clicked() {
+                match z {
+                    0.0 | -1.0 => app.fit_pending = true,
+                    -2.0 => show_all(app),
+                    _ => app.zoom = z,
+                }
+            }
+        }
+    });
+}
+
+/// Zoom and scroll so every item on the current frame (and the stage) is in view.
+fn show_all(app: &mut App) {
+    let items = app.ed.evaluate_current(app.ed.frame);
+    let d = &app.ed.doc;
+    let (mut lo, mut hi) = (Pt { x: 0.0, y: 0.0 }, Pt { x: d.width, y: d.height });
+    for it in &items {
+        if let Some((a, b)) = it.path.transformed(&it.matrix).bounds() {
+            lo = Pt { x: lo.x.min(a.x), y: lo.y.min(a.y) };
+            hi = Pt { x: hi.x.max(b.x), y: hi.y.max(b.y) };
+        }
+    }
+    app.fit_bounds = Some((lo, hi));
+    app.fit_pending = true;
+}
+
 fn to_ts(m: &Matrix) -> sk::Transform {
     sk::Transform::from_row(m.a, m.b, m.c, m.d, m.tx, m.ty)
 }
@@ -2855,6 +2929,9 @@ fn render_stage(app: &mut App, ui: &egui::Ui, rect: Rect) {
     let mut items = app.ed.evaluate_current(app.ed.frame);
     crate::scripting::apply_overrides(app, &mut items);
     ac_render::draw_items(&mut pix.as_mut(), &items, &ac_render::RenderOpts { view: content_view, ..Default::default() });
+    if app.view.clip {
+        clip_outside_stage(&mut pix, &view, d.width, d.height);
+    }
     // free camera: dim what the camera doesn't see
     if app.vcam_dim && vcam_frame_shown(app) {
         if let Some(q) = vcam_quad(app, app.ed.frame) {

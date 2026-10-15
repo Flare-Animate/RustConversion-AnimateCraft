@@ -1,9 +1,10 @@
 // Release builds on Windows are GUI apps: no console window behind the editor.
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
-//! Flare desktop editor. Layout follows Adobe Animate's default
-//! "Essentials" workspace: menu bar, Tools (left), Stage (centre),
-//! Properties + Library (right), Timeline (bottom).
+//! Flare desktop editor. Standard layout: menu bar, Tools (left), Stage
+//! (centre), Properties + Library (right), Timeline (bottom); each dock can be
+//! moved by its grip (dock.rs, Workspace menu).
 
+mod dock;
 mod files;
 mod import;
 mod motion_ui;
@@ -62,6 +63,8 @@ pub struct App {
     pub(crate) zoom: f32,
     pub(crate) pan: Vec2,
     pub(crate) fit_pending: bool,
+    /// The box the next fit shows (None = the stage).
+    pub(crate) fit_bounds: Option<(ac_core::Pt, ac_core::Pt)>,
     pub(crate) playing: bool,
     /// Sound while playing (None = silent / not started yet).
     #[cfg(feature = "audio")]
@@ -86,6 +89,12 @@ pub struct App {
     pub(crate) startup: Option<startup::Startup>,
     /// Name given in the Startup window to a document not saved yet.
     pub(crate) untitled_name: Option<String>,
+    /// Where the docks sit (dock.rs); saved in the settings.
+    pub(crate) layout: dock::Layout,
+    /// The module being dragged by its grip.
+    pub(crate) dock_drag: Option<dock::Module>,
+    /// Escape cancelled a dock drag; ignored until the mouse button is released.
+    pub(crate) dock_cancelled: bool,
     pub(crate) status: String,
     pub(crate) file_path: Option<String>,
     pub(crate) settings: files::Settings,
@@ -206,6 +215,7 @@ impl App {
             zoom: 1.0,
             pan: Vec2::ZERO,
             fit_pending: true,
+            fit_bounds: None,
             playing: false,
             #[cfg(feature = "audio")]
             audio: None,
@@ -271,8 +281,11 @@ impl App {
             screenshot: None,
             startup: None,
             untitled_name: None,
+            layout: dock::Layout::default(),
+            dock_drag: None,
+            dock_cancelled: false,
         };
-        app.lib.left = app.settings.library_left;
+        app.layout = app.settings.layout.unwrap_or(dock::Layout { library: if app.settings.library_left { dock::LibraryDock::Left } else { dock::LibraryDock::WithProperties }, ..Default::default() });
         // `flare file.acx.json` opens that document
         let arg = std::env::args().nth(1).filter(|a| !a.starts_with('-'));
         if let Some(path) = &arg {
@@ -300,6 +313,20 @@ impl App {
     }
 
     // ------------------------------------------------------------ actions
+    /// Keep the dock layout in the settings (and the old Library flag for
+    /// older versions reading the same file).
+    pub(crate) fn save_layout(&mut self) {
+        self.settings.layout = Some(self.layout);
+        self.settings.library_left = self.layout.library == dock::LibraryDock::Left;
+        self.settings.save();
+    }
+
+    pub(crate) fn reset_layout(&mut self) {
+        self.layout = dock::Layout::default();
+        self.save_layout();
+        self.status = "Layout reset: Tools left, Properties and Library right, Timeline below".into();
+    }
+
     pub(crate) fn set_tool(&mut self, t: Tool) {
         if !t.usable() {
             self.status = format!("{} is planned: {}", t.info().name, t.info().planned.unwrap_or(""));
@@ -498,6 +525,7 @@ impl App {
         if k(cmd, Key::T) { self.transform_open = !self.transform_open; }
         if k(cmd, Key::K) { self.align_open = !self.align_open; }
         if k(cmd | sh | Modifiers::ALT, Key::R) { self.view.rulers = !self.view.rulers; }
+        if k(cmd | sh, Key::W) { self.view.clip = !self.view.clip; }
         if k(cmd | sh, Key::Quote) { self.view.snap_grid = !self.view.snap_grid; }
         if k(cmd, Key::Quote) { self.view.grid = !self.view.grid; }
         if k(cmd | Modifiers::ALT, Key::Semicolon) { self.view.lock_guides = !self.view.lock_guides; }
@@ -772,6 +800,7 @@ impl App {
                     ui.separator();
                     ui.checkbox(&mut self.topts.show_bones, "Show Bones");
                     ui.add(egui::Checkbox::new(&mut self.view.rulers, "Rulers")).on_hover_text("Ctrl+Alt+Shift+R");
+                    ui.add(egui::Checkbox::new(&mut self.view.clip, "Clip Content Outside Stage")).on_hover_text("Ctrl+Shift+W");
                     ui.menu_button("Grid", |ui| {
                         ui.checkbox(&mut self.view.grid, "Show Grid  (Ctrl+')");
                         ui.checkbox(&mut self.view.snap_grid, "Snap to Grid  (Ctrl+Shift+')");
@@ -793,8 +822,11 @@ impl App {
                     });
                     ui.separator();
                     ui.label(RichText::new("Library position").small().color(Color32::from_gray(150)));
-                    ui.radio_value(&mut self.lib.left, false, "Right, below Properties");
-                    ui.radio_value(&mut self.lib.left, true, "Own panel on the left");
+                    let before = self.layout;
+                    ui.radio_value(&mut self.layout.library, dock::LibraryDock::WithProperties, "Under Properties");
+                    ui.radio_value(&mut self.layout.library, dock::LibraryDock::Left, "Own panel on the left");
+                    ui.radio_value(&mut self.layout.library, dock::LibraryDock::Right, "Own panel on the right");
+                    if self.layout != before { self.save_layout(); }
                 });
                 ui.menu_button("Insert", |ui| {
                     if ui.add(egui::Button::new("New Symbol…").shortcut_text("Ctrl+F8")).clicked() { self.open_symbol_dialog(false); ui.close_menu(); }
@@ -854,14 +886,36 @@ impl App {
                     ui.separator();
                     if ui.button("Startup Window…").on_hover_text("New scene or open an existing one").clicked() { self.startup = Some(startup::Startup::new(self)); ui.close_menu(); }
                     if ui.button("Edit Toolbar…").clicked() { self.topts.edit_toolbar_open = true; ui.close_menu(); }
+                    ui.separator();
+                    if ui.button("Reset Layout").on_hover_text("Tools left, Properties and Library right, Timeline below").clicked() { self.reset_layout(); ui.close_menu(); }
                 });
                 ui.menu_button("Help", |ui| {
                     if ui.button("About Flare").clicked() { self.dialog = Dialog::About; ui.close_menu(); }
                 });
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.label(egui::RichText::new("Essentials").color(Color32::from_gray(150)));
+                    self.workspace_menu(ui);
                 });
             });
+        });
+    }
+
+    /// The Workspace menu at the right of the menu bar: where each dock sits.
+    fn workspace_menu(&mut self, ui: &mut egui::Ui) {
+        ui.menu_button(RichText::new("Workspace").color(Color32::from_gray(170)), |ui| {
+            let before = self.layout;
+            ui.label(RichText::new("Drag the dots beside a panel's name to move it, or choose here").small().color(Color32::from_gray(150)));
+            ui.separator();
+            ui.checkbox(&mut self.layout.tools_right, "Tools on the right");
+            ui.checkbox(&mut self.layout.props_left, "Properties on the left");
+            ui.checkbox(&mut self.layout.timeline_top, "Timeline above the stage");
+            ui.menu_button("Library", |ui| {
+                ui.radio_value(&mut self.layout.library, dock::LibraryDock::WithProperties, "Under Properties");
+                ui.radio_value(&mut self.layout.library, dock::LibraryDock::Left, "Own panel on the left");
+                ui.radio_value(&mut self.layout.library, dock::LibraryDock::Right, "Own panel on the right");
+            });
+            if self.layout != before { self.save_layout(); }
+            ui.separator();
+            if ui.button("Reset Layout").clicked() { self.reset_layout(); ui.close_menu(); }
         });
     }
 
@@ -1199,8 +1253,7 @@ impl eframe::App for App {
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
         // A clean exit leaves no recovery file behind.
         files::clear_recovery();
-        self.settings.library_left = self.lib.left;
-        self.settings.save();
+        self.save_layout();
     }
 
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
@@ -1224,6 +1277,7 @@ impl eframe::App for App {
             ctx.send_viewport_cmd(egui::ViewportCommand::Title(title.clone()));
             self.title_shown = title;
         }
+        dock::escape(self, ctx);
         self.shortcuts(ctx);
         if ctx.memory(|m| m.focused().is_none()) {
             scripting::shortcuts(self, ctx);
@@ -1275,10 +1329,11 @@ impl eframe::App for App {
         self.status_bar(ctx);
         timeline::panel(self, ctx);
         toolbar::panel(self, ctx);
-        panels::left_library(self, ctx);
+        panels::library_column(self, ctx);
         panels::right_panel(self, ctx);
         stage::stage(self, ctx);
         panels::library_drag_ghost(self, ctx);
+        dock::drop_targets(self, ctx);
         self.dialogs(ctx);
         startup::window(self, ctx);
         publish::window(self, ctx);

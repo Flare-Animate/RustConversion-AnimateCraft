@@ -25,6 +25,8 @@ pub struct ViewOpts {
     pub snap_px: f32,
     /// View › Snapping › Snap to Pixels: drawing and moving land on whole pixels.
     pub snap_pixels: bool,
+    /// View › Clip Content Outside Stage: hide what lies off the stage.
+    pub clip: bool,
 }
 
 impl Default for ViewOpts {
@@ -43,6 +45,7 @@ impl Default for ViewOpts {
             guide_color: Color32::from_rgb(0x40, 0xD0, 0xE0),
             snap_px: 6.0,
             snap_pixels: false,
+            clip: false,
         }
     }
 }

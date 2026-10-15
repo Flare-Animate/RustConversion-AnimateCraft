@@ -201,7 +201,7 @@ pub fn layer_menu(app: &mut App, ui: &mut egui::Ui, i: usize) {
 }
 
 pub fn panel(app: &mut App, ctx: &egui::Context) {
-    egui::TopBottomPanel::bottom("timeline").resizable(true).default_height(230.0).min_height(120.0).show(ctx, |ui| {
+    egui::TopBottomPanel::new(app.layout.timeline_side(), "timeline").resizable(true).default_height(230.0).min_height(120.0).show(ctx, |ui| {
         toolbar(app, ui);
         grid(app, ui);
     });
@@ -209,7 +209,7 @@ pub fn panel(app: &mut App, ctx: &egui::Context) {
 
 fn toolbar(app: &mut App, ui: &mut egui::Ui) {
     ui.horizontal(|ui| {
-        ui.label(egui::RichText::new("Timeline").strong());
+        crate::dock::grip(app, ui, crate::dock::Module::Timeline, Some("Timeline"));
         ui.separator();
         if ui.button("⏮").on_hover_text("First frame").clicked() { app.step(-100_000); }
         if ui.button("◀").on_hover_text("Step back (,)").clicked() { app.step(-1); }

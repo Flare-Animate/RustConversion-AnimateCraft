@@ -322,9 +322,11 @@ pub fn tool_shortcuts(app: &mut App, ctx: &egui::Context) {
 }
 
 pub fn panel(app: &mut App, ctx: &egui::Context) {
-    egui::SidePanel::left("tools").exact_width(92.0).resizable(false).show(ctx, |ui| {
+    egui::SidePanel::new(app.layout.tools_side(), "tools").exact_width(92.0).resizable(false).show(ctx, |ui| {
+        ui.vertical_centered(|ui| {
+            crate::dock::grip(app, ui, crate::dock::Module::Tools, None);
+        });
         egui::ScrollArea::vertical().show(ui, |ui| {
-            ui.add_space(4.0);
             ui.vertical_centered(|ui| {
                 ui.spacing_mut().item_spacing = vec2(2.0, 2.0);
                 let mut slot_index = 0usize;
