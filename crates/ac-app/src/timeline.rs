@@ -24,11 +24,13 @@ pub struct OnionOpts {
     pub shift: [ac_core::Matrix; 2],
     /// Pivot of the current Alt-drag turn.
     pub shift_pivot: Option<ac_core::Pt>,
+    /// Onion skin shows only keyframes (frame-by-frame drawing).
+    pub keys_only: bool,
 }
 
 impl Default for OnionOpts {
     fn default() -> Self {
-        OnionOpts { before: 2, after: 2, anchor: None, outline: false, multi: false, shift_trace: false, shift_edit: false, shift: [ac_core::Matrix::IDENTITY; 2], shift_pivot: None }
+        OnionOpts { before: 2, after: 2, anchor: None, outline: false, multi: false, shift_trace: false, shift_edit: false, shift: [ac_core::Matrix::IDENTITY; 2], shift_pivot: None, keys_only: false }
     }
 }
 
@@ -255,6 +257,8 @@ fn toolbar(app: &mut App, ui: &mut egui::Ui) {
                     app.onion_opts.anchor = if anchored { None } else { Some(app.onion_range()) };
                     ui.close_menu();
                 }
+                ui.checkbox(&mut app.onion_opts.keys_only, "Keyframes Only").on_hover_text("Ghost only the drawings (keyframes), not the in-between frames");
+                ui.separator();
                 for (label, n) in [("Onion 2", 2u32), ("Onion 5", 5), ("Onion All", u32::MAX)] {
                     if ui.button(label).clicked() {
                         if n == u32::MAX {

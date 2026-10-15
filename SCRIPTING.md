@@ -45,8 +45,9 @@ if (this.ball.x > 500) this.ball.visible = false;
 ```
 
 Supported properties: `x`, `y`, `rotation` (degrees), `scaleX`, `scaleY`,
-`alpha`, `visible`. Changes last until playback stops; the document itself is
-never modified.
+`alpha`, `visible`, and `text` on text fields (`this.score.text = "Score: " + n;`
+for Dynamic text; Input text holds what the viewer typed). Changes last until
+playback stops; the document itself is never modified.
 
 In a published **HTML5 Canvas** page the same scripts run in the browser,
 and named instances (buttons included) also take mouse events:

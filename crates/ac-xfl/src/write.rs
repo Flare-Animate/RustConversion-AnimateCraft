@@ -453,8 +453,9 @@ impl W<'_> {
                     let _ = writeln!(s, "{ind}</DOMBitmapInstance>");
                 }
                 ElementKind::Text(t) => {
-                    let bb = t.outline().bounds();
-                    let (w, h) = bb.map(|(lo, hi)| (hi.x.max(1.0), hi.y.max(1.0) - lo.y.min(0.0))).unwrap_or((t.size, t.size));
+                    use ac_core::text::{Baseline, TextKind};
+                    let (w, h) = t.box_size();
+                    let (w, h) = (w.max(1.0), h.max(1.0));
                     let mut face = t.family.clone().unwrap_or_else(|| if t.font == ac_core::text::FontFace::Mono { "Hack".into() } else { "Ubuntu Light".into() });
                     if t.weight != 400 || t.italic {
                         // PostScript-style face: Family-Bold, Family-Italic, Family-BoldItalic …
@@ -475,11 +476,53 @@ impl W<'_> {
                         ac_core::text::Align::Left => "left",
                         ac_core::text::Align::Center => "center",
                         ac_core::text::Align::Right => "right",
+                        ac_core::text::Align::Justify => "justify",
                     };
-                    let _ = writeln!(s, "{ind}<DOMStaticText{} width=\"{}\" height=\"{}\" autoExpand=\"true\">", if e.name.is_empty() { String::new() } else { format!(r#" name="{}""#, esc(&e.name)) }, n(w), n(h));
+                    let tag = match t.field.kind {
+                        TextKind::Static => "DOMStaticText",
+                        TextKind::Dynamic => "DOMDynamicText",
+                        TextKind::Input => "DOMInputText",
+                    };
+                    let mut fa = String::new();
+                    if t.para.width.is_none() {
+                        fa.push_str(r#" autoExpand="true""#);
+                    }
+                    if t.field.kind != TextKind::Static {
+                        let line = if t.field.password { "password" } else if t.para.width.is_some() { "multiline" } else if t.text.contains('\n') { "multiline no wrap" } else { "single line" };
+                        let _ = write!(fa, " lineType=\"{line}\"");
+                        if !t.field.selectable {
+                            fa.push_str(r#" isSelectable="false""#);
+                        }
+                        if t.field.max_chars > 0 {
+                            let _ = write!(fa, " maxCharacters=\"{}\"", t.field.max_chars);
+                        }
+                    } else if !t.field.selectable {
+                        fa.push_str(r#" isSelectable="false""#);
+                    }
+                    if t.field.border {
+                        fa.push_str(r#" border="true""#);
+                    }
+                    let _ = writeln!(s, "{ind}<{tag}{} width=\"{}\" height=\"{}\"{fa}>", if e.name.is_empty() { String::new() } else { format!(r#" name="{}""#, esc(&e.name)) }, n(w), n(h));
                     let i2 = format!("{ind}  ");
                     s.push_str(&matrix_xml(&m, &i2));
-                    let ls = if t.letter_spacing != 0.0 { format!(r#" letterSpacing="{}""#, n(t.letter_spacing)) } else { String::new() };
+                    let mut ls = if t.letter_spacing != 0.0 { format!(r#" letterSpacing="{}""#, n(t.letter_spacing)) } else { String::new() };
+                    let p = &t.para;
+                    for (k, v) in [("lineSpacing", p.line_spacing), ("indent", p.indent), ("leftMargin", p.margin_left), ("rightMargin", p.margin_right)] {
+                        if v != 0.0 {
+                            let _ = write!(ls, " {k}=\"{}\"", n(v));
+                        }
+                    }
+                    match p.baseline {
+                        Baseline::Superscript => ls.push_str(r#" characterPosition="superscript""#),
+                        Baseline::Subscript => ls.push_str(r#" characterPosition="subscript""#),
+                        Baseline::Normal => {}
+                    }
+                    if p.no_kern {
+                        ls.push_str(r#" autoKern="false""#);
+                    }
+                    if let Some(u) = &t.field.link {
+                        let _ = write!(ls, " url=\"{}\"", esc(u));
+                    }
                     let _ = writeln!(
                         s,
                         "{i2}<textRuns>\n{i2}  <DOMTextRun>\n{i2}    <characters>{}</characters>\n{i2}    <textAttrs>\n{i2}      <DOMTextAttrs alignment=\"{align}\" size=\"{}\" face=\"{}\" fillColor=\"{}\"{}{ls}/>\n{i2}    </textAttrs>\n{i2}  </DOMTextRun>\n{i2}</textRuns>",
@@ -489,7 +532,7 @@ impl W<'_> {
                         t.color.to_hex(),
                         alpha_attr(t.color, "alpha")
                     );
-                    let _ = writeln!(s, "{ind}</DOMStaticText>");
+                    let _ = writeln!(s, "{ind}</{tag}>");
                 }
             }
         }
@@ -770,6 +813,19 @@ pub(crate) fn write(doc: &Document) -> (Package, Vec<String>) {
     // symbols
     let mut includes = String::new();
     let mut folders: Vec<String> = vec![];
+    // folders of media items and stored (possibly empty) folders
+    for name in doc.bitmaps.iter().map(|b| b.name.as_str()).chain(doc.sounds.iter().map(|s| s.name.as_str())).chain(doc.folders.iter().map(|f| f.as_str())) {
+        let mut parts: Vec<&str> = name.split('/').collect();
+        if !doc.folders.iter().any(|f| f == name) {
+            parts.pop();
+        }
+        for k in 1..=parts.len() {
+            let f = parts[..k].join("/");
+            if !folders.contains(&f) {
+                folders.push(f);
+            }
+        }
+    }
     for (i, sym) in doc.library.iter().enumerate() {
         let href = format!("{}.xml", file_safe(&sym.name));
         let mut parts: Vec<&str> = sym.name.split('/').collect();
@@ -786,8 +842,12 @@ pub(crate) fn write(doc: &Document) -> (Package, Vec<String>) {
             SymbolKind::MovieClip => "",
         };
         let tl = w.timeline(&sym.timeline, "    ");
+        let link = match doc.linkage.get(&sym.id) {
+            Some(c) => format!(" linkageExportForAS=\"true\" linkageClassName=\"{}\"", esc(c)),
+            None => String::new(),
+        };
         let xml = format!(
-            "<DOMSymbolItem {NS} name=\"{}\" itemID=\"00000000-{:08x}\"{st}>\n  <timeline>\n{tl}  </timeline>\n</DOMSymbolItem>\n",
+            "<DOMSymbolItem {NS} name=\"{}\" itemID=\"00000000-{:08x}\"{st}{link}>\n  <timeline>\n{tl}  </timeline>\n</DOMSymbolItem>\n",
             esc(&sym.name),
             i + 1
         );

@@ -471,6 +471,7 @@ impl Reader<'_> {
                 match a.attribute("alignment") {
                     Some("center") => ac_core::text::Align::Center,
                     Some("right") => ac_core::text::Align::Right,
+                    Some("justify") => ac_core::text::Align::Justify,
                     _ => ac_core::text::Align::Left,
                 },
                 f(a, "letterSpacing", 0.0),
@@ -478,16 +479,45 @@ impl Reader<'_> {
             ),
             None => (12.0, Color::rgb(0, 0, 0), ac_core::text::Align::Left, 0.0, None),
         };
-        if n.tag_name().name() != "DOMStaticText" {
-            self.warn.push("dynamic/input text imported as static text".into());
-        }
+        use ac_core::text::{Baseline, Paragraph, TextField, TextKind};
+        let kind = match n.tag_name().name() {
+            "DOMDynamicText" => TextKind::Dynamic,
+            "DOMInputText" => TextKind::Input,
+            _ => TextKind::Static,
+        };
+        // a fixed-width box unless the field grows with its text
+        let auto = flag(n, "autoExpand") || n.attribute("lineType").is_some_and(|l| l == "single line") || n.attribute("width").is_none();
+        let para = match attrs {
+            Some(a) => Paragraph {
+                line_spacing: f(a, "lineSpacing", 0.0),
+                indent: f(a, "indent", 0.0),
+                margin_left: f(a, "leftMargin", 0.0),
+                margin_right: f(a, "rightMargin", 0.0),
+                width: (!auto && n.attribute("lineType") != Some("multiline no wrap")).then(|| f(n, "width", 0.0)).filter(|w| *w > 1.0),
+                baseline: match a.attribute("characterPosition") {
+                    Some("superscript") => Baseline::Superscript,
+                    Some("subscript") => Baseline::Subscript,
+                    _ => Baseline::Normal,
+                },
+                no_kern: a.attribute("autoKern") == Some("false"),
+            },
+            None => Paragraph::default(),
+        };
+        let field = TextField {
+            kind,
+            max_chars: f(n, "maxCharacters", 0.0) as u32,
+            selectable: n.attribute("isSelectable").map(|v| v != "false").unwrap_or(kind != TextKind::Static),
+            border: flag(n, "border"),
+            password: n.attribute("lineType") == Some("password"),
+            link: attrs.and_then(|a| a.attribute("url")).filter(|u| !u.is_empty()).map(|u| u.to_string()),
+        };
         let m = matrix_of(n).concat(&Matrix::translate(f(n, "left", 0.0), f(n, "top", 0.0)));
         let mono = face.as_deref().is_some_and(|s| s.to_lowercase().contains("mono") || s.to_lowercase().contains("courier"));
         let (family, weight, italic) = match face.as_deref() {
             Some(f) => split_face(f),
             None => (None, 400, false),
         };
-        let t = TextEl { text, size, color: col, font: if mono { ac_core::text::FontFace::Mono } else { ac_core::text::FontFace::Sans }, align, letter_spacing: ls, family, weight, italic };
+        let t = TextEl { text, size, color: col, font: if mono { ac_core::text::FontFace::Mono } else { ac_core::text::FontFace::Sans }, align, letter_spacing: ls, family, weight, italic, para, field };
         Some(el(n.attribute("name").unwrap_or(""), m, ElementKind::Text(t)))
     }
 
@@ -835,6 +865,8 @@ pub(crate) fn read(pkg: &Package) -> Result<crate::Imported, String> {
         r.warn.extend(notes);
     }
     r.swatches(root);
+    // library folders (empty ones too) and their names
+    r.doc.folders = child(root, "folders").into_iter().flat_map(|f| kids(f, "DOMFolderItem")).filter_map(|f| f.attribute("name")).map(|s| s.to_string()).collect();
 
     // symbols: names → ids first (instances can point at any of them)
     let mut sym_xml: Vec<(String, String)> = vec![];
@@ -862,6 +894,11 @@ pub(crate) fn read(pkg: &Package) -> Result<crate::Imported, String> {
             _ => SymbolKind::MovieClip,
         };
         let tl = child(s, "timeline").and_then(|t| child(t, "DOMTimeline")).map(|t| r.timeline(t)).unwrap_or_else(|| Timeline::new(&name));
+        if flag(s, "linkageExportForAS") || s.attribute("linkageClassName").is_some() {
+            if let Some(c) = s.attribute("linkageClassName").or(s.attribute("linkageIdentifier")).filter(|c| !c.is_empty()) {
+                r.doc.linkage.insert(i as SymbolId + 1, c.to_string());
+            }
+        }
         r.doc.library.push(Symbol { id: i as SymbolId + 1, name, kind, timeline: tl });
     }
     r.doc.next_symbol_id = r.doc.library.len() as SymbolId + 1;

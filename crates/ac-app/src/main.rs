@@ -4,6 +4,7 @@
 //! (centre), Properties + Library (right), Timeline (bottom); each dock can be
 //! moved by its grip (dock.rs, Workspace menu).
 
+mod color_panel;
 mod dock;
 mod files;
 mod history;
@@ -12,6 +13,7 @@ mod motion_ui;
 mod navigator;
 mod options_bar;
 mod palette;
+mod prefs;
 mod panels;
 mod publish;
 mod rulers;
@@ -41,7 +43,7 @@ pub(crate) enum PropsTab {
 pub(crate) enum Dialog {
     None,
     Path { title: String, path: String, action: FileAction },
-    Symbol { convert: bool, name: String, kind: SymbolKind },
+    Symbol { convert: bool, name: String, kind: SymbolKind, reg: [u8; 2], folder: String },
     RenameSymbol { id: SymbolId, name: String },
     DeleteSymbol { id: SymbolId, uses: usize },
     RenameBitmap { id: u32, name: String },
@@ -107,6 +109,13 @@ pub struct App {
     pub(crate) history_open: bool,
     /// Modify › Shape › Expand Fill / Soften Fill Edges dialog.
     pub(crate) shape_dlg: Option<windows::ShapeDlg>,
+    /// Modify › Document… dialog.
+    pub(crate) doc_dlg: Option<windows::DocDlg>,
+    /// Edit › Preferences.
+    pub(crate) prefs_open: bool,
+    pub(crate) prefs_page: prefs::Page,
+    /// Window › Color.
+    pub(crate) colors: color_panel::ColorPanel,
     pub(crate) status: String,
     pub(crate) file_path: Option<String>,
     pub(crate) settings: files::Settings,
@@ -301,8 +310,16 @@ impl App {
             palette: palette::Palette::default(),
             history_open: false,
             shape_dlg: None,
+            doc_dlg: None,
+            prefs_open: false,
+            prefs_page: prefs::Page::General,
+            colors: color_panel::ColorPanel::default(),
         };
         app.swatch_ui.open = app.settings.swatches_open;
+        prefs::apply(&mut app, &cc.egui_ctx);
+        app.topts.object_draw = app.settings.prefs.object_drawing;
+        app.topts.text_size = app.settings.prefs.text_size;
+        app.scripting.frame_scripts = app.settings.prefs.frame_scripts;
         app.layout = app.settings.layout.unwrap_or(dock::Layout { library: if app.settings.library_left { dock::LibraryDock::Left } else { dock::LibraryDock::WithProperties }, ..Default::default() });
         // `flare file.acx.json` opens that document
         let arg = std::env::args().nth(1).filter(|a| !a.starts_with('-'));
@@ -418,6 +435,16 @@ impl App {
         }
     }
 
+    /// Go to the next (or previous) keyframe on any visible layer.
+    pub(crate) fn step_keyframe(&mut self, forward: bool) {
+        let cur = self.ed.frame;
+        let keys: std::collections::BTreeSet<u32> = self.ed.timeline().layers.iter().filter(|l| l.visible).flat_map(|l| l.keyframes.keys().copied().collect::<Vec<_>>()).collect();
+        let to = if forward { keys.range(cur + 1..).next().copied() } else { keys.range(..cur).next_back().copied() };
+        if let Some(f) = to {
+            self.step(f as i64 - cur as i64);
+        }
+    }
+
     pub(crate) fn toggle_play(&mut self) {
         self.playing = !self.playing;
         self.play_accum = 0.0;
@@ -500,7 +527,7 @@ impl App {
             self.status = "Select something on the stage first, then press F8.".into();
             return;
         }
-        self.dialog = Dialog::Symbol { convert, name: format!("Symbol {}", self.ed.doc.next_symbol_id), kind: SymbolKind::Graphic };
+        self.dialog = Dialog::Symbol { convert, name: format!("Symbol {}", self.ed.doc.next_symbol_id), kind: SymbolKind::Graphic, reg: self.settings.symbol_reg, folder: String::new() };
     }
 
     pub(crate) fn edit_symbol(&mut self, id: SymbolId) {
@@ -552,7 +579,10 @@ impl App {
         if k(cmd | Modifiers::ALT, Key::B) { self.simple_buttons = !self.simple_buttons; self.status = format!("Simple buttons {}", if self.simple_buttons { "on" } else { "off" }); }
         if k(cmd, Key::B) { self.ed.break_apart(); }
         if k(cmd, Key::T) { self.transform_open = !self.transform_open; }
+        if k(cmd | sh, Key::F9) { self.colors.open = !self.colors.open; }
         if k(cmd, Key::F9) { self.toggle_swatches(); }
+        if k(cmd, Key::U) { self.prefs_open = true; }
+        if k(cmd, Key::J) { self.doc_dlg = Some(windows::DocDlg::of(self)); }
         if k(cmd, Key::F10) { self.history_open = !self.history_open; }
         if k(cmd, Key::K) { self.align_open = !self.align_open; }
         if k(cmd | sh | Modifiers::ALT, Key::R) { self.view.rulers = !self.view.rulers; }
@@ -590,6 +620,8 @@ impl App {
         if k(cmd, Key::Enter) { publish::test_movie(self); }
         let busy = self.pen.is_some() || !self.poly_lasso.is_empty() || self.text_edit.is_some();
         if !busy && k(none, Key::Enter) { self.toggle_play(); }
+        if k(sh, Key::Period) { self.step_keyframe(true); }
+        if k(sh, Key::Comma) { self.step_keyframe(false); }
         if k(none, Key::Period) { self.step(1); }
         if k(none, Key::Comma) { self.step(-1); }
         if k(none, Key::Delete) || k(none, Key::Backspace) { self.delete(); }
@@ -827,6 +859,8 @@ impl App {
                     ui.separator();
                     ui.menu_button("Timeline", |ui| timeline::frame_menu(self, ui));
                     if ui.add_enabled(self.ed.editing.is_some(), egui::Button::new("Edit Document")).clicked() { self.exit_editing(true); ui.close_menu(); }
+                    ui.separator();
+                    if ui.add(egui::Button::new("Preferences…").shortcut_text("Ctrl+U")).clicked() { self.prefs_open = true; ui.close_menu(); }
                 });
                 ui.menu_button("View", |ui| {
                     if ui.add(egui::Button::new("Zoom In").shortcut_text("Ctrl+=")).clicked() { self.zoom *= 1.25; ui.close_menu(); }
@@ -879,7 +913,7 @@ impl App {
                     timeline::frame_menu(self, ui);
                 });
                 ui.menu_button("Modify", |ui| {
-                    if ui.button("Document…").clicked() { self.ed.selection.clear(); self.ed.frame_sel = None; self.status = "Document settings are in the Properties panel.".into(); ui.close_menu(); }
+                    if ui.add(egui::Button::new("Document…").shortcut_text("Ctrl+J")).clicked() { self.doc_dlg = Some(windows::DocDlg::of(self)); ui.close_menu(); }
                     ui.separator();
                     self.object_menu(ui);
                 });
@@ -891,6 +925,8 @@ impl App {
                     if ui.button("Go to End").clicked() { self.step(100_000); ui.close_menu(); }
                     if ui.add(egui::Button::new("Step Forward One Frame").shortcut_text(".")).clicked() { self.step(1); ui.close_menu(); }
                     if ui.add(egui::Button::new("Step Backward One Frame").shortcut_text(",")).clicked() { self.step(-1); ui.close_menu(); }
+                    if ui.add(egui::Button::new("Next Keyframe").shortcut_text("Shift+.")).clicked() { self.step_keyframe(true); ui.close_menu(); }
+                    if ui.add(egui::Button::new("Previous Keyframe").shortcut_text("Shift+,")).clicked() { self.step_keyframe(false); ui.close_menu(); }
                     ui.separator();
                     ui.checkbox(&mut self.loop_play, "Loop Playback");
                     ui.checkbox(&mut self.onion, "Onion Skin");
@@ -914,6 +950,7 @@ impl App {
                 ui.menu_button("Window", |ui| {
                     if ui.add(egui::Button::new("Actions").shortcut_text("F9")).clicked() { self.scripting.actions_open = true; ui.close_menu(); }
                     if ui.add(egui::SelectableLabel::new(self.lib.open, "Library  (Ctrl+L)")).clicked() { self.lib.open = !self.lib.open; ui.close_menu(); }
+                    if ui.add(egui::SelectableLabel::new(self.colors.open, "Color  (Ctrl+Shift+F9)")).clicked() { self.colors.open = !self.colors.open; ui.close_menu(); }
                     if ui.add(egui::SelectableLabel::new(self.swatch_ui.open, "Swatches  (Ctrl+F9)")).on_hover_text("Colour chips beside the tools").clicked() { self.toggle_swatches(); ui.close_menu(); }
                     if ui.add(egui::SelectableLabel::new(self.history_open, "History  (Ctrl+F10)")).clicked() { self.history_open = !self.history_open; ui.close_menu(); }
                     if ui.add(egui::SelectableLabel::new(self.nav.open, "Navigator")).clicked() { self.nav.open = !self.nav.open; ui.close_menu(); }
@@ -998,7 +1035,7 @@ impl App {
         let mut d = std::mem::replace(&mut self.dialog, Dialog::None);
         let mut close = false;
         let mut run: Option<(FileAction, String)> = None;
-        let mut symbol_ok: Option<(bool, String, SymbolKind)> = None;
+        let mut symbol_ok: Option<(bool, String, SymbolKind, [u8; 2])> = None;
         let mut rename_ok: Option<(SymbolId, String)> = None;
         let mut delete_ok: Option<SymbolId> = None;
         let mut scale_rot: Option<(f32, f32)> = None;
@@ -1029,7 +1066,8 @@ impl App {
                     });
                 });
             }
-            Dialog::Symbol { convert, name, kind } => {
+            Dialog::Symbol { convert, name, kind, reg, folder } => {
+                let folders = self.ed.library_folders();
                 let convert = *convert;
                 win(if convert { "Convert to Symbol" } else { "Create New Symbol" }).show(ctx, |ui| {
                     egui::Grid::new("sym").show(ui, |ui| {
@@ -1043,9 +1081,22 @@ impl App {
                             ui.selectable_value(kind, SymbolKind::Button, "Button");
                         });
                         ui.end_row();
+                        ui.label("Folder");
+                        egui::ComboBox::from_id_salt("sym-folder").selected_text(if folder.is_empty() { "Library root" } else { folder.as_str() }).show_ui(ui, |ui| {
+                            ui.selectable_value(folder, String::new(), "Library root");
+                            for f in &folders {
+                                ui.selectable_value(folder, f.clone(), f.as_str());
+                            }
+                        });
+                        ui.end_row();
+                        if convert {
+                            ui.label("Registration");
+                            registration_grid(ui, reg);
+                            ui.end_row();
+                        }
                     });
                     ui.horizontal(|ui| {
-                        if ui.button("OK").clicked() || enter { symbol_ok = Some((convert, name.clone(), *kind)); close = true; }
+                        if ui.button("OK").clicked() || enter { symbol_ok = Some((convert, ac_core::join_item_path(folder, name.trim_start_matches('/')), *kind, *reg)); close = true; }
                         if ui.button("Cancel").clicked() || esc { close = true; }
                     });
                 });
@@ -1253,7 +1304,11 @@ impl App {
             let n = self.ed.trace_bitmap(&o);
             self.status = format!("Trace Bitmap: {n} fill region{}", if n == 1 { "" } else { "s" });
         }
-        if let Some((id, n)) = bitmap_rename { self.ed.rename_bitmap(id, &n); }
+        if let Some((id, n)) = bitmap_rename {
+            // the dialog edits the item's own name; it stays in its folder
+            let folder = self.ed.doc.bitmap(id).map(|b| ac_core::split_item_path(&b.name).0.to_string()).unwrap_or_default();
+            self.ed.rename_bitmap(id, &ac_core::join_item_path(&folder, n.trim_start_matches('/')));
+        }
         if let Some(id) = bitmap_delete { self.ed.delete_bitmap(id); self.lib.bitmap = None; }
         if let Some((i, name, kind, parent, color, visible, locked, outline, height)) = layer_ok {
             let mark = self.ed.undo_depth();
@@ -1279,9 +1334,11 @@ impl App {
             Some(false) => files::clear_recovery(),
             None => {}
         }
-        if let Some((convert, n, k)) = symbol_ok {
+        if let Some((convert, n, k, reg)) = symbol_ok {
             if convert {
-                match self.ed.convert_to_symbol(&n, k) {
+                self.settings.symbol_reg = reg;
+                self.settings.save();
+                match self.ed.convert_to_symbol_at(&n, k, reg) {
                     Some(id) => { self.lib_selected = Some(id); self.status = format!("Converted to symbol “{n}”"); }
                     None => self.status = "Couldn't convert: nothing selected on an editable layer.".into(),
                 }
@@ -1292,7 +1349,10 @@ impl App {
                 self.status = format!("Editing new symbol “{n}”. Press Esc to return to the scene.");
             }
         }
-        if let Some((id, n)) = rename_ok { self.ed.rename_symbol(id, &n); }
+        if let Some((id, n)) = rename_ok {
+            let folder = self.ed.doc.symbol(id).map(|s| ac_core::split_item_path(&s.name).0.to_string()).unwrap_or_default();
+            self.ed.rename_symbol(id, &ac_core::join_item_path(&folder, n.trim_start_matches('/')));
+        }
         if let Some((sc, rot)) = scale_rot {
             if let Some(c) = self.pivot() {
                 let k = sc / 100.0;
@@ -1401,6 +1461,10 @@ impl eframe::App for App {
         navigator::window(self, ctx);
         history::window(self, ctx);
         windows::shape_window(self, ctx);
+        windows::doc_settings_window(self, ctx);
+        panels::item_props_window(self, ctx);
+        prefs::window(self, ctx);
+        color_panel::window(self, ctx);
         palette::window(self, ctx);
         self.dialogs(ctx);
         startup::window(self, ctx);
@@ -1456,4 +1520,28 @@ fn main() -> eframe::Result<()> {
         .with_icon(app_icon());
     let options = eframe::NativeOptions { viewport, ..Default::default() };
     eframe::run_native("Flare", options, Box::new(|cc| Ok(Box::new(App::new(cc)))))
+}
+
+/// The 3 × 3 registration grid of Convert to Symbol: where the symbol's
+/// origin (its registration point) goes on the selection's bounds.
+pub(crate) fn registration_grid(ui: &mut egui::Ui, reg: &mut [u8; 2]) {
+    let cell = 12.0;
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(cell * 3.0 + 4.0, cell * 3.0 + 4.0), egui::Sense::click());
+    let p = ui.painter();
+    p.rect_stroke(rect, 1.0, egui::Stroke::new(1.0_f32, Color32::from_gray(110)));
+    for r in 0..3u8 {
+        for c in 0..3u8 {
+            let ctr = rect.min + egui::vec2(2.0 + cell * (c as f32 + 0.5), 2.0 + cell * (r as f32 + 0.5));
+            let on = *reg == [c, r];
+            p.rect_filled(egui::Rect::from_center_size(ctr, egui::vec2(6.0, 6.0)), 0.0, if on { Color32::BLACK } else { Color32::from_gray(200) });
+            if on {
+                p.rect_stroke(egui::Rect::from_center_size(ctr, egui::vec2(7.0, 7.0)), 0.0, egui::Stroke::new(1.0_f32, Color32::WHITE));
+            }
+        }
+    }
+    if let Some(pos) = resp.interact_pointer_pos().filter(|_| resp.clicked()) {
+        let v = pos - rect.min;
+        *reg = [((v.x - 2.0) / cell).clamp(0.0, 2.0) as u8, ((v.y - 2.0) / cell).clamp(0.0, 2.0) as u8];
+    }
+    resp.on_hover_text("Where the symbol's registration point (its origin) goes on the selection");
 }

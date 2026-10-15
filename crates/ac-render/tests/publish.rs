@@ -245,3 +245,28 @@ fn particles_render_in_every_export() {
     let back: Document = serde_json::from_str(&serde_json::to_string(&ed.doc).unwrap()).unwrap();
     assert_eq!(ac_core::evaluate_scene(&back, 12).len(), items(&ed, 12).len());
 }
+
+#[test]
+fn text_fields_publish_for_scripts_and_links() {
+    use ac_core::text::TextKind;
+    let mut d = Document::default();
+    let mut el = Element::text("0", 20.0, Color::rgb(0, 0, 0), ac_core::pt(10.0, 10.0));
+    el.name = "score".into();
+    if let ElementKind::Text(t) = &mut el.kind {
+        t.field.kind = TextKind::Dynamic;
+    }
+    let mut link = Element::text("site", 12.0, Color::rgb(0, 0, 255), ac_core::pt(10.0, 60.0));
+    link.name.clear();
+    if let ElementKind::Text(t) = &mut link.kind {
+        t.field.link = Some("https://example.org".into());
+    }
+    let kf = d.scene.layers[0].keyframes.get_mut(&0).unwrap();
+    kf.elements.push(el);
+    kf.elements.push(link);
+    kf.script = Some("this.score.text = 'GOAL';".into());
+    let files = publish(&d, &Html5Opts::default());
+    let all: String = files.iter().map(|(_, b)| String::from_utf8_lossy(b).to_string()).collect();
+    assert!(all.contains("\"tx\":{\"k\":1,\"s\":\"0\""), "dynamic text described");
+    assert!(all.contains("__link0_1") && all.contains("\"url\":\"https://example.org\""), "link entry");
+    assert!(all.contains("function drawLive") && all.contains("placeInput"), "runtime draws live text and inputs");
+}

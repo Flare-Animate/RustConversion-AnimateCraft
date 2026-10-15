@@ -149,7 +149,7 @@ fn frame_scripts_are_sandboxed() {
 #[test]
 fn frame_scripts_see_named_instances() {
     let mut fp = FramePlayer::new().unwrap();
-    let ball = Instance { name: "ball".into(), x: 10.0, y: 20.0, rotation: 0.0, scale_x: 1.0, scale_y: 1.0, alpha: 1.0, visible: true };
+    let ball = Instance { name: "ball".into(), x: 10.0, y: 20.0, rotation: 0.0, scale_x: 1.0, scale_y: 1.0, alpha: 1.0, visible: true, text: None };
     let (_, changed) = fp.run_with("this.ball.x += 5; this.getChildByName('ball').alpha = 0.5; trace(this.ball.y);", 0, 10, &[], std::slice::from_ref(&ball)).unwrap();
     assert_eq!(changed.len(), 1);
     assert_eq!(changed[0].x, 15.0);
@@ -213,7 +213,7 @@ try { tl.copyLayers(); } catch (e) { fl.trace("unsupported ok"); }
 #[test]
 fn frame_scripts_accept_html5_event_listeners() {
     let mut p = FramePlayer::new().unwrap();
-    let inst = Instance { name: "go".into(), x: 1.0, y: 2.0, rotation: 0.0, scale_x: 1.0, scale_y: 1.0, alpha: 1.0, visible: true };
+    let inst = Instance { name: "go".into(), x: 1.0, y: 2.0, rotation: 0.0, scale_x: 1.0, scale_y: 1.0, alpha: 1.0, visible: true, text: None };
     let (_, changed) = p.run_with("this.go.addEventListener('click', () => {}); this.go.on('mouseover', () => {}); this.go.x = 5;", 0, 1, &[], &[inst]).unwrap();
     assert_eq!(changed[0].x, 5.0);
 }

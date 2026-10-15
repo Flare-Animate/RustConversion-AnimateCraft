@@ -5,6 +5,7 @@ use ac_core::editor::AlignOp;
 use ac_core::pt;
 use eframe::egui::{self, Color32, RichText};
 
+
 fn op_button(ui: &mut egui::Ui, label: &str, tip: &str) -> bool {
     ui.add(egui::Button::new(label).min_size(egui::vec2(30.0, 24.0))).on_hover_text(tip).clicked()
 }
@@ -303,5 +304,109 @@ pub fn shape_window(app: &mut App, ctx: &egui::Context) {
         app.shape_dlg = None;
     } else if !open {
         app.shape_dlg = None;
+    }
+}
+
+/// Modify › Document… (Ctrl+J): Document Settings.
+#[derive(Clone, Copy)]
+pub(crate) struct DocDlg {
+    pub w: f32,
+    pub h: f32,
+    pub anchor: [u8; 2],
+    pub scale_content: bool,
+    pub fps: f32,
+    pub scale_spans: bool,
+    pub bg: Color32,
+}
+
+impl DocDlg {
+    pub fn of(app: &App) -> DocDlg {
+        let d = &app.ed.doc;
+        DocDlg { w: d.width, h: d.height, anchor: [1, 1], scale_content: false, fps: d.fps, scale_spans: false, bg: crate::c32(d.background) }
+    }
+}
+
+/// Units for the size fields: (name, pixels per unit) at 72 pixels per inch.
+pub(crate) const UNITS: [(&str, f32); 5] = [("pixels", 1.0), ("inches", 72.0), ("points", 1.0), ("centimetres", 72.0 / 2.54), ("millimetres", 72.0 / 25.4)];
+
+pub fn doc_settings_window(app: &mut App, ctx: &egui::Context) {
+    let Some(mut d) = app.doc_dlg else { return };
+    let mut open = true;
+    let (mut ok, mut cancel, mut matched) = (false, false, false);
+    let unit = (app.settings.doc_units as usize).min(UNITS.len() - 1);
+    egui::Window::new("Document Settings").open(&mut open).resizable(false).collapsible(false).show(ctx, |ui| {
+        egui::Grid::new("docset").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
+            ui.label("Units");
+            let mut u = unit;
+            egui::ComboBox::from_id_salt("docset-units").selected_text(UNITS[u].0).show_ui(ui, |ui| {
+                for (i, (n, _)) in UNITS.iter().enumerate() {
+                    ui.selectable_value(&mut u, i, *n);
+                }
+            });
+            if u != unit {
+                app.settings.doc_units = u as u8;
+                app.settings.save();
+            }
+            ui.end_row();
+            let k = UNITS[u].1;
+            ui.label("Stage size");
+            ui.horizontal(|ui| {
+                let (mut w, mut h) = (d.w / k, d.h / k);
+                let dec = if u == 0 || u == 2 { 0 } else { 2 };
+                if ui.add(egui::DragValue::new(&mut w).range(0.01..=16000.0).max_decimals(dec).speed(0.5)).changed() {
+                    d.w = (w * k).max(1.0);
+                }
+                ui.label("×");
+                if ui.add(egui::DragValue::new(&mut h).range(0.01..=16000.0).max_decimals(dec).speed(0.5)).changed() {
+                    d.h = (h * k).max(1.0);
+                }
+                if ui.small_button("Match Contents").on_hover_text("Fit the stage to everything in the scene").clicked() {
+                    matched = true;
+                }
+            });
+            ui.end_row();
+            ui.label("");
+            ui.checkbox(&mut d.scale_content, "Scale content with stage");
+            ui.end_row();
+            ui.label("Anchor");
+            ui.add_enabled_ui(!d.scale_content, |ui| crate::registration_grid(ui, &mut d.anchor)).response.on_hover_text("When the size changes, this part of the stage keeps its content in place");
+            ui.end_row();
+            ui.label("Stage colour");
+            ui.color_edit_button_srgba(&mut d.bg);
+            ui.end_row();
+            ui.label("Frame rate");
+            ui.horizontal(|ui| {
+                ui.add(egui::DragValue::new(&mut d.fps).range(0.01..=240.0).speed(0.1).max_decimals(2));
+                ui.checkbox(&mut d.scale_spans, "Scale spans").on_hover_text("Stretch every timeline so the movie keeps its length in seconds");
+            });
+            ui.end_row();
+        });
+        ui.add_space(6.0);
+        ui.horizontal(|ui| {
+            if ui.button("OK").clicked() {
+                ok = true;
+            }
+            if ui.button("Cancel").clicked() {
+                cancel = true;
+            }
+        });
+    });
+    if matched {
+        if app.ed.match_contents() {
+            app.fit_pending = true;
+            d.w = app.ed.doc.width;
+            d.h = app.ed.doc.height;
+            app.status = format!("Stage matched to the content: {} × {}", d.w, d.h);
+        } else {
+            app.status = "Nothing in the scene to match".into();
+        }
+    }
+    app.doc_dlg = Some(d);
+    if ok {
+        app.ed.document_settings(d.w, d.h, d.anchor, d.scale_content, d.fps, d.scale_spans, crate::from32(d.bg));
+        app.fit_pending = true;
+        app.doc_dlg = None;
+    } else if cancel || !open {
+        app.doc_dlg = None;
     }
 }

@@ -56,12 +56,12 @@ The two engine milestones that unlock most of the rest:
 | Workspaces (Essentials, Animator, Designer, Developer…, save/reset) | Yes | — | 🟡 movable docks (Tools/Properties L·R, Timeline top·bottom, Library column), saved, Reset Layout; no named/saved workspaces or floating panels yet | P2 |
 | UI themes (dark / light / colour) | Yes | Dark only | ❌ | P3 |
 | Properties panel (context-sensitive, Tool/Object/Frame/Doc tabs) | Yes | Yes | ✅ | |
-| Library: folders, search, sort, preview, linkage, Use Count | Yes | Search, sort, preview, use count | 🟡 | P1 (folders, linkage, Update/Properties dialog) |
+| Library: folders, search, sort, preview, linkage, Use Count | Yes | Folders (tree, new/rename/delete, drag items in, Move to Folder; read/written in .fla), search, sort, preview, use count, item Properties (name, type, linkage class) | ✅ | P3 (shared libraries) |
 | Shared / external libraries, Assets panel (Default/Custom/Animated assets) | Yes | — | ❌ | P2 |
 | Align panel (align, distribute, match size, space, to stage) | Yes (Ctrl+K) | Yes (+ Modify › Align) | ✅ | |
 | Info panel (x/y, w/h, RGBA under cursor) | Yes (Ctrl+I) | Yes | ✅ | |
 | Transform panel | Yes (Ctrl+T) | Yes | ✅ | |
-| Color panel (solid / linear / radial / bitmap fills, HSB/RGB/hex, alpha, overflow modes) | Yes | Gradient stops in Properties only | 🟡 | P1 |
+| Color panel (solid / linear / radial / bitmap fills, HSB/RGB/hex, alpha, overflow modes) | Yes | Window › Color (Ctrl+Shift+F9): stroke/fill, None/Solid/Linear/Radial/Bitmap, picker + HSB/RGB/hex/alpha, gradient ramp (add/move/remove stops), flow, focal point; applies to the selection | ✅ | P3 (linear RGB) |
 | Swatches panel (palette, save/load .clr/.aco/.act, Web 216) | Yes | Column beside the tools (Ctrl+F9): colours and gradients; click = fill, Shift+click = stroke, applied to the selection; per-document swatches read from and written to .fla (`swatchLists`, `extendedSwatchLists`) or kept in the app; import .aco/.ase/.grd (PhotoCraft readers), .gpl, .act; save .ase/.aco/.gpl/.grd | 🟡 | P3 (.clr colour sets) |
 | History panel (steps, replay, copy steps as JSFL) | Yes | Window › History (Ctrl+F10): every step, click to go back or forward, Clear History | 🟡 | P2 (replay steps, copy steps as script) |
 | Motion Editor | Yes | Per-property graphs, key drag/retime, smooth/corner, per-property eases; OpenToonz keyframe types and expressions | ✅ | |
@@ -72,11 +72,11 @@ The two engine milestones that unlock most of the rest:
 | Frame Picker (lip-sync / graphic first-frame picker) | Yes | First frame number; Lip Syncing "Mouth shapes" picker | 🟡 | P3 (visual frame picker) |
 | Native open/save dialogs, recent files | Yes | Yes (+ drag-and-drop files onto the window) | ✅ | |
 | Autosave / auto-recovery | Yes | Yes (recover prompt after a crash; unsaved-changes guard) | ✅ | |
-| Preferences dialog (General, Sync, Code Editor, Text, Drawing, Script) | Yes | — | ❌ | P1 |
+| Preferences dialog (General, Sync, Code Editor, Text, Drawing, Script) | Yes | Edit › Preferences (Ctrl+U): undo levels, auto-recovery, interface size, Shift select, tooltips, Startup window; snap distance, default drawing model, tween curves; default text size; frame scripts | 🟡 | P3 (sync, code editor settings) |
 | Keyboard shortcut editor (sets, export as HTML) | Yes | Fixed shortcuts | ❌ | P2 |
 | Edit in place / Edit in new window | Yes | Edit in place (double-click; rest of the scene dimmed) and isolated edit-symbol mode | ✅ | P3 (new window) |
 | Multiple open documents (tabs) | Yes | One document | ❌ | P2 |
-| Document settings dialog (units, anchor, scale content, frame rate, platform) | Yes | W/H/FPS/colour in Properties | 🟡 | P1 |
+| Document settings dialog (units, anchor, scale content, frame rate, platform) | Yes | Modify › Document (Ctrl+J): units (px/in/pt/cm/mm), size, Match Contents, scale content or anchor, stage colour, frame rate with Scale spans | ✅ | |
 | Templates and sample files | Yes | Demo scene | 🟡 | P3 |
 | Navigator (overview of the stage, click to scroll) | No (Animate has none) | Window › Navigator: frame thumbnail, visible area outlined, click/drag to scroll, zoom slider | ✅ | |
 | Command search | No | Ctrl+Shift+P: menu commands and tools by name | ✅ | |
@@ -112,14 +112,14 @@ The two engine milestones that unlock most of the rest:
 
 | Tool | Animate | Flare | Status | Pri |
 |---|---|---|---|---|
-| Selection (V) | Click, marquee, Shift add, Alt-drag copy, edge bending | Click, marquee, Shift add, IK drag, edge bending | 🟡 | Alt-drag copy P1 |
+| Selection (V) | Click, marquee, Shift add, Alt-drag copy, edge bending | Click, marquee, Shift add, Alt-drag copy (one undo step), IK drag, edge bending | ✅ | |
 | Subselection (A) | Anchors and handles | Same | ✅ | |
 | Free Transform (Q) incl. Distort / Envelope / Rotate & Skew / Scale modes | Yes | Yes (combined mode + Distort + Envelope) | ✅ | |
 | Gradient Transform (F) | Yes (also bitmap fills) | Gradients and bitmap fills | ✅ | |
 | 3D Rotation (W) / 3D Translation (G), global/local toggle | Yes (movie clips) | Yes; no global/local toggle | 🟡 | P2 |
 | Lasso (L), Polygon, **Magic Wand** (bitmap) | Yes | Lasso, Polygon, Magic Wand (threshold) on broken-apart bitmaps | ✅ | |
 | Pen (P) + Add / Delete / Convert Anchor | Yes | Yes | ✅ | |
-| Text (T) | Static, Dynamic, Input | Static | 🟡 | P1 |
+| Text (T) | Static, Dynamic, Input | Static, Dynamic, Input; click for auto width, drag for a fixed-width box | ✅ | |
 | Line (N), Rectangle (R), Oval (O), PolyStar | Yes | Yes | ✅ | |
 | Rectangle Primitive / Oval Primitive | Yes | Yes | ✅ | |
 | Pencil (Shift+Y): Straighten / Smooth / Ink | Yes | Yes | ✅ | |
@@ -180,10 +180,10 @@ The two engine milestones that unlock most of the rest:
 | **Blend modes** (Normal, Layer, Darken, Multiply, Lighten, Screen, Overlay, Hard Light, Add, Subtract, Difference, Invert, Alpha, Erase) | Yes | All 14 | ✅ | |
 | Render: Original / Cache as Bitmap / Export as Bitmap; Visible flag | Yes | — | ❌ | P2 |
 | 9-slice scaling guides | Yes | — | ❌ | P2 |
-| Registration point choice on convert; transformation point vs registration | Yes | Registration from bounds | 🟡 | P1 |
+| Registration point choice on convert; transformation point vs registration | Yes | 3 × 3 registration grid in Convert to Symbol (remembered), folder choice; `selection.to_symbol registration:` | ✅ | |
 | Edit in Place / Edit Symbols across the library; Update library item | Yes | Edit in place and isolated edit | 🟡 | P3 (Update library item) |
 | Linkage (class name, export for ActionScript/runtime) | Yes | — | ❌ | P2 |
-| Symbol folders in Library | Yes | — | ❌ | P1 |
+| Symbol folders in Library | Yes | Yes (see Library) | ✅ | |
 
 ## 6. Animation
 
@@ -202,7 +202,7 @@ The two engine milestones that unlock most of the rest:
 | Camera: tween, colour effects, attach layers, layer depth | Yes | Tweenable pan/zoom/rotate, brightness/tint/alpha/blur, VCam follow + shake (beyond Animate) | 🟡 | P2 (attach layers, depth) |
 | **Auto lip-sync** (map visemes from audio) | Yes | Properties ▸ Lip Syncing with a Mouth-shapes picker; Rhubarb Lip Sync (speech-based, external program) when installed, FFT-band heuristic otherwise; `lipsync.apply` | ✅ | |
 | **Rig mapping** (map a rig onto symbols) | Yes | — | ❌ | P3 |
-| Frame-by-frame workflow helpers (onion skin keyframes-only, Ctrl+Alt+L loop) | Yes | Basic | 🟡 | P1 |
+| Frame-by-frame workflow helpers (onion skin keyframes-only, Ctrl+Alt+L loop) | Yes | Onion skin Keyframes Only, Next/Previous Keyframe (Shift+. / Shift+,), Edit Multiple Frames, Shift & Trace | 🟡 | P2 (loop range) |
 
 ## 7. Text
 
@@ -210,11 +210,11 @@ The two engine milestones that unlock most of the rest:
 |---|---|---|---|---|
 | Static text, outlined at render | Yes | Yes (2 bundled fonts) | 🟡 | |
 | **System and web fonts**: font family/style picker, Typekit/Adobe Fonts | Yes | Installed fonts, searchable picker, styles/weights (simulated when missing) | 🟡 | P3 (web fonts) |
-| Character: size, letter spacing, colour, auto-kern, anti-alias, selectable, link, superscript/subscript | Yes | Size, spacing, colour | 🟡 | P1 |
-| Paragraph: align, justify, indent, line spacing, margins, wrap, fixed-width boxes | Yes | Align + newlines | 🟡 | P1 |
+| Character: size, letter spacing, colour, auto-kern, anti-alias, selectable, link, superscript/subscript | Yes | Size, spacing, colour, auto-kern, selectable, link (opens in published movies), superscript/subscript | ✅ | P3 (anti-alias modes) |
+| Paragraph: align, justify, indent, line spacing, margins, wrap, fixed-width boxes | Yes | All: left/centre/right/justify, indent, line spacing, left/right margins, fixed-width boxes with word wrap | ✅ | |
 | Vertical text, orientation | Yes | — | ❌ | P3 |
 | Rich text runs (mixed styles in one field) | Yes | — | ❌ | P2 |
-| Dynamic and Input text (variable, max chars, embed glyphs) | Yes | — | ❌ | P1 (with scripting runtime) |
+| Dynamic and Input text (variable, max chars, embed glyphs) | Yes | Dynamic (scripts set `.text`, editor playback and HTML5), Input (HTML5 text field: max chars, password, border, multiline), instance name as the variable; .fla read/write | ✅ | P3 (embed glyphs) |
 | Spell checking, Find and Replace | Yes | — | ❌ | P3 |
 
 ## 8. Media: images, audio, video

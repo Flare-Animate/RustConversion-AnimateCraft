@@ -712,6 +712,9 @@ pub struct Instance {
     pub scale_y: f32,
     pub alpha: f32,
     pub visible: bool,
+    /// Text fields: their text (`this.score.text = "10"`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
 }
 
 const FRAME_PRELUDE: &str = r##"
@@ -735,7 +738,9 @@ function __ac_dump() {
   return JSON.stringify(__ac_before.map(o => {
     const c = __tl[o.name];
     if (!c) return o;
-    return { name: o.name, x: +c.x, y: +c.y, rotation: +c.rotation, scaleX: +c.scaleX, scaleY: +c.scaleY, alpha: +c.alpha, visible: !!c.visible };
+    const r = { name: o.name, x: +c.x, y: +c.y, rotation: +c.rotation, scaleX: +c.scaleX, scaleY: +c.scaleY, alpha: +c.alpha, visible: !!c.visible };
+    if (o.text !== undefined) r.text = c.text === undefined || c.text === null ? "" : String(c.text);
+    return r;
   }));
 }
 var stop = () => __tl.stop(), play = () => __tl.play();

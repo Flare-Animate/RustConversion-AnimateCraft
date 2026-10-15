@@ -24,11 +24,28 @@ pub struct LibraryState {
     /// Selected / dragged library sound.
     pub sound: Option<u32>,
     pub drag_sound: Option<u32>,
+    /// Open folders (paths) in the library tree.
+    pub open_folders: std::collections::BTreeSet<String>,
+    /// Folder being renamed: (path, text).
+    pub rename_folder: Option<(String, String)>,
+    /// Library item Properties dialog.
+    pub props: Option<ItemProps>,
+}
+
+/// Library › Properties… for one item.
+#[derive(Clone)]
+pub struct ItemProps {
+    pub item: ac_core::editor::LibItem,
+    pub name: String,
+    pub kind: Option<SymbolKind>,
+    pub export: bool,
+    pub class: String,
+    pub folder: String,
 }
 
 impl Default for LibraryState {
     fn default() -> Self {
-        LibraryState { open: true, search: String::new(), play: false, frame: 0, accum: 0.0, sort: (0, true), bitmap: None, drag_bitmap: None, sound: None, drag_sound: None }
+        LibraryState { open: true, search: String::new(), play: false, frame: 0, accum: 0.0, sort: (0, true), bitmap: None, drag_bitmap: None, sound: None, drag_sound: None, open_folders: Default::default(), rename_folder: None, props: None }
     }
 }
 
@@ -203,7 +220,12 @@ fn object_properties(app: &mut App, ui: &mut egui::Ui) {
                 Some(f) => format!("Shape selection ({} fill(s), {} line(s))", f.fills.len(), f.strokes.len()),
                 None => "Shape (merge drawing)".to_string(),
             },
-            ElementKind::Text(_) => "Static text".to_string(),
+            ElementKind::Text(t) => match t.field.kind {
+                ac_core::text::TextKind::Static => "Static text",
+                ac_core::text::TextKind::Dynamic => "Dynamic text",
+                ac_core::text::TextKind::Input => "Input text",
+            }
+            .to_string(),
             ElementKind::Instance(i) => {
                 let s = app.ed.doc.symbol(i.symbol);
                 let kind = s.map(|s| match s.kind { SymbolKind::Graphic => "Graphic", SymbolKind::MovieClip => "Movie Clip", SymbolKind::Button => "Button" }).unwrap_or("?");
@@ -487,6 +509,28 @@ fn object_properties(app: &mut App, ui: &mut egui::Ui) {
             }
             ElementKind::Text(t) if n == 1 => {
                 section(ui, "Text");
+                {
+                    use ac_core::text::TextKind;
+                    let mut kind = t.field.kind;
+                    ui.horizontal(|ui| {
+                        ui.label("Type");
+                        for (k, l, tip) in [(TextKind::Static, "Static", "Drawn as it is (outlined when published)"), (TextKind::Dynamic, "Dynamic", "Frame scripts can change its text: this.<instance name>.text = …"), (TextKind::Input, "Input", "The viewer types into it in published movies")] {
+                            if ui.selectable_value(&mut kind, k, l).on_hover_text(tip).changed() {
+                                app.ed.modify_selected("Text Type", move |e| {
+                                    if let ElementKind::Text(t) = &mut e.kind {
+                                        t.field.kind = kind;
+                                        if kind != TextKind::Static {
+                                            t.field.selectable = true;
+                                        }
+                                    }
+                                });
+                            }
+                        }
+                    });
+                    if kind != TextKind::Static && el.name.trim().is_empty() {
+                        hint(ui, "Give it an instance name (above) so scripts can reach it.");
+                    }
+                }
                 let mut text = t.text.clone();
                 let r = ui.add(egui::TextEdit::multiline(&mut text).desired_rows(2).desired_width(f32::INFINITY));
                 if r.changed() {
@@ -525,13 +569,94 @@ fn object_properties(app: &mut App, ui: &mut egui::Ui) {
                         app.ed.modify_selected("Font Style", move |e| if let ElementKind::Text(t) = &mut e.kind { t.weight = w; t.italic = i });
                     }
                 });
+                {
+                    use ac_core::text::Baseline;
+                    let mut base = t.para.baseline;
+                    let mut kern = !t.para.no_kern;
+                    ui.horizontal(|ui| {
+                        ui.label("Position");
+                        for (b, l) in [(Baseline::Normal, "Normal"), (Baseline::Superscript, "Super"), (Baseline::Subscript, "Sub")] {
+                            if ui.selectable_value(&mut base, b, l).changed() {
+                                app.ed.modify_selected("Character Position", move |e| if let ElementKind::Text(t) = &mut e.kind { t.para.baseline = base });
+                            }
+                        }
+                        if ui.checkbox(&mut kern, "Auto-kern").changed() {
+                            app.ed.modify_selected("Auto-kern", move |e| if let ElementKind::Text(t) = &mut e.kind { t.para.no_kern = !kern });
+                        }
+                    });
+                }
+                section(ui, "Paragraph");
                 ui.horizontal(|ui| {
-                    for (a, l) in [(Align::Left, "⬅"), (Align::Center, "↔"), (Align::Right, "➡")] {
-                        if ui.selectable_value(&mut align, a, l).changed() {
+                    for (a, l, tip) in [(Align::Left, "⬅", "Align left"), (Align::Center, "↔", "Centre"), (Align::Right, "➡", "Align right"), (Align::Justify, "☰", "Justify (fixed-width boxes)")] {
+                        if ui.selectable_value(&mut align, a, l).on_hover_text(tip).changed() {
                             app.ed.modify_selected("Align", move |e| if let ElementKind::Text(t) = &mut e.kind { t.align = align });
                         }
                     }
                 });
+                let mut p = t.para.clone();
+                egui::Grid::new("para").num_columns(4).spacing([6.0, 4.0]).show(ui, |ui| {
+                    ui.label("Spacing");
+                    let r = ui.add(egui::DragValue::new(&mut p.line_spacing).range(-50.0..=200.0).speed(0.2).suffix(" px")).on_hover_text("Extra space between lines");
+                    apply(app, &r, "Line Spacing", |e| if let ElementKind::Text(t) = &mut e.kind { t.para.line_spacing = p.line_spacing });
+                    ui.label("Indent");
+                    let r = ui.add(egui::DragValue::new(&mut p.indent).range(-200.0..=500.0).speed(0.2).suffix(" px"));
+                    apply(app, &r, "Indent", |e| if let ElementKind::Text(t) = &mut e.kind { t.para.indent = p.indent });
+                    ui.end_row();
+                    ui.label("Margin L");
+                    let r = ui.add(egui::DragValue::new(&mut p.margin_left).range(0.0..=500.0).speed(0.2).suffix(" px"));
+                    apply(app, &r, "Left Margin", |e| if let ElementKind::Text(t) = &mut e.kind { t.para.margin_left = p.margin_left });
+                    ui.label("R");
+                    let r = ui.add(egui::DragValue::new(&mut p.margin_right).range(0.0..=500.0).speed(0.2).suffix(" px"));
+                    apply(app, &r, "Right Margin", |e| if let ElementKind::Text(t) = &mut e.kind { t.para.margin_right = p.margin_right });
+                    ui.end_row();
+                });
+                ui.horizontal(|ui| {
+                    let mut fixed = p.width.is_some();
+                    if ui.checkbox(&mut fixed, "Fixed width").on_hover_text("Words wrap inside the box (drag with the Text tool to make one)").changed() {
+                        let w = if fixed { Some(t.box_size().0.max(40.0)) } else { None };
+                        app.ed.modify_selected("Text Box Width", move |e| if let ElementKind::Text(t) = &mut e.kind { t.para.width = w });
+                    }
+                    if let Some(mut w) = p.width {
+                        let r = ui.add(egui::DragValue::new(&mut w).range(10.0..=4000.0).speed(0.5).suffix(" px"));
+                        apply(app, &r, "Text Box Width", |e| if let ElementKind::Text(t) = &mut e.kind { t.para.width = Some(w) });
+                    }
+                });
+                {
+                    use ac_core::text::TextKind;
+                    let mut f = t.field.clone();
+                    section(ui, "Options");
+                    ui.horizontal_wrapped(|ui| {
+                        if f.kind != TextKind::Static && ui.checkbox(&mut f.selectable, "Selectable").changed() {
+                            let v = f.selectable;
+                            app.ed.modify_selected("Selectable", move |e| if let ElementKind::Text(t) = &mut e.kind { t.field.selectable = v });
+                        }
+                        if ui.checkbox(&mut f.border, "Border").on_hover_text("Show a border and white background around the box").changed() {
+                            let v = f.border;
+                            app.ed.modify_selected("Text Border", move |e| if let ElementKind::Text(t) = &mut e.kind { t.field.border = v });
+                        }
+                        if f.kind == TextKind::Input && ui.checkbox(&mut f.password, "Password").changed() {
+                            let v = f.password;
+                            app.ed.modify_selected("Password", move |e| if let ElementKind::Text(t) = &mut e.kind { t.field.password = v });
+                        }
+                    });
+                    if f.kind == TextKind::Input {
+                        ui.horizontal(|ui| {
+                            ui.label("Max characters");
+                            let r = ui.add(egui::DragValue::new(&mut f.max_chars).range(0..=100_000)).on_hover_text("0 = no limit");
+                            let v = f.max_chars;
+                            apply(app, &r, "Max Characters", |e| if let ElementKind::Text(t) = &mut e.kind { t.field.max_chars = v });
+                        });
+                    }
+                    ui.horizontal(|ui| {
+                        ui.label("Link");
+                        let mut url = f.link.clone().unwrap_or_default();
+                        let r = ui.add(egui::TextEdit::singleline(&mut url).hint_text("https://…").desired_width(160.0));
+                        if r.lost_focus() && Some(url.trim().to_string()).filter(|u| !u.is_empty()) != f.link {
+                            let v = Some(url.trim().to_string()).filter(|u| !u.is_empty());
+                            app.ed.modify_selected("Text Link", move |e| if let ElementKind::Text(t) = &mut e.kind { t.field.link = v.clone() });
+                        }
+                    });
+                }
             }
             ElementKind::Instance(inst) if n == 1 => {
                 let id = inst.symbol;
@@ -1086,6 +1211,9 @@ fn document_properties(app: &mut App, ui: &mut egui::Ui) {
         app.ed.set_doc_props(w, h, fps, from32(bg));
         app.fit_pending = true;
     }
+    if ui.button("Document Settings…").on_hover_text("Units, anchor, scale content, scale spans (Ctrl+J)").clicked() {
+        app.doc_dlg = Some(crate::windows::DocDlg::of(app));
+    }
     section(ui, "3D perspective");
     let d = &app.ed.doc;
     let (mut angle, vp) = (d.perspective_angle, d.vanishing_point);
@@ -1311,127 +1439,284 @@ fn library(app: &mut App, ui: &mut egui::Ui) {
         syms.reverse();
     }
     let list_h = (ui.available_height() - 34.0).max(60.0);
+    use ac_core::editor::LibItem;
+    // every item with its full name; the tree below lists folders, then items, per folder
+    let mut items: Vec<(LibItem, String)> = vec![];
+    for s in &syms {
+        items.push((LibItem::Symbol(s.0), s.1.clone()));
+    }
+    for b in app.ed.doc.bitmaps.iter().filter(|b| q.is_empty() || b.name.to_lowercase().contains(&q)) {
+        items.push((LibItem::Bitmap(b.id), b.name.clone()));
+    }
+    for so in app.ed.doc.sounds.iter().filter(|s| q.is_empty() || s.name.to_lowercase().contains(&q)) {
+        items.push((LibItem::Sound(so.id), so.name.clone()));
+    }
+    let folders = app.ed.library_folders();
+    let searching = !q.is_empty();
+    // rows: (depth, Some(folder path) | None, item)
+    let mut rows: Vec<(usize, Option<String>, Option<LibItem>)> = vec![];
+    fn walk(path: &str, depth: usize, folders: &[String], items: &[(LibItem, String)], open: &std::collections::BTreeSet<String>, rows: &mut Vec<(usize, Option<String>, Option<LibItem>)>) {
+        for f in folders.iter().filter(|f| ac_core::split_item_path(f).0 == path) {
+            rows.push((depth, Some(f.clone()), None));
+            if open.contains(f) {
+                walk(f, depth + 1, folders, items, open, rows);
+            }
+        }
+        for (it, n) in items.iter().filter(|(_, n)| ac_core::split_item_path(n).0 == path) {
+            let _ = n;
+            rows.push((depth, None, Some(*it)));
+        }
+    }
+    if searching {
+        rows.extend(items.iter().map(|(it, _)| (0, None, Some(*it))));
+    } else {
+        walk("", 0, &folders, &items, &app.lib.open_folders, &mut rows);
+    }
+    let dragging = app.lib_drag.map(LibItem::Symbol).or(app.lib.drag_bitmap.map(LibItem::Bitmap)).or(app.lib.drag_sound.map(LibItem::Sound));
+    let released = ui.input(|i| i.pointer.any_released());
+    let mut drop_into: Option<String> = None;
     egui::ScrollArea::vertical().id_salt("lib-list").max_height(list_h).auto_shrink([false, false]).show(ui, |ui| {
-        if syms.is_empty() && app.ed.doc.bitmaps.is_empty() && app.ed.doc.sounds.is_empty() {
-            hint(ui, if app.ed.doc.library.iter().all(|s| s.name == ac_core::editor::GROUP_EDIT_NAME) { "Empty. Select objects and press F8 to make a symbol." } else { "No items match the search." });
+        if rows.is_empty() {
+            hint(ui, if app.ed.doc.library.iter().all(|s| s.name == ac_core::editor::GROUP_EDIT_NAME) && app.ed.doc.bitmaps.is_empty() && app.ed.doc.sounds.is_empty() { "Empty. Select objects and press F8 to make a symbol." } else { "No items match the search." });
         }
-        let sounds: Vec<(u32, String, usize)> = app.ed.doc.sounds.iter().filter(|s| q.is_empty() || s.name.to_lowercase().contains(&q)).map(|s| (s.id, s.name.clone(), app.ed.sound_usage(s.id))).collect();
-        for (id, name, uses) in sounds {
-            let (r, resp) = ui.allocate_exact_size(vec2(w, 22.0), Sense::click_and_drag());
-            if app.lib.sound == Some(id) {
-                ui.painter().rect_filled(r, 2.0, ACCENT.gamma_multiply(0.55));
-            } else if resp.hovered() {
-                ui.painter().rect_filled(r, 2.0, Color32::from_gray(0x3A));
+        if dragging.is_some() && !folders.is_empty() {
+            let (r, resp) = ui.allocate_exact_size(vec2(w, 18.0), Sense::hover());
+            let hot = resp.contains_pointer();
+            ui.painter().rect_stroke(r.shrink(1.0), 3.0, EStroke::new(1.0_f32, if hot { ACCENT } else { Color32::from_gray(90) }));
+            ui.painter().text(r.center(), Align2::CENTER_CENTER, "Drop here: library root", FontId::proportional(11.0), Color32::from_gray(190));
+            if hot && released {
+                drop_into = Some(String::new());
             }
-            let clip = ui.painter().with_clip_rect(Rect::from_min_max(r.min, pos2(r.left() + cols[1].1 - 6.0, r.bottom())));
-            clip.text(pos2(r.left() + 6.0, r.center().y), Align2::LEFT_CENTER, format!("🔊 {name}"), FontId::proportional(12.5), Color32::from_gray(230));
-            ui.painter().text(pos2(r.left() + cols[1].1, r.center().y), Align2::LEFT_CENTER, "Sound", FontId::proportional(11.5), Color32::from_gray(180));
-            ui.painter().text(pos2(r.left() + cols[2].1 + 24.0, r.center().y), Align2::RIGHT_CENTER, uses.to_string(), FontId::proportional(11.5), Color32::from_gray(180));
-            ui.painter().text(pos2(r.left() + cols[3].1 + 36.0, r.center().y), Align2::RIGHT_CENTER, "–", FontId::proportional(11.5), Color32::from_gray(180));
-            if resp.clicked() || resp.drag_started() {
-                app.lib.sound = Some(id);
-                app.lib.bitmap = None;
-                app.lib_selected = None;
-            }
-            if resp.drag_started() {
-                app.lib.drag_sound = Some(id);
-            }
-            if resp.double_clicked() {
-                app.ed.set_frame_sound(Some(ac_core::sound::FrameSound::new(id)));
-            }
-            let resp = resp.on_hover_text(format!("{name}\nSound · used on {uses} keyframe(s)\nDrag onto the stage to start it on the current keyframe"));
-            resp.context_menu(|ui| {
-                if ui.button("Use on Current Keyframe").clicked() { app.ed.set_frame_sound(Some(ac_core::sound::FrameSound::new(id))); ui.close_menu(); }
-                ui.separator();
-                if ui.button("Delete").clicked() {
-                    app.ed.delete_sound(id);
-                    app.lib.sound = None;
-                    ui.close_menu();
+        }
+        for (depth, folder, item) in rows {
+            let indent = 14.0 * depth as f32;
+            if let Some(path) = folder {
+                let leaf = ac_core::split_item_path(&path).1.to_string();
+                let (r, resp) = ui.allocate_exact_size(vec2(w, 22.0), Sense::click());
+                let hot_drop = dragging.is_some() && resp.contains_pointer();
+                if hot_drop {
+                    ui.painter().rect_stroke(r.shrink(1.0), 2.0, EStroke::new(1.5_f32, ACCENT));
+                    if released {
+                        drop_into = Some(path.clone());
+                    }
+                } else if resp.hovered() {
+                    ui.painter().rect_filled(r, 2.0, Color32::from_gray(0x3A));
                 }
-            });
-        }
-        let bitmaps: Vec<(u32, String, u32, u32, usize)> = app.ed.doc.bitmaps.iter().filter(|b| q.is_empty() || b.name.to_lowercase().contains(&q)).map(|b| (b.id, b.name.clone(), b.width, b.height, app.ed.bitmap_usage(b.id))).collect();
-        for (id, name, bw, bh, uses) in bitmaps {
-            let (r, resp) = ui.allocate_exact_size(vec2(w, 22.0), Sense::click_and_drag());
-            if app.lib.bitmap == Some(id) {
-                ui.painter().rect_filled(r, 2.0, ACCENT.gamma_multiply(0.55));
-            } else if resp.hovered() {
-                ui.painter().rect_filled(r, 2.0, Color32::from_gray(0x3A));
-            }
-            let clip = ui.painter().with_clip_rect(Rect::from_min_max(r.min, pos2(r.left() + cols[1].1 - 6.0, r.bottom())));
-            clip.text(pos2(r.left() + 6.0, r.center().y), Align2::LEFT_CENTER, format!("🖼 {name}"), FontId::proportional(12.5), Color32::from_gray(230));
-            ui.painter().text(pos2(r.left() + cols[1].1, r.center().y), Align2::LEFT_CENTER, "Bitmap", FontId::proportional(11.5), Color32::from_gray(180));
-            ui.painter().text(pos2(r.left() + cols[2].1 + 24.0, r.center().y), Align2::RIGHT_CENTER, uses.to_string(), FontId::proportional(11.5), Color32::from_gray(180));
-            ui.painter().text(pos2(r.left() + cols[3].1 + 36.0, r.center().y), Align2::RIGHT_CENTER, "–", FontId::proportional(11.5), Color32::from_gray(180));
-            if resp.clicked() || resp.drag_started() {
-                app.lib.bitmap = Some(id);
-                app.lib.sound = None;
-                app.lib_selected = None;
-            }
-            if resp.drag_started() {
-                app.lib.drag_bitmap = Some(id);
-            }
-            let center_place = pt((stage_center.x - bw as f32 / 2.0).max(0.0), (stage_center.y - bh as f32 / 2.0).max(0.0));
-            if resp.double_clicked() {
-                app.ed.place_bitmap(id, center_place);
-            }
-            let resp = resp.on_hover_text(format!("{name}\nBitmap {bw}×{bh} · used {uses}×\nDrag onto the stage to place"));
-            resp.context_menu(|ui| {
-                if ui.button("Place on Stage").clicked() { app.ed.place_bitmap(id, center_place); ui.close_menu(); }
-                if ui.button("Rename…").clicked() { app.dialog = Dialog::RenameBitmap { id, name: name.clone() }; ui.close_menu(); }
-                ui.separator();
-                if ui.button("Delete").clicked() { app.dialog = Dialog::DeleteBitmap { id, uses }; ui.close_menu(); }
-            });
-        }
-        for (id, name, kind, frames, uses) in syms {
-            let (r, resp) = ui.allocate_exact_size(vec2(w, 22.0), Sense::click_and_drag());
-            let selected = app.lib_selected == Some(id);
-            if selected {
-                ui.painter().rect_filled(r, 2.0, ACCENT.gamma_multiply(0.55));
-            } else if resp.hovered() {
-                ui.painter().rect_filled(r, 2.0, Color32::from_gray(0x3A));
-            }
-            let icon = match kind { SymbolKind::Graphic => "🔷", SymbolKind::MovieClip => "🎞", SymbolKind::Button => "🔘" };
-            let font = FontId::proportional(12.5);
-            let txt = Color32::from_gray(230);
-            let clip = ui.painter().with_clip_rect(Rect::from_min_max(r.min, pos2(r.left() + cols[1].1 - 6.0, r.bottom())));
-            clip.text(pos2(r.left() + 6.0, r.center().y), Align2::LEFT_CENTER, format!("{icon} {name}"), font.clone(), txt);
-            ui.painter().text(pos2(r.left() + cols[1].1, r.center().y), Align2::LEFT_CENTER, kind_name(kind), FontId::proportional(11.5), Color32::from_gray(180));
-            ui.painter().text(pos2(r.left() + cols[2].1 + 24.0, r.center().y), Align2::RIGHT_CENTER, uses.to_string(), FontId::proportional(11.5), Color32::from_gray(180));
-            ui.painter().text(pos2(r.left() + cols[3].1 + 36.0, r.center().y), Align2::RIGHT_CENTER, frames.to_string(), FontId::proportional(11.5), Color32::from_gray(180));
-            if resp.clicked() || resp.drag_started() {
-                if app.lib_selected != Some(id) {
-                    app.lib.frame = 0;
+                let open = app.lib.open_folders.contains(&path);
+                let renaming = app.lib.rename_folder.as_ref().is_some_and(|(p, _)| *p == path);
+                ui.painter().text(pos2(r.left() + 6.0 + indent, r.center().y), Align2::LEFT_CENTER, if open { "▼" } else { "▶" }, FontId::proportional(9.0), Color32::from_gray(170));
+                if renaming {
+                    let tr = Rect::from_min_max(pos2(r.left() + 20.0 + indent, r.top() + 1.0), pos2(r.right() - 4.0, r.bottom() - 1.0));
+                    let mut done = false;
+                    ui.allocate_new_ui(egui::UiBuilder::new().max_rect(tr), |ui| {
+                        if let Some((_, text)) = app.lib.rename_folder.as_mut() {
+                            let te = ui.add(egui::TextEdit::singleline(text).desired_width(tr.width()));
+                            te.request_focus();
+                            if te.lost_focus() {
+                                done = true;
+                            }
+                        }
+                    });
+                    if done {
+                        if let Some((p, t)) = app.lib.rename_folder.take() {
+                            if !ui.input(|i| i.key_pressed(egui::Key::Escape)) && app.ed.rename_folder(&p, &t) {
+                                let new_path = ac_core::join_item_path(ac_core::split_item_path(&p).0, t.trim());
+                                if app.lib.open_folders.remove(&p) {
+                                    app.lib.open_folders.insert(new_path);
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    ui.painter().text(pos2(r.left() + 20.0 + indent, r.center().y), Align2::LEFT_CENTER, format!("📁 {leaf}"), FontId::proportional(12.5), Color32::from_gray(225));
+                    ui.painter().text(pos2(r.left() + cols[1].1, r.center().y), Align2::LEFT_CENTER, "Folder", FontId::proportional(11.5), Color32::from_gray(150));
                 }
-                app.lib_selected = Some(id);
-                app.lib.bitmap = None;
-            }
-            if resp.drag_started() {
-                app.lib_drag = Some(id);
-            }
-            if resp.double_clicked() {
-                app.edit_symbol(id);
-            }
-            let resp = resp.on_hover_text(format!("{name}\n{} · {frames} frame(s) · used {uses}×\nDrag onto the stage to place · double-click to edit", kind_name(kind)));
-            resp.context_menu(|ui| {
-                if ui.button("Edit").clicked() { app.edit_symbol(id); ui.close_menu(); }
-                if ui.button("Place on Stage").clicked() { app.ed.place_symbol(id, stage_center); ui.close_menu(); }
-                if ui.button("Rename…").clicked() { app.dialog = Dialog::RenameSymbol { id, name: name.clone() }; ui.close_menu(); }
-                if ui.button("Duplicate").clicked() { app.lib_selected = app.ed.duplicate_symbol(id); ui.close_menu(); }
-                ui.menu_button("Type", |ui| {
-                    for (k, l) in [(SymbolKind::Graphic, "Graphic"), (SymbolKind::MovieClip, "Movie Clip"), (SymbolKind::Button, "Button")] {
-                        if ui.radio(kind == k, l).clicked() { app.ed.set_symbol_kind(id, k); ui.close_menu(); }
+                if resp.clicked() {
+                    if open {
+                        app.lib.open_folders.remove(&path);
+                    } else {
+                        app.lib.open_folders.insert(path.clone());
+                    }
+                }
+                if resp.double_clicked() {
+                    app.lib.rename_folder = Some((path.clone(), leaf.clone()));
+                }
+                resp.on_hover_text(format!("{path}\nClick to open or close · double-click to rename · drag items onto it")).context_menu(|ui| {
+                    if ui.button("New Folder Inside").clicked() {
+                        let p = app.ed.new_folder(&path);
+                        app.lib.open_folders.insert(path.clone());
+                        app.lib.rename_folder = Some((p.clone(), ac_core::split_item_path(&p).1.to_string()));
+                        ui.close_menu();
+                    }
+                    if ui.button("Rename…").clicked() {
+                        app.lib.rename_folder = Some((path.clone(), leaf.clone()));
+                        ui.close_menu();
+                    }
+                    if ui.button("Delete Folder").on_hover_text("Its contents move up a level").clicked() {
+                        app.ed.delete_folder(&path);
+                        ui.close_menu();
                     }
                 });
-                ui.separator();
-                if ui.button("Delete").clicked() { app.dialog = Dialog::DeleteSymbol { id, uses: app.ed.symbol_usage(id) }; ui.close_menu(); }
-            });
+                continue;
+            }
+            let Some(item) = item else { continue };
+            match item {
+                LibItem::Sound(id) => {
+                    let Some(so) = app.ed.doc.sound(id) else { continue };
+                    let name = so.name.clone();
+                    let leaf = ac_core::split_item_path(&name).1.to_string();
+                    let uses = app.ed.sound_usage(id);
+                    let (r, resp) = ui.allocate_exact_size(vec2(w, 22.0), Sense::click_and_drag());
+                    if app.lib.sound == Some(id) {
+                        ui.painter().rect_filled(r, 2.0, ACCENT.gamma_multiply(0.55));
+                    } else if resp.hovered() {
+                        ui.painter().rect_filled(r, 2.0, Color32::from_gray(0x3A));
+                    }
+                    let clip = ui.painter().with_clip_rect(Rect::from_min_max(r.min, pos2(r.left() + cols[1].1 - 6.0, r.bottom())));
+                    clip.text(pos2(r.left() + 6.0 + indent, r.center().y), Align2::LEFT_CENTER, format!("🔊 {leaf}"), FontId::proportional(12.5), Color32::from_gray(230));
+                    ui.painter().text(pos2(r.left() + cols[1].1, r.center().y), Align2::LEFT_CENTER, "Sound", FontId::proportional(11.5), Color32::from_gray(180));
+                    ui.painter().text(pos2(r.left() + cols[2].1 + 24.0, r.center().y), Align2::RIGHT_CENTER, uses.to_string(), FontId::proportional(11.5), Color32::from_gray(180));
+                    ui.painter().text(pos2(r.left() + cols[3].1 + 36.0, r.center().y), Align2::RIGHT_CENTER, "–", FontId::proportional(11.5), Color32::from_gray(180));
+                    if resp.clicked() || resp.drag_started() {
+                        app.lib.sound = Some(id);
+                        app.lib.bitmap = None;
+                        app.lib_selected = None;
+                    }
+                    if resp.drag_started() {
+                        app.lib.drag_sound = Some(id);
+                    }
+                    if resp.double_clicked() {
+                        app.ed.set_frame_sound(Some(ac_core::sound::FrameSound::new(id)));
+                    }
+                    let resp = resp.on_hover_text(format!("{name}\nSound · used on {uses} keyframe(s)\nDrag onto the stage to start it on the current keyframe, or onto a folder"));
+                    resp.context_menu(|ui| {
+                        if ui.button("Use on Current Keyframe").clicked() { app.ed.set_frame_sound(Some(ac_core::sound::FrameSound::new(id))); ui.close_menu(); }
+                        item_menu(app, ui, item, &folders);
+                        ui.separator();
+                        if ui.button("Delete").clicked() {
+                            app.ed.delete_sound(id);
+                            app.lib.sound = None;
+                            ui.close_menu();
+                        }
+                    });
+                }
+                LibItem::Bitmap(id) => {
+                    let Some(b) = app.ed.doc.bitmap(id) else { continue };
+                    let (name, bw, bh) = (b.name.clone(), b.width, b.height);
+                    let leaf = ac_core::split_item_path(&name).1.to_string();
+                    let uses = app.ed.bitmap_usage(id);
+                    let (r, resp) = ui.allocate_exact_size(vec2(w, 22.0), Sense::click_and_drag());
+                    if app.lib.bitmap == Some(id) {
+                        ui.painter().rect_filled(r, 2.0, ACCENT.gamma_multiply(0.55));
+                    } else if resp.hovered() {
+                        ui.painter().rect_filled(r, 2.0, Color32::from_gray(0x3A));
+                    }
+                    let clip = ui.painter().with_clip_rect(Rect::from_min_max(r.min, pos2(r.left() + cols[1].1 - 6.0, r.bottom())));
+                    clip.text(pos2(r.left() + 6.0 + indent, r.center().y), Align2::LEFT_CENTER, format!("🖼 {leaf}"), FontId::proportional(12.5), Color32::from_gray(230));
+                    ui.painter().text(pos2(r.left() + cols[1].1, r.center().y), Align2::LEFT_CENTER, "Bitmap", FontId::proportional(11.5), Color32::from_gray(180));
+                    ui.painter().text(pos2(r.left() + cols[2].1 + 24.0, r.center().y), Align2::RIGHT_CENTER, uses.to_string(), FontId::proportional(11.5), Color32::from_gray(180));
+                    ui.painter().text(pos2(r.left() + cols[3].1 + 36.0, r.center().y), Align2::RIGHT_CENTER, "–", FontId::proportional(11.5), Color32::from_gray(180));
+                    if resp.clicked() || resp.drag_started() {
+                        app.lib.bitmap = Some(id);
+                        app.lib.sound = None;
+                        app.lib_selected = None;
+                    }
+                    if resp.drag_started() {
+                        app.lib.drag_bitmap = Some(id);
+                    }
+                    let center_place = pt((stage_center.x - bw as f32 / 2.0).max(0.0), (stage_center.y - bh as f32 / 2.0).max(0.0));
+                    if resp.double_clicked() {
+                        app.ed.place_bitmap(id, center_place);
+                    }
+                    let resp = resp.on_hover_text(format!("{name}\nBitmap {bw}×{bh} · used {uses}×\nDrag onto the stage to place, or onto a folder"));
+                    resp.context_menu(|ui| {
+                        if ui.button("Place on Stage").clicked() { app.ed.place_bitmap(id, center_place); ui.close_menu(); }
+                        if ui.button("Rename…").clicked() { app.dialog = Dialog::RenameBitmap { id, name: leaf.clone() }; ui.close_menu(); }
+                        item_menu(app, ui, item, &folders);
+                        ui.separator();
+                        if ui.button("Delete").clicked() { app.dialog = Dialog::DeleteBitmap { id, uses }; ui.close_menu(); }
+                    });
+                }
+                LibItem::Symbol(id) => {
+                    let Some(s) = app.ed.doc.symbol(id) else { continue };
+                    let (name, kind, frames) = (s.name.clone(), s.kind, s.timeline.frame_count());
+                    let leaf = ac_core::split_item_path(&name).1.to_string();
+                    let uses = app.ed.symbol_usage(id);
+                    let linked = app.ed.doc.linkage.get(&id).cloned();
+                    let (r, resp) = ui.allocate_exact_size(vec2(w, 22.0), Sense::click_and_drag());
+                    let selected = app.lib_selected == Some(id);
+                    if selected {
+                        ui.painter().rect_filled(r, 2.0, ACCENT.gamma_multiply(0.55));
+                    } else if resp.hovered() {
+                        ui.painter().rect_filled(r, 2.0, Color32::from_gray(0x3A));
+                    }
+                    let icon = match kind { SymbolKind::Graphic => "🔷", SymbolKind::MovieClip => "🎞", SymbolKind::Button => "🔘" };
+                    let clip = ui.painter().with_clip_rect(Rect::from_min_max(r.min, pos2(r.left() + cols[1].1 - 6.0, r.bottom())));
+                    clip.text(pos2(r.left() + 6.0 + indent, r.center().y), Align2::LEFT_CENTER, format!("{icon} {leaf}"), FontId::proportional(12.5), Color32::from_gray(230));
+                    ui.painter().text(pos2(r.left() + cols[1].1, r.center().y), Align2::LEFT_CENTER, kind_name(kind), FontId::proportional(11.5), Color32::from_gray(180));
+                    ui.painter().text(pos2(r.left() + cols[2].1 + 24.0, r.center().y), Align2::RIGHT_CENTER, uses.to_string(), FontId::proportional(11.5), Color32::from_gray(180));
+                    ui.painter().text(pos2(r.left() + cols[3].1 + 36.0, r.center().y), Align2::RIGHT_CENTER, frames.to_string(), FontId::proportional(11.5), Color32::from_gray(180));
+                    if resp.clicked() || resp.drag_started() {
+                        if app.lib_selected != Some(id) {
+                            app.lib.frame = 0;
+                        }
+                        app.lib_selected = Some(id);
+                        app.lib.bitmap = None;
+                    }
+                    if resp.drag_started() {
+                        app.lib_drag = Some(id);
+                    }
+                    if resp.double_clicked() {
+                        app.edit_symbol(id);
+                    }
+                    let link = linked.map(|c| format!("\nLinkage: {c}")).unwrap_or_default();
+                    let resp = resp.on_hover_text(format!("{name}\n{} · {frames} frame(s) · used {uses}×{link}\nDrag onto the stage to place, or onto a folder · double-click to edit", kind_name(kind)));
+                    resp.context_menu(|ui| {
+                        if ui.button("Edit").clicked() { app.edit_symbol(id); ui.close_menu(); }
+                        if ui.button("Place on Stage").clicked() { app.ed.place_symbol(id, stage_center); ui.close_menu(); }
+                        if ui.button("Rename…").clicked() { app.dialog = Dialog::RenameSymbol { id, name: leaf.clone() }; ui.close_menu(); }
+                        if ui.button("Duplicate").clicked() { app.lib_selected = app.ed.duplicate_symbol(id); ui.close_menu(); }
+                        ui.menu_button("Type", |ui| {
+                            for (k, l) in [(SymbolKind::Graphic, "Graphic"), (SymbolKind::MovieClip, "Movie Clip"), (SymbolKind::Button, "Button")] {
+                                if ui.radio(kind == k, l).clicked() { app.ed.set_symbol_kind(id, k); ui.close_menu(); }
+                            }
+                        });
+                        item_menu(app, ui, item, &folders);
+                        ui.separator();
+                        if ui.button("Delete").clicked() { app.dialog = Dialog::DeleteSymbol { id, uses: app.ed.symbol_usage(id) }; ui.close_menu(); }
+                    });
+                }
+            }
         }
     });
+    if let (Some(it), Some(folder)) = (dragging, drop_into) {
+        if app.ed.move_to_folder(it, &folder) {
+            if !folder.is_empty() {
+                app.lib.open_folders.insert(folder.clone());
+            }
+            app.status = if folder.is_empty() { "Moved to the library root".into() } else { format!("Moved into {folder}") };
+        }
+        app.lib_drag = None;
+        app.lib.drag_bitmap = None;
+        app.lib.drag_sound = None;
+    }
     ui.horizontal(|ui| {
         let sel = app.lib_selected.filter(|id| app.ed.doc.symbol(*id).is_some());
         if ui.button("➕").on_hover_text("New Symbol (Ctrl+F8)").clicked() {
             app.open_symbol_dialog(false);
+        }
+        if ui.button("📁").on_hover_text("New Folder (in the selected item's folder)").clicked() {
+            let parent = selected_item(app).and_then(|it| app.ed.item_name(it)).map(|n| ac_core::split_item_path(&n).0.to_string()).unwrap_or_default();
+            let p = app.ed.new_folder(&parent);
+            if !parent.is_empty() {
+                app.lib.open_folders.insert(parent);
+            }
+            app.lib.rename_folder = Some((p.clone(), ac_core::split_item_path(&p).1.to_string()));
+        }
+        if ui.add_enabled(selected_item(app).is_some(), egui::Button::new("ⓘ")).on_hover_text("Properties of the selected item").clicked() {
+            if let Some(it) = selected_item(app) {
+                open_item_props(app, it);
+            }
         }
         if ui.add_enabled(sel.is_some(), egui::Button::new("Place")).on_hover_text("Place an instance at the centre of the stage").clicked() {
             app.ed.place_symbol(sel.unwrap(), stage_center);
@@ -1441,7 +1726,7 @@ fn library(app: &mut App, ui: &mut egui::Ui) {
         }
         if ui.add_enabled(sel.is_some(), egui::Button::new("Rename")).clicked() {
             let id = sel.unwrap();
-            app.dialog = Dialog::RenameSymbol { id, name: app.ed.doc.symbol(id).unwrap().name.clone() };
+            app.dialog = Dialog::RenameSymbol { id, name: ac_core::split_item_path(&app.ed.doc.symbol(id).unwrap().name).1.to_string() };
         }
         if ui.add_enabled(sel.is_some(), egui::Button::new("Dup")).on_hover_text("Duplicate item").clicked() {
             app.lib_selected = app.ed.duplicate_symbol(sel.unwrap());
@@ -1452,6 +1737,104 @@ fn library(app: &mut App, ui: &mut egui::Ui) {
         }
     });
 }
+/// The library item selected in the panel (symbol, bitmap or sound).
+fn selected_item(app: &App) -> Option<ac_core::editor::LibItem> {
+    use ac_core::editor::LibItem;
+    app.lib_selected.filter(|id| app.ed.doc.symbol(*id).is_some()).map(LibItem::Symbol).or(app.lib.bitmap.map(LibItem::Bitmap)).or(app.lib.sound.map(LibItem::Sound))
+}
+
+/// Context-menu entries every library item has: Move to Folder, Properties.
+fn item_menu(app: &mut App, ui: &mut egui::Ui, it: ac_core::editor::LibItem, folders: &[String]) {
+    ui.menu_button("Move to Folder", |ui| {
+        if ui.button("(Library root)").clicked() {
+            app.ed.move_to_folder(it, "");
+            ui.close_menu();
+        }
+        for f in folders {
+            if ui.button(f).clicked() {
+                app.ed.move_to_folder(it, f);
+                app.lib.open_folders.insert(f.clone());
+                ui.close_menu();
+            }
+        }
+        ui.separator();
+        if ui.button("New Folder…").clicked() {
+            let p = app.ed.new_folder("");
+            app.ed.move_to_folder(it, &p);
+            app.lib.open_folders.insert(p.clone());
+            app.lib.rename_folder = Some((p.clone(), ac_core::split_item_path(&p).1.to_string()));
+            ui.close_menu();
+        }
+    });
+    if ui.button("Properties…").clicked() {
+        open_item_props(app, it);
+        ui.close_menu();
+    }
+}
+
+pub(crate) fn open_item_props(app: &mut App, it: ac_core::editor::LibItem) {
+    let Some(name) = app.ed.item_name(it) else { return };
+    let (folder, leaf) = ac_core::split_item_path(&name);
+    let (kind, class) = match it {
+        ac_core::editor::LibItem::Symbol(id) => (app.ed.doc.symbol(id).map(|s| s.kind), app.ed.doc.linkage.get(&id).cloned()),
+        _ => (None, None),
+    };
+    app.lib.props = Some(ItemProps { item: it, name: leaf.to_string(), kind, export: class.is_some(), class: class.unwrap_or_else(|| leaf.replace(|c: char| !c.is_alphanumeric() && c != '_', "_")), folder: folder.to_string() });
+}
+
+/// Library item Properties: name, type and linkage (symbols), folder.
+pub fn item_props_window(app: &mut App, ctx: &egui::Context) {
+    let Some(mut p) = app.lib.props.clone() else { return };
+    let mut open = true;
+    let (mut ok, mut cancel) = (false, false);
+    egui::Window::new("Library Item Properties").open(&mut open).resizable(false).collapsible(false).show(ctx, |ui| {
+        egui::Grid::new("itemprops").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
+            ui.label("Name");
+            ui.text_edit_singleline(&mut p.name);
+            ui.end_row();
+            ui.label("Folder");
+            ui.label(if p.folder.is_empty() { "Library root".to_string() } else { p.folder.clone() });
+            ui.end_row();
+            if let Some(k) = p.kind.as_mut() {
+                ui.label("Type");
+                ui.horizontal(|ui| {
+                    ui.selectable_value(k, SymbolKind::Graphic, "Graphic");
+                    ui.selectable_value(k, SymbolKind::MovieClip, "Movie Clip");
+                    ui.selectable_value(k, SymbolKind::Button, "Button");
+                });
+                ui.end_row();
+                ui.label("Linkage");
+                ui.checkbox(&mut p.export, "Export for runtime").on_hover_text("Gives the symbol a class name for code (kept in .fla files)");
+                ui.end_row();
+                ui.label("Class");
+                ui.add_enabled(p.export, egui::TextEdit::singleline(&mut p.class));
+                ui.end_row();
+            }
+            if let ac_core::editor::LibItem::Bitmap(id) = p.item {
+                if let Some(b) = app.ed.doc.bitmap(id) {
+                    ui.label("Size");
+                    ui.label(format!("{} × {} px", b.width, b.height));
+                    ui.end_row();
+                }
+            }
+        });
+        ui.horizontal(|ui| {
+            ok = ui.button("OK").clicked();
+            cancel = ui.button("Cancel").clicked();
+        });
+    });
+    app.lib.props = Some(p.clone());
+    if ok {
+        if app.ed.set_item_props(p.item, &p.name, p.kind, p.export.then(|| p.class.clone())) {
+            app.lib.props = None;
+        } else {
+            app.status = "A name can't be empty or contain '/'".into();
+        }
+    } else if cancel || !open {
+        app.lib.props = None;
+    }
+}
+
 /// Ghost label under the cursor while a library item is dragged, and the drop.
 pub fn library_drag_ghost(app: &mut App, ctx: &egui::Context) {
     if let Some(id) = app.lib.drag_sound {
@@ -1646,6 +2029,14 @@ fn tool_properties(app: &mut App, ui: &mut egui::Ui) {
             hint(ui, "Break Apart a bitmap (Ctrl+B) first. The wand selects the connected area whose colour is within the threshold of the pixel you click; press Delete to cut it out.");
         }
         Tool::Text => {
+            section(ui, "Text type");
+            ui.horizontal(|ui| {
+                use ac_core::text::TextKind;
+                ui.selectable_value(&mut app.topts.text_kind, TextKind::Static, "Static");
+                ui.selectable_value(&mut app.topts.text_kind, TextKind::Dynamic, "Dynamic");
+                ui.selectable_value(&mut app.topts.text_kind, TextKind::Input, "Input");
+            });
+            hint(ui, "Click to type text that grows with what you type; drag to make a fixed-width box where words wrap.");
             section(ui, "Character");
             let o = &mut app.topts;
             ui.add(egui::Slider::new(&mut o.text_size, 4.0..=200.0).text("Size"));

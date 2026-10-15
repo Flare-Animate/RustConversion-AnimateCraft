@@ -207,6 +207,8 @@ pub struct ToolOpts {
     /// All the stops of a gradient swatch (used while its ends still match fill → fill2).
     pub grad_stops: Option<Vec<(f32, ac_core::Color)>>,
     pub text_size: f32,
+    /// Text tool: Static, Dynamic or Input text.
+    pub text_kind: ac_core::text::TextKind,
     pub text_font: FontFace,
     pub text_bold: bool,
     pub text_italic: bool,
@@ -268,6 +270,7 @@ impl Default for ToolOpts {
             fill2: Color32::WHITE,
             grad_stops: None,
             text_size: 28.0,
+            text_kind: ac_core::text::TextKind::Static,
             text_font: FontFace::Sans,
             text_bold: false,
             text_italic: false,

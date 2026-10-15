@@ -77,10 +77,13 @@
     Object.keys(n).forEach(function (name) {
       var o = instObj(name), b = n[name];
       if (!changed[name]) { o.x = b.x; o.y = b.y; o.rotation = b.r; o.scaleX = b.sx; o.scaleY = b.sy; o.alpha = b.a; o.visible = true; }
+      if (b.tx && !textSet[name]) o.text = b.tx.s;
       tl[name] = o;
     });
   }
   function snapshot(o) { return [o.x, o.y, o.rotation, o.scaleX, o.scaleY, o.alpha, o.visible].join(","); }
+  // text fields: a script (or the viewer) changed the text
+  var textSet = {};
 
   // ---------------------------------------------------------------- drawing
   var pool = [];
@@ -241,11 +244,17 @@
   }
 
   // per-frame: overrides by src, button substitutions
-  var ov = {}, alt = {}, altDone = {};
+  var ov = {}, alt = {}, altDone = {}, live = [];
   function prepare(f) {
-    ov = {}; alt = {}; altDone = {};
+    ov = {}; alt = {}; altDone = {}; live = [];
     var n = extra(f).n || {};
     Object.keys(n).forEach(function (name) {
+      var tb = n[name].tx, to = insts[name];
+      if (tb && to) {
+        if (to.text !== undefined && to.text !== tb.s) textSet[name] = true;
+        // dynamic text changed by a script, and every input field, are drawn live
+        if (tb.k === 2 || (tb.k === 1 && textSet[name])) live.push({ name: name, b: n[name] });
+      }
       if (!changed[name]) return;
       var o = insts[name], b = n[name];
       if (!o.visible) { ov[b.src] = { hide: true }; return; }
@@ -255,6 +264,7 @@
       var want = new DOMMatrix(compose(d));
       ov[b.src] = { delta: want.multiply(new DOMMatrix(b.m).inverse()), a: b.a > 1e-4 ? o.alpha / b.a : 1 };
     });
+    live.forEach(function (l) { ov[l.b.src] = Object.assign(ov[l.b.src] || {}, { hideText: true }); });
     (extra(f).b || []).forEach(function (bt) {
       if (press === bt.src && hover === bt.src) alt[bt.src] = bt.down;
       else if (hover === bt.src && !press) alt[bt.src] = bt.over;
@@ -351,6 +361,7 @@
       return;
     }
     if (o && o.hide) return;
+    if (o && o.hideText && !it.s) return; // its outlines: the live text replaces them (borders stay)
     var m = new DOMMatrix(it.m);
     if (o) m = o.delta.multiply(m);
     var fa = o ? o.a : 1;
@@ -421,7 +432,80 @@
     ctx.fillStyle = M.bg;
     ctx.fillRect(0, 0, cv.width, cv.height);
     drawList(ctx, frameList(), 0);
+    drawLive();
     dirty = false;
+  }
+
+  // ---------------------------------------------------------------- text fields
+  var inputs = {};
+  function wrapLines(c, text, tb) {
+    var out = [];
+    text.split("\n").forEach(function (para) {
+      if (!tb.w) { out.push(para); return; }
+      var words = para.split(" "), line = "";
+      words.forEach(function (wd) {
+        var tryLine = line ? line + " " + wd : wd;
+        if (line && c.measureText(tryLine).width > tb.w - tb.ml) { out.push(line); line = wd; } else line = tryLine;
+      });
+      out.push(line);
+    });
+    return out;
+  }
+  function liveMatrix(l) {
+    var its = itemsOf(frameList(), l.b.src, []);
+    if (!its.length) return null;
+    var o = ov[l.b.src], m = new DOMMatrix(its[its.length - 1].m);
+    return o && o.delta ? o.delta.multiply(m) : m;
+  }
+  function drawLive() {
+    var seen = {};
+    live.forEach(function (l) {
+      var tb = l.b.tx, o = insts[l.name], m = liveMatrix(l);
+      if (!m || (o && !o.visible)) return;
+      seen[l.name] = true;
+      if (tb.k === 2) { placeInput(l.name, tb, m, o); return; }
+      ctx.save();
+      ctx.setTransform(BASE.multiply(m));
+      ctx.font = tb.f;
+      ctx.fillStyle = tb.c;
+      ctx.textBaseline = "top";
+      if (ctx.letterSpacing !== undefined) ctx.letterSpacing = tb.ls + "px";
+      var text = String(o.text === undefined || o.text === null ? "" : o.text);
+      var lines = wrapLines(ctx, text, tb), width = tb.w || Math.max.apply(null, lines.map(function (s) { return ctx.measureText(s).width; }).concat([0]));
+      lines.forEach(function (s, i) {
+        var lw = ctx.measureText(s).width, x = tb.ml + (i === 0 ? tb.in : 0);
+        if (tb.al === "center") x += (width - lw) / 2; else if (tb.al === "right") x += width - lw;
+        ctx.fillText(s, x, i * tb.lh + tb.sz * 0.1);
+      });
+      ctx.restore();
+    });
+    Object.keys(inputs).forEach(function (n) { if (!seen[n]) inputs[n].style.display = "none"; });
+  }
+  function placeInput(name, tb, m, o) {
+    var el = inputs[name];
+    if (!el) {
+      el = inputs[name] = document.createElement(tb.w ? "textarea" : "input");
+      if (!tb.w) el.type = tb.pw ? "password" : "text";
+      if (tb.mc) el.maxLength = tb.mc;
+      el.value = o.text || "";
+      el.style.cssText = "position:fixed;margin:0;padding:0;outline:none;resize:none;overflow:hidden;box-sizing:border-box;";
+      el.style.background = tb.bd ? "#fff" : "transparent";
+      el.style.border = tb.bd ? "1px solid #000" : "none";
+      el.addEventListener("input", function () { o.text = el.value; textSet[name] = true; dirty = true; });
+      document.body.appendChild(el);
+    }
+    if (document.activeElement !== el && el.value !== String(o.text || "")) el.value = o.text || "";
+    var r = cv.getBoundingClientRect(), k = r.width / M.w;
+    var sx = Math.hypot(m.a, m.b) * k, sy = Math.hypot(m.c, m.d) * k;
+    el.style.display = "block";
+    el.style.left = (r.left + m.e * k) + "px";
+    el.style.top = (r.top + m.f * k) + "px";
+    el.style.width = Math.max(20, tb.bw * sx + 4) + "px";
+    el.style.height = Math.max(tb.sz * 1.3, tb.bh) * sy + 4 + "px";
+    el.style.font = tb.f.replace(/[0-9.]+px/, (tb.sz * sy) + "px");
+    el.style.color = tb.c;
+    el.style.textAlign = tb.al === "justify" ? "left" : tb.al;
+    el.style.letterSpacing = (tb.ls * sx) + "px";
   }
 
   // ---------------------------------------------------------------- sound
@@ -574,7 +658,8 @@
     var names = Object.keys(n);
     for (var j = names.length - 1; j >= 0; j--) {
       var o = insts[names[j]];
-      if (!o || !Object.keys(o._l).some(function (t) { return o._l[t].length; })) continue;
+      var linked = n[names[j]].tx && n[names[j]].tx.url;
+      if (!o || !(linked || Object.keys(o._l).some(function (t) { return o._l[t].length; }))) continue;
       var its = itemsOf(frameList(), n[names[j]].src, []);
       for (var q = 0; q < its.length; q++) {
         ctx.setTransform(BASE.multiply(new DOMMatrix(its[q].m)));
@@ -612,7 +697,11 @@
   var pressName = null;
   cv.addEventListener("pointerup", function (ev) {
     var pt = stagePoint(ev), h = hitTest(pt);
-    if (h && h.name === pressName) fire(h.name, "click", pt);
+    if (h && h.name === pressName) {
+      var nn = extra(frame).n || {};
+      if (nn[h.name] && nn[h.name].tx && nn[h.name].tx.url) window.open(nn[h.name].tx.url, "_blank");
+      fire(h.name, "click", pt);
+    }
     press = null; pressName = null;
     dirty = true;
   });

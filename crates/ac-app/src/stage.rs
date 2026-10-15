@@ -16,6 +16,8 @@ pub enum Drag {
     /// Free Transform: move the transformation point.
     Pivot,
     Marquee { start: Pt, cur: Pt, add: bool },
+    /// Text tool: dragging out a fixed-width text box.
+    TextBox { sel: Selection, start: Pt },
     Draw { start: Pt, cur: Pt },
     Freehand { pts: Vec<Pt> },
     /// Fluid Brush: points with timestamps (speed → width).
@@ -1199,9 +1201,15 @@ fn press(app: &mut App, rect: Rect, tool: Tool, origin: Pos2, p0: Pt, shift: boo
                 t.align = app.topts.text_align;
                 t.weight = if app.topts.text_bold { 700 } else { 400 };
                 t.italic = app.topts.text_italic;
+                t.field.kind = app.topts.text_kind;
+                t.field.selectable = app.topts.text_kind != ac_core::text::TextKind::Static;
             }
             match app.ed.add_element(el) {
-                Some(s) => app.text_edit = Some(TextEdit { sel: s, buffer: String::new(), mark, focus_requested: false }),
+                Some(s) => {
+                    app.text_edit = Some(TextEdit { sel: s, buffer: String::new(), mark, focus_requested: false });
+                    // drag out to give the new text a fixed width (words wrap)
+                    app.drag = Drag::TextBox { sel: s, start: p0 };
+                }
                 None => app.locked_msg(),
             }
         }
@@ -1476,7 +1484,13 @@ fn start_move(app: &mut App, p0: Pt) {
 
 fn select_press(app: &mut App, p0: Pt, shift: bool) {
     if let Some(hit) = app.ed.hit_test(p0) {
-        if shift {
+        // Preferences › Shift select off: clicks add to the selection
+        let adds = !shift && !app.settings.prefs.shift_select;
+        if adds {
+            if !app.ed.is_selected(hit) {
+                app.ed.select(Some(hit), true);
+            }
+        } else if shift {
             app.ed.select(Some(hit), true);
         } else if !app.ed.is_selected(hit) {
             app.ed.select(Some(hit), false);
@@ -2107,7 +2121,12 @@ fn drag(app: &mut App, ui: &egui::Ui, rect: Rect, pos: Pos2, p: Pt, shift: bool,
             let d = pt(p.x - last.x, p.y - last.y);
             *last = p;
             if !*moved {
-                app.ed.begin_drag();
+                // Alt-drag with the Selection tool drags a copy (one undo step)
+                if !(alt && app.tool == Tool::Select && app.ed.alt_drag_copy()) {
+                    app.ed.begin_drag();
+                } else {
+                    app.status = "Copy by dragging".into();
+                }
                 *moved = true;
             }
             raw.x += d.x;
@@ -2460,6 +2479,19 @@ fn drag(app: &mut App, ui: &egui::Ui, rect: Rect, pos: Pos2, p: Pt, shift: bool,
         }
         Drag::GuideNew { .. } => {}
         Drag::Marquee { cur, .. } => *cur = p,
+        Drag::TextBox { sel, start } => {
+            let w = p.x - start.x;
+            if w.abs() > 6.0 / zoom {
+                let (s, x0, w) = (*sel, start.x.min(p.x), w.abs().max(10.0));
+                app.ed.selection = vec![s];
+                app.ed.modify_selected_continuous(|e| {
+                    if let ElementKind::Text(t) = &mut e.kind {
+                        t.para.width = Some(w);
+                        e.matrix.tx = x0;
+                    }
+                });
+            }
+        }
         Drag::Draw { start, cur } => {
             let sp = pt(app_snap(&app.view, &app.ed.doc.guides, p.x, true, zoom), app_snap(&app.view, &app.ed.doc.guides, p.y, false, zoom));
             *cur = sp;
@@ -2920,8 +2952,8 @@ fn render_stage(app: &mut App, ui: &egui::Ui, rect: Rect) {
         frames.sort_by_key(|&f| std::cmp::Reverse((f as i64 - cur as i64).abs()));
         for f in frames {
             let multi = app.onion_opts.multi;
-            if multi && !keys.contains(&f) {
-                continue; // Edit Multiple Frames shows the keyframes
+            if (multi || app.onion_opts.keys_only) && !keys.contains(&f) {
+                continue; // Edit Multiple Frames / Keyframes Only show the keyframes
             }
             let dist = (f as i64 - cur as i64).unsigned_abs() as f32;
             let mut items = app.ed.evaluate_current(f);

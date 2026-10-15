@@ -46,7 +46,8 @@ Status: ✅ in the demo · 🟡 partial · ⬜ planned
 - ✅ Rulers, guides (Edit Guides), grid + snapping (incl. Snap to Pixels), Align panel, Info panel; native file dialogs, recent files, autosave + crash recovery
 - ✅ Motion Editor (per-property graphs, key drag/retime, smooth/corner points, per-property eases)
 - 🟡 Movable docks (grips, Workspace menu, Reset Layout), Swatches column (Ctrl+F9; colours + gradients, per-document from .fla; .aco/.ase/.grd via PhotoCraft, .gpl, .act), Navigator, command search (Ctrl+Shift+P), Tool Options bar, Clip to stage, History panel (Ctrl+F10), Test Movie (Ctrl+Enter, in the browser)
-- ⬜ Floating panels / tab groups / named workspaces (needs the egui upgrade), Color panel, preferences
+- ✅ Color panel (Ctrl+Shift+F9), Preferences (Ctrl+U), Document Settings (Ctrl+J), Library folders + linkage + item Properties, registration point on Convert to Symbol, Alt-drag copy
+- ⬜ Floating panels / tab groups / named workspaces (needs the egui upgrade)
 
 **Drawing**
 - ✅ Object Drawing model (each shape its own object)
@@ -93,7 +94,7 @@ Status: ✅ in the demo · 🟡 partial · ⬜ planned
 - ✅ Particle emitters (Particle tool; dots / squares / stars / symbols / bitmaps; per-frame closed form, all exports)
 - ⬜ Toolbar gaps: Pattern brushes, pressure/tilt, layer depth
 - ✅ Groups, bitmaps (PNG/JPG/GIF/BMP/TGA/TIFF/WebP/EXR, animated GIF, sequences), SVG import, system fonts with styles and weights (simulated when missing)
-- ⬜ Dynamic/input text
+- ✅ Static / Dynamic / Input text; fixed-width boxes with wrap, justify, indent, margins, line spacing, super/subscript, auto-kern, links, borders, password fields (editor, .fla, HTML5)
 
 **Timeline**
 - ✅ Layers (visible / lock / outline, colour), frames, keyframes, blank keyframes,

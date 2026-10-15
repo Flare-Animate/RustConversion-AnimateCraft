@@ -373,6 +373,19 @@ impl Swatch {
 
 pub type SymbolId = u32;
 
+/// A library item's folder ("" = the library root) and its own name.
+pub fn split_item_path(name: &str) -> (&str, &str) {
+    match name.rfind('/') {
+        Some(i) => (&name[..i], &name[i + 1..]),
+        None => ("", name),
+    }
+}
+
+/// `folder/leaf`, or `leaf` at the root.
+pub fn join_item_path(folder: &str, leaf: &str) -> String {
+    if folder.is_empty() { leaf.to_string() } else { format!("{folder}/{leaf}") }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SymbolKind {
     /// Timeline is synced to the parent timeline (Animate "Graphic").
@@ -470,6 +483,12 @@ pub struct TextEl {
     pub weight: u16,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub italic: bool,
+    /// Paragraph and character options (line spacing, indent, margins, fixed width, baseline shift, kerning).
+    #[serde(default, skip_serializing_if = "crate::text::Paragraph::is_default")]
+    pub para: crate::text::Paragraph,
+    /// Static / Dynamic / Input and the field options.
+    #[serde(default, skip_serializing_if = "crate::text::TextField::is_default")]
+    pub field: crate::text::TextField,
 }
 
 fn w400() -> u16 {
@@ -480,11 +499,24 @@ fn is_w400(w: &u16) -> bool {
 }
 
 impl TextEl {
-    pub fn outline(&self) -> Path {
-        if self.weight == 400 && !self.italic {
-            return crate::text::text_path_family(&self.text, self.size, self.family.as_deref(), self.font, self.align, self.letter_spacing);
+    /// What the text shows: bullets for password input fields.
+    pub fn shown(&self) -> std::borrow::Cow<'_, str> {
+        if self.field.password && self.field.kind == crate::text::TextKind::Input {
+            std::borrow::Cow::Owned(self.text.chars().map(|c| if c == '\n' { c } else { '•' }).collect())
+        } else {
+            std::borrow::Cow::Borrowed(&self.text)
         }
-        crate::text::text_path_styled(&self.text, self.size, self.family.as_deref(), self.font, self.weight, self.italic, self.align, self.letter_spacing)
+    }
+    pub fn outline(&self) -> Path {
+        let text = self.shown();
+        if self.weight == 400 && !self.italic {
+            return crate::text::text_path_para(&text, self.size, self.family.as_deref(), self.font, self.align, self.letter_spacing, &self.para);
+        }
+        crate::text::text_path_styled_para(&text, self.size, self.family.as_deref(), self.font, self.weight, self.italic, self.align, self.letter_spacing, &self.para)
+    }
+    /// The text box (top-left at the element's origin): width × height.
+    pub fn box_size(&self) -> (f32, f32) {
+        crate::text::box_size(&self.shown(), self.size, self.family.as_deref(), self.font, self.letter_spacing, &self.para)
     }
 }
 
@@ -621,7 +653,7 @@ impl Element {
         Element::base(name, Matrix::IDENTITY, ElementKind::Shape(shape))
     }
     pub fn text(text: &str, size: f32, color: Color, at: Pt) -> Self {
-        Element::base("Text", Matrix::translate(at.x, at.y), ElementKind::Text(TextEl { text: text.into(), size, color, font: Default::default(), align: Default::default(), letter_spacing: 0.0, family: None, weight: 400, italic: false }))
+        Element::base("Text", Matrix::translate(at.x, at.y), ElementKind::Text(TextEl { text: text.into(), size, color, font: Default::default(), align: Default::default(), letter_spacing: 0.0, family: None, weight: 400, italic: false, para: Default::default(), field: Default::default() }))
     }
     pub fn instance(name: &str, symbol: SymbolId, matrix: Matrix) -> Self {
         Element::base(name, matrix, ElementKind::Instance(Instance { symbol, loop_mode: LoopMode::Loop, first_frame: 0 }))
@@ -1032,6 +1064,14 @@ pub struct Document {
     /// app's own set.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub swatches: Option<Vec<Swatch>>,
+    /// Library folders, as paths ("Characters/Hero"), including empty ones.
+    /// Items live in a folder by their name: "Characters/Hero/Head" is the
+    /// item "Head" in "Characters/Hero" (Animate's XFL convention).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub folders: Vec<String>,
+    /// Linkage (Export for runtime): a symbol's class name in published code.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub linkage: std::collections::BTreeMap<SymbolId, String>,
     /// Drawing assistants and symmetry (OpenToonz): guides and replicators
     /// that shape freehand strokes, in stage coordinates.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -1075,6 +1115,8 @@ impl Default for Document {
             camera_mode: CameraMode::Stage,
             assistants: vec![],
             swatches: None,
+            folders: vec![],
+            linkage: Default::default(),
         }
     }
 }
@@ -1732,7 +1774,15 @@ pub fn eval_element(ctx: &EvalCtx, el: &Element, parent: &Matrix, alpha: f32, lo
                 }
             }
         }
-        ElementKind::Text(t) => out.push(DrawItem { fill: Some(t.color), alpha: a, tint: el.tint, outline, ..DrawItem::new(t.outline(), m) }),
+        ElementKind::Text(t) => {
+            if t.field.border {
+                // Show border around text: white box, black hairline, 2 px gutter
+                let (w, h) = t.box_size();
+                let r = Path::rect(-2.0, -2.0, w + 4.0, h + 4.0);
+                out.push(DrawItem { fill: Some(Color::rgb(255, 255, 255)), stroke: Some(Stroke { color: Color::rgb(0, 0, 0), width: 1.0 }), alpha: a, tint: el.tint, outline, ..DrawItem::new(r, m) });
+            }
+            out.push(DrawItem { fill: Some(t.color), alpha: a, tint: el.tint, outline, ..DrawItem::new(t.outline(), m) })
+        }
         ElementKind::Group(children) => {
             for c in children {
                 eval_element(ctx, c, &m, a, local, outline, depth, out);

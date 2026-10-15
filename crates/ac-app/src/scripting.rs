@@ -496,7 +496,11 @@ fn named_instances(app: &App) -> Vec<ac_script::Instance> {
                 continue;
             }
             let d = e.matrix.decompose();
-            let base = ac_script::Instance { name: e.name.clone(), x: e.matrix.tx, y: e.matrix.ty, rotation: d.skew_y.to_degrees(), scale_x: d.scale_x, scale_y: d.scale_y, alpha: e.alpha, visible: true };
+            let text = match &e.kind {
+                ac_core::ElementKind::Text(t) => Some(t.text.clone()),
+                _ => None,
+            };
+            let base = ac_script::Instance { name: e.name.clone(), x: e.matrix.tx, y: e.matrix.ty, rotation: d.skew_y.to_degrees(), scale_x: d.scale_x, scale_y: d.scale_y, alpha: e.alpha, visible: true, text };
             out.push(app.scripting.overrides.get(&e.name).cloned().unwrap_or(base));
         }
     }
@@ -509,16 +513,24 @@ pub fn apply_overrides(app: &App, items: &mut Vec<ac_core::DrawItem>) {
         return;
     }
     let tl = app.ed.timeline();
-    type Entry = Option<(ac_core::Matrix, f32, ac_script::Instance)>;
+    type Entry = Option<(ac_core::Matrix, f32, ac_script::Instance, Option<ac_core::Path>)>;
     let mut cache: std::collections::HashMap<(usize, usize), Entry> = Default::default();
     items.retain_mut(|it| {
         let Some((l, e)) = it.src else { return true };
         let entry = cache.entry((l, e)).or_insert_with(|| {
             let el = tl.layers.get(l).and_then(|layer| ac_core::layer_elements_at(layer, app.ed.frame)).and_then(|(els, _)| els.get(e).cloned())?;
             let ov = app.scripting.overrides.get(&el.name)?.clone();
-            Some((el.matrix, el.alpha, ov))
+            // a script changed a text field's text: lay the new text out
+            let path = match (&el.kind, &ov.text) {
+                (ac_core::ElementKind::Text(t), Some(s)) if *s != t.text => Some(ac_core::TextEl { text: s.clone(), ..t.clone() }.outline()),
+                _ => None,
+            };
+            Some((el.matrix, el.alpha, ov, path))
         });
-        let Some((m, alpha, ov)) = entry else { return true };
+        let Some((m, alpha, ov, path)) = entry else { return true };
+        if let (Some(p), None) = (path, it.stroke) {
+            it.path = p.clone();
+        }
         if !ov.visible {
             return false;
         }

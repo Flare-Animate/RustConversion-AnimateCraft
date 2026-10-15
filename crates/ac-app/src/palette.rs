@@ -52,9 +52,11 @@ const COMMANDS: &[(&str, &str, &str, Run)] = &[
     ("Edit", "Duplicate", "Ctrl+D", |a| a.ed.duplicate()),
     ("Edit", "Delete", "Delete", |a| a.delete()),
     ("Edit", "Select All", "Ctrl+A", |a| a.ed.select_all()),
+    ("Edit", "Preferences…", "Ctrl+U", |a| a.prefs_open = true),
     ("Edit", "Deselect All", "Esc", |a| a.ed.deselect()),
     ("Modify", "Convert to Symbol…", "F8", |a| a.open_symbol_dialog(true)),
     ("Insert", "New Symbol…", "Ctrl+F8", |a| a.open_symbol_dialog(false)),
+    ("Modify", "Document…", "Ctrl+J", |a| a.doc_dlg = Some(crate::windows::DocDlg::of(a))),
     ("Modify", "Break Apart", "Ctrl+B", |a| a.ed.break_apart()),
     ("Modify", "Group", "Ctrl+G", |a| {
         a.ed.group_selected();
@@ -93,6 +95,8 @@ const COMMANDS: &[(&str, &str, &str, Run)] = &[
     ("Control", "Go to End", "", |a| a.step(100_000)),
     ("Control", "Step Forward One Frame", ".", |a| a.step(1)),
     ("Control", "Step Backward One Frame", ",", |a| a.step(-1)),
+    ("Control", "Next Keyframe", "Shift+.", |a| a.step_keyframe(true)),
+    ("Control", "Previous Keyframe", "Shift+,", |a| a.step_keyframe(false)),
     ("Control", "Loop Playback", "", |a| a.loop_play = !a.loop_play),
     ("Control", "Onion Skin", "", |a| a.onion = !a.onion),
     ("View", "Zoom In", "Ctrl+=", |a| a.zoom *= 1.25),
@@ -106,6 +110,7 @@ const COMMANDS: &[(&str, &str, &str, Run)] = &[
     ("View", "Clip Content Outside Stage", "Ctrl+Shift+W", |a| a.view.clip = !a.view.clip),
     ("Window", "Library", "Ctrl+L", |a| a.lib.open = !a.lib.open),
     ("Window", "Swatches", "Ctrl+F9", |a| a.toggle_swatches()),
+    ("Window", "Color", "Ctrl+Shift+F9", |a| a.colors.open = !a.colors.open),
     ("Window", "Navigator", "", |a| a.nav.open = !a.nav.open),
     ("Window", "History", "Ctrl+F10", |a| a.history_open = !a.history_open),
     ("Window", "Tool Options Bar", "", |a| a.toggle_options_bar()),

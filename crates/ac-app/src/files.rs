@@ -155,6 +155,46 @@ pub(crate) struct Settings {
     /// Window › Tool Options Bar.
     #[serde(default)]
     pub options_bar: bool,
+    /// Convert to Symbol's registration cell, remembered ([column, row]).
+    #[serde(default = "centre")]
+    pub symbol_reg: [u8; 2],
+    /// Document Settings' units (index into windows::UNITS).
+    #[serde(default)]
+    pub doc_units: u8,
+    /// Edit › Preferences.
+    #[serde(default)]
+    pub prefs: Prefs,
+}
+
+/// Edit › Preferences (prefs.rs).
+#[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
+#[serde(default)]
+pub(crate) struct Prefs {
+    /// Seconds before unsaved changes are written to the recovery file (0 = off).
+    pub autosave_secs: u32,
+    pub undo_levels: u32,
+    /// Interface size (1 = 100 %).
+    pub ui_scale: f32,
+    /// Off: clicking adds to the selection without Shift.
+    pub shift_select: bool,
+    pub tooltips: bool,
+    /// Snap distance in screen pixels.
+    pub snap_px: f32,
+    /// New sessions start in Object Drawing (else Merge Drawing).
+    pub object_drawing: bool,
+    pub text_size: f32,
+    /// Run frame scripts while playing.
+    pub frame_scripts: bool,
+}
+
+impl Default for Prefs {
+    fn default() -> Self {
+        Prefs { autosave_secs: 60, undo_levels: 200, ui_scale: 1.0, shift_select: true, tooltips: true, snap_px: 6.0, object_drawing: false, text_size: 28.0, frame_scripts: true }
+    }
+}
+
+fn centre() -> [u8; 2] {
+    [1, 1]
 }
 
 fn yes() -> bool {
@@ -163,7 +203,7 @@ fn yes() -> bool {
 
 impl Default for Settings {
     fn default() -> Self {
-        Settings { recent: vec![], last_dir: None, library_left: false, filter_presets: vec![], retain_tween_curves: false, show_startup: true, layout: None, swatches: None, swatches_open: false, options_bar: false }
+        Settings { recent: vec![], last_dir: None, library_left: false, filter_presets: vec![], retain_tween_curves: false, show_startup: true, layout: None, swatches: None, swatches_open: false, options_bar: false, symbol_reg: [1, 1], doc_units: 0, prefs: Prefs::default() }
     }
 }
 
@@ -424,7 +464,11 @@ impl App {
             self.dirty_since = None;
             return;
         }
-        let interval: f64 = std::env::var("AC_AUTOSAVE_SECS").ok().and_then(|s| s.parse().ok()).unwrap_or(60.0);
+        let interval: f64 = match std::env::var("AC_AUTOSAVE_SECS").ok().and_then(|s| s.parse().ok()) {
+            Some(v) => v,
+            None if self.settings.prefs.autosave_secs == 0 => return,
+            None => self.settings.prefs.autosave_secs as f64,
+        };
         let t = ctx.input(|i| i.time);
         let since = *self.dirty_since.get_or_insert(t);
         if t - since < interval {

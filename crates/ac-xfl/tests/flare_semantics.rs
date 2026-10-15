@@ -148,3 +148,52 @@ fn focal_gradients_swatches_and_art_brushes() {
     assert_eq!(sw[0].color, Color::rgb(0x12, 0x34, 0x56));
     assert_eq!(sw[1].gradient.as_ref().unwrap().stops.len(), 2);
 }
+
+/// Text fields (dynamic/input, paragraph options, link), library folders
+/// (empty ones too) and linkage survive a write and read back.
+#[test]
+fn text_fields_folders_and_linkage_round_trip() {
+    use ac_core::text::{Align, Baseline, TextKind};
+    use ac_core::*;
+    let mut d = Document::default();
+    let mut el = Element::text("Score: 0", 18.0, Color::rgb(10, 20, 30), pt(5.0, 6.0));
+    el.name = "score".into();
+    if let ElementKind::Text(t) = &mut el.kind {
+        t.align = Align::Justify;
+        t.para.width = Some(150.0);
+        t.para.line_spacing = 4.0;
+        t.para.indent = 8.0;
+        t.para.margin_left = 2.0;
+        t.para.baseline = Baseline::Superscript;
+        t.para.no_kern = true;
+        t.field.kind = TextKind::Input;
+        t.field.max_chars = 12;
+        t.field.border = true;
+        t.field.password = true;
+        t.field.selectable = true;
+        t.field.link = Some("https://example.org".into());
+    }
+    d.scene.layers[0].keyframes.get_mut(&0).unwrap().elements.push(el);
+    d.library.push(Symbol { id: 1, name: "Cast/Hero".into(), kind: SymbolKind::MovieClip, timeline: Timeline::new("Hero") });
+    d.next_symbol_id = 2;
+    d.folders = vec!["Cast".into(), "Empty".into()];
+    d.linkage.insert(1, "HeroClip".into());
+    let (pkg, _) = ac_xfl::write_package(&d);
+    let dom = String::from_utf8(pkg["DOMDocument.xml"].clone()).unwrap();
+    assert!(dom.contains("<DOMInputText") && dom.contains("maxCharacters=\"12\"") && dom.contains("lineType=\"password\""), "{dom}");
+    assert!(dom.contains("DOMFolderItem name=\"Empty\""));
+    let im = ac_xfl::read_package(&pkg).unwrap();
+    let ElementKind::Text(t) = &im.doc.scene.layers[0].keyframes[&0].elements[0].kind else { panic!() };
+    assert_eq!(t.field.kind, TextKind::Input);
+    assert_eq!((t.field.max_chars, t.field.border, t.field.password), (12, true, true));
+    assert_eq!(t.field.link.as_deref(), Some("https://example.org"));
+    assert_eq!(t.align, Align::Justify);
+    assert_eq!(t.para.width, Some(150.0));
+    assert_eq!((t.para.line_spacing, t.para.indent, t.para.margin_left), (4.0, 8.0, 2.0));
+    assert_eq!(t.para.baseline, Baseline::Superscript);
+    assert!(t.para.no_kern);
+    assert!(im.doc.folders.contains(&"Empty".to_string()) && im.doc.folders.contains(&"Cast".to_string()));
+    assert_eq!(im.doc.library[0].name, "Cast/Hero");
+    assert_eq!(im.doc.linkage.get(&1).map(|s| s.as_str()), Some("HeroClip"));
+    assert!(!im.warnings.iter().any(|w| w.contains("static text")), "{:?}", im.warnings);
+}

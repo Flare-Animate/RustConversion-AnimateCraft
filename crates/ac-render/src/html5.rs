@@ -395,6 +395,62 @@ fn mime_of(data: &[u8]) -> &'static str {
     }
 }
 
+/// A text field's runtime description: kind, text and how to draw it again
+/// when a script changes it (dynamic), as an HTML input (input), its link.
+fn text_json(t: &ac_core::TextEl) -> String {
+    use ac_core::text::{Align, TextKind};
+    let k = match t.field.kind {
+        TextKind::Static => 0,
+        TextKind::Dynamic => 1,
+        TextKind::Input => 2,
+    };
+    let family = match &t.family {
+        Some(f) => format!("\"{}\", sans-serif", f.replace('"', "")),
+        None if t.font == ac_core::text::FontFace::Mono => "Hack, Consolas, monospace".into(),
+        None => "Ubuntu, \"Segoe UI\", sans-serif".into(),
+    };
+    let font = format!("{}{} {}px {}", if t.italic { "italic " } else { "" }, t.weight, n(t.size), family);
+    let al = match t.align {
+        Align::Left => "left",
+        Align::Center => "center",
+        Align::Right => "right",
+        Align::Justify => "justify",
+    };
+    let (bw, bh) = t.box_size();
+    let c = t.color;
+    let mut s = format!(
+        ",\"tx\":{{\"k\":{k},\"s\":{},\"f\":{},\"sz\":{},\"c\":\"rgba({},{},{},{})\",\"al\":\"{al}\",\"w\":{},\"bw\":{},\"bh\":{},\"lh\":{},\"ls\":{},\"ml\":{},\"in\":{}",
+        js_str(&t.text),
+        js_str(&font),
+        n(t.size),
+        c.r,
+        c.g,
+        c.b,
+        n(c.a as f32 / 255.0),
+        n(t.para.width.unwrap_or(0.0)),
+        n(bw),
+        n(bh),
+        n(t.size * 1.2 + t.para.line_spacing),
+        n(t.letter_spacing),
+        n(t.para.margin_left),
+        n(t.para.indent)
+    );
+    if t.field.password {
+        s.push_str(",\"pw\":1");
+    }
+    if t.field.max_chars > 0 {
+        let _ = write!(s, ",\"mc\":{}", t.field.max_chars);
+    }
+    if t.field.border {
+        s.push_str(",\"bd\":1");
+    }
+    if let Some(u) = &t.field.link {
+        let _ = write!(s, ",\"url\":{}", js_str(u));
+    }
+    s.push('}');
+    s
+}
+
 /// Build the published files.
 pub fn publish(doc: &Document, o: &Html5Opts) -> Files {
     let total = doc.total_frames();
@@ -439,9 +495,19 @@ pub fn publish(doc: &Document, o: &Html5Opts) -> Files {
             }
             let Some((els, _)) = layer_elements_at(layer, local) else { continue };
             for (ei, el) in els.iter().enumerate() {
-                if !el.name.is_empty() && !matches!(el.kind, ElementKind::Shape(_) | ElementKind::Canvas(_)) && !named.iter().any(|(nn, _): &(String, String)| *nn == el.name) {
+                // text with a link but no instance name still needs an entry (for its click)
+                let link_name = match &el.kind {
+                    ElementKind::Text(t) if el.name.is_empty() && t.field.link.is_some() => Some(format!("__link{li}_{ei}")),
+                    _ => None,
+                };
+                let name = link_name.clone().unwrap_or_else(|| el.name.clone());
+                if !name.is_empty() && !matches!(el.kind, ElementKind::Shape(_) | ElementKind::Canvas(_)) && !named.iter().any(|(nn, _): &(String, String)| *nn == name) {
                     let d = el.matrix.decompose();
-                    named.push((el.name.clone(), format!("{{\"src\":\"{li}:{ei}\",\"x\":{},\"y\":{},\"r\":{},\"sx\":{},\"sy\":{},\"a\":{},\"m\":{}}}", n(el.matrix.tx), n(el.matrix.ty), n(d.skew_y.to_degrees()), n(d.scale_x), n(d.scale_y), n(el.alpha), nm(&el.matrix))));
+                    let tx = match &el.kind {
+                        ElementKind::Text(t) => text_json(t),
+                        _ => String::new(),
+                    };
+                    named.push((name, format!("{{\"src\":\"{li}:{ei}\",\"x\":{},\"y\":{},\"r\":{},\"sx\":{},\"sy\":{},\"a\":{},\"m\":{}{tx}}}", n(el.matrix.tx), n(el.matrix.ty), n(d.skew_y.to_degrees()), n(d.scale_x), n(d.scale_y), n(el.alpha), nm(&el.matrix))));
                 }
                 let ElementKind::Instance(inst) = &el.kind else { continue };
                 let Some(sym) = doc.symbol(inst.symbol) else { continue };
