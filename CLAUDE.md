@@ -6,7 +6,8 @@ Open-source 2D animation authoring in Rust, modelled on the Adobe Animate
 AnimationCraft, whose engine Flare's native Studio already uses, and Flare's
 features are rebuilt here until it replaces the C++ app. Repository:
 github.com/Flare-Animate/RustConversion-AnimateCraft. Read this file at the start
-of every session; record progress in `log/devlog.md`.
+of every session; record progress in `log/devlog.md`. **`docs/HANDOFF.md`** says where
+the work stopped, the step process we follow and what is next.
 
 Naming: the product is **Flare** (binaries `flare`, `flare-cli`; installer
 `Flare-<version>-setup.exe`). Crates keep the `ac-` prefix and documents the `.acx`

@@ -364,6 +364,8 @@ See [SCRIPTING.md](SCRIPTING.md) for the API, examples and the safety model.
 keyboard input (needs `pip install python-xlib`). See `log/devlog.md`.
 
 See `CLAUDE.md` for the full feature map, architecture and roadmap.
+**Continuing the work?** Start with `docs/HANDOFF.md`: current status, the step-by-step process,
+the P2 plan in groups of five, and the open gaps.
 
 ## Legal and provenance
 
