@@ -584,6 +584,18 @@ impl Editor {
     pub fn reverse_frames(&mut self) {
         self.for_each_layer("Reverse Frames", |l, s| frames::reverse_frames(l, s.f0, s.f1));
     }
+    /// Synchronize Symbols over the selected frames (or the current layer's
+    /// keyframes up to the playhead's span). Returns the number of changes.
+    pub fn synchronize_symbols(&mut self) -> usize {
+        let mut n = 0;
+        let whole = self.frame_sel.is_none();
+        self.for_each_layer("Synchronize Symbols", |l, s| {
+            // a single clicked cell means "this layer", as in Animate's right-click on a tween
+            let (f0, f1) = if whole || s.f0 == s.f1 { (0, l.end) } else { (s.f0, s.f1) };
+            n += frames::synchronize_symbols(l, f0, f1);
+        });
+        n
+    }
     /// Convert to Frame-by-Frame Animation (tweens become keyframes).
     pub fn convert_to_frame_by_frame(&mut self) {
         self.for_each_layer("Convert to Frame-by-Frame", |l, s| frames::convert_to_frame_by_frame(l, s.f0, s.f1));
@@ -2156,6 +2168,43 @@ impl Editor {
         let s = self.doc.symbol(id)?.clone();
         self.checkpoint("Duplicate Symbol");
         Some(self.doc.add_symbol(&format!("{} copy", s.name), s.kind, s.timeline))
+    }
+
+    /// Swap Symbol › Duplicate Symbol: copy the selected instances' symbol
+    /// (into the same library folder) and show the copy, in one undo step.
+    /// An empty `name` gives "<name> copy", numbered if that's taken.
+    pub fn duplicate_and_swap(&mut self, name: &str) -> Option<SymbolId> {
+        let ElementKind::Instance(inst) = self.selected_element()?.kind else { return None };
+        let src = self.doc.symbol(inst.symbol)?.clone();
+        let (folder, base) = split_item_path(&src.name);
+        // "Walk copy" and "Walk copy 3" duplicate as further copies of "Walk"
+        let base = match base.rfind(" copy") {
+            Some(i) if base[i + 5..].trim().chars().all(|c| c.is_ascii_digit()) => &base[..i],
+            _ => base,
+        };
+        let leaf = name.trim();
+        if leaf.contains('/') {
+            return None;
+        }
+        let taken = |n: &str| self.doc.library.iter().any(|s| s.name == n);
+        let first = if leaf.is_empty() { format!("{base} copy") } else { leaf.to_string() };
+        let mut full = join_item_path(folder, &first);
+        let mut k = 2;
+        while taken(&full) {
+            if !leaf.is_empty() {
+                return None; // an explicit name must be free
+            }
+            full = join_item_path(folder, &format!("{base} copy {k}"));
+            k += 1;
+        }
+        self.checkpoint("Duplicate Symbol and Swap");
+        let id = self.doc.add_symbol(&full, src.kind, src.timeline);
+        self.modify_selected_continuous(move |e| {
+            if let ElementKind::Instance(i) = &mut e.kind {
+                i.symbol = id;
+            }
+        });
+        Some(id)
     }
 
     pub fn set_symbol_kind(&mut self, id: SymbolId, kind: SymbolKind) {

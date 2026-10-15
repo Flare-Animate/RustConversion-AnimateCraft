@@ -75,6 +75,16 @@ const COMMANDS: &[(&str, &str, &str, Run)] = &[
     ("Timeline", "Clear Keyframe", "Shift+F6", |a| a.ed.clear_keyframe()),
     ("Timeline", "Insert Blank Keyframe", "F7", |a| a.ed.insert_blank_keyframe()),
     ("Timeline", "Reverse Frames", "", |a| a.ed.reverse_frames()),
+    ("Timeline", "Synchronize Symbols", "", |a| sync_symbols(a)),
+    ("Timeline", "Show Time in Seconds", "", |a| {
+        a.tl.seconds = !a.tl.seconds;
+        a.settings.tl_seconds = a.tl.seconds;
+    }),
+    ("Modify", "Duplicate Symbol and Swap", "", |a| {
+        if let Some(id) = a.ed.duplicate_and_swap("") {
+            a.status = format!("Swapped to {}", a.ed.doc.symbol(id).map(|s| s.name.as_str()).unwrap_or(""));
+        }
+    }),
     ("Insert", "New Layer", "", |a| a.ed.add_layer()),
     ("Insert", "Layer Folder", "", |a| {
         a.ed.wrap_layer(ac_core::LayerKind::Folder, "Folder");
@@ -98,6 +108,8 @@ const COMMANDS: &[(&str, &str, &str, Run)] = &[
     ("Control", "Next Keyframe", "Shift+.", |a| a.step_keyframe(true)),
     ("Control", "Previous Keyframe", "Shift+,", |a| a.step_keyframe(false)),
     ("Control", "Loop Playback", "", |a| a.loop_play = !a.loop_play),
+    ("Control", "Loop Range from Selection", "Ctrl+Alt+L", |a| a.set_loop_range()),
+    ("Control", "Clear Loop Range", "", |a| a.tl.loop_range = None),
     ("Control", "Onion Skin", "", |a| a.onion = !a.onion),
     ("View", "Zoom In", "Ctrl+=", |a| a.zoom *= 1.25),
     ("View", "Zoom Out", "Ctrl+-", |a| a.zoom /= 1.25),
@@ -261,6 +273,12 @@ pub(crate) fn window(app: &mut App, ctx: &egui::Context) {
     }
 }
 
+/// Timeline › Synchronize Symbols, with a status line.
+pub(crate) fn sync_symbols(a: &mut App) {
+    let n = a.ed.synchronize_symbols();
+    a.status = if n == 0 { "Symbols already in sync (graphic instances of the same symbol on consecutive keyframes)".into() } else { format!("Synchronized {n} keyframe(s)/instance(s)") };
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -283,3 +301,4 @@ mod tests {
         assert!(matches("").len() > COMMANDS.len());
     }
 }
+

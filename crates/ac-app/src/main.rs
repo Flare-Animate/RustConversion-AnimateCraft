@@ -316,6 +316,8 @@ impl App {
             colors: color_panel::ColorPanel::default(),
         };
         app.swatch_ui.open = app.settings.swatches_open;
+        app.tl.cell_w = app.settings.tl_cell_w;
+        app.tl.seconds = app.settings.tl_seconds;
         prefs::apply(&mut app, &cc.egui_ctx);
         app.topts.object_draw = app.settings.prefs.object_drawing;
         app.topts.text_size = app.settings.prefs.text_size;
@@ -445,6 +447,29 @@ impl App {
         }
     }
 
+    /// Control › Loop Range from Selection (Ctrl+Alt+L): the selected frames, or
+    /// the current keyframe span; turns looping on. Again with the same range clears it.
+    pub(crate) fn set_loop_range(&mut self) {
+        let r = match self.ed.frame_sel {
+            Some(s) if s.f0 != s.f1 => (s.f0.min(s.f1), s.f0.max(s.f1)),
+            _ => {
+                let l = self.ed.timeline().layers.get(self.ed.layer);
+                match l.and_then(|l| l.span_at(self.ed.frame).map(|(st, _, nx)| (st, nx.unwrap_or(l.end).min(l.end).max(st + 1) - 1))) {
+                    Some(r) => r,
+                    None => (0, self.ed.frame_count().saturating_sub(1)),
+                }
+            }
+        };
+        if self.tl.loop_range == Some(r) && self.loop_play {
+            self.tl.loop_range = None;
+            self.status = "Loop range cleared".into();
+        } else {
+            self.tl.loop_range = Some(r);
+            self.loop_play = true;
+            self.status = format!("Looping frames {}–{}", r.0 + 1, r.1 + 1);
+        }
+    }
+
     pub(crate) fn toggle_play(&mut self) {
         self.playing = !self.playing;
         self.play_accum = 0.0;
@@ -452,8 +477,11 @@ impl App {
         self.ed.clock = None;
         if self.playing {
             self.ed.selection.clear();
-            if self.ed.frame + 1 >= self.ed.frame_count() {
-                self.ed.set_frame(0);
+            match self.tl.loop_range.filter(|_| self.loop_play) {
+                // a loop range starts playback at its first frame when the playhead is outside it
+                Some((a, b)) if self.ed.frame < a || self.ed.frame > b => self.ed.set_frame(a),
+                _ if self.ed.frame + 1 >= self.ed.frame_count() => self.ed.set_frame(0),
+                _ => {}
             }
             scripting::start_playback(self);
         }
@@ -596,6 +624,7 @@ impl App {
         if k(cmd | sh, Key::H) { self.add_shape_hint(); }
         if k(cmd | sh, Key::G) { let n = self.ed.ungroup_selected(); if n > 0 { self.status = format!("Ungrouped {n} group(s)"); } }
         if k(cmd, Key::G) { let n = self.ed.group_selected(); if n > 0 { self.status = "Grouped".into(); } }
+        if k(cmd | Modifiers::ALT, Key::L) { self.set_loop_range(); }
         if k(cmd, Key::L) { self.lib.open = !self.lib.open; }
         if k(cmd | Modifiers::ALT, Key::S) { self.open_scale_rotate(); }
         if k(cmd | sh, Key::S) { self.file(FileAction::Save); }
@@ -929,6 +958,8 @@ impl App {
                     if ui.add(egui::Button::new("Previous Keyframe").shortcut_text("Shift+,")).clicked() { self.step_keyframe(false); ui.close_menu(); }
                     ui.separator();
                     ui.checkbox(&mut self.loop_play, "Loop Playback");
+                    if ui.add(egui::Button::new("Loop Range from Selection").shortcut_text("Ctrl+Alt+L")).on_hover_text("Playback loops over the selected frames (drag the orange markers above the frames to change it)").clicked() { self.set_loop_range(); ui.close_menu(); }
+                    if ui.add_enabled(self.tl.loop_range.is_some(), egui::Button::new("Clear Loop Range")).clicked() { self.tl.loop_range = None; ui.close_menu(); }
                     ui.checkbox(&mut self.onion, "Onion Skin");
                     ui.checkbox(&mut self.scripting.frame_scripts, "Enable Frame Scripts");
                     ui.checkbox(&mut self.simple_buttons, "Enable Simple Buttons  (Ctrl+Alt+B)");
@@ -1426,10 +1457,17 @@ impl eframe::App for App {
                 if self.halted {
                     continue;
                 }
-                if self.ed.frame + 1 >= n {
-                    if self.loop_play { self.ed.frame = 0; self.restart_audio(); } else { self.playing = false; break; }
-                } else {
-                    self.ed.frame += 1;
+                match timeline::play_next(self.ed.frame, n, self.loop_play, self.tl.loop_range) {
+                    Some((f, wrapped)) => {
+                        self.ed.frame = f;
+                        if wrapped {
+                            self.restart_audio();
+                        }
+                    }
+                    None => {
+                        self.playing = false;
+                        break;
+                    }
                 }
                 scripting::enter_frame(self);
                 if !self.playing {

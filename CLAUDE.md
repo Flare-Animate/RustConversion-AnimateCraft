@@ -110,6 +110,9 @@ Status: ✅ in the demo · 🟡 partial · ⬜ planned
 - ✅ Paste Frames vs Paste and Overwrite Frames, Copy/Cut/Paste Layers, layer height %, Frame View
   Preview / Preview in Context thumbnails, Shift & Trace (OpenToonz), graphic symbols keep playing through
   an inserted keyframe; optional Flare semantics: Keep Tween Curves When Splitting (`TweenBoundary`)
+- ✅ Loop range (Ctrl+Alt+L, draggable markers; `timeline::play_next`), frames/seconds display, frame widths
+  Tiny…Large + Ctrl+wheel zoom (`TimelineState::cw`, saved in settings), Synchronize Symbols
+  (`frames::synchronize_symbols`), Duplicate Symbol and swap (`Editor::duplicate_and_swap`)
 - ⬜ Layer depth (2.5D)
 
 **Symbols**

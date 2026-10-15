@@ -22,7 +22,7 @@ files.
 | Workspace and panels | ~65% | docking/workspaces, Color & Swatches, History, preferences |
 | Drawing model | ~92% | stroke-style parameters, hairlines and stroke scaling |
 | Tools | ~96% | pressure/tilt, Art/Pattern brushes |
-| Timeline | ~92% | frame view sizes, sound envelopes, Synchronize Symbols command |
+| Timeline | ~95% | sound envelopes, Auto Keyframe toggle, layer depth |
 | Symbols | ~82% | 9-slice, Visible / Cache as bitmap |
 | Animation | ~88% | tween presets, copy/paste motion, rig mapping, bone springs |
 | Text | ~40% | dynamic/input text, rich text, paragraph options |
@@ -153,15 +153,15 @@ The two engine milestones that unlock most of the rest:
 | Frames: insert/remove (F5), keyframe (F6), blank (F7), clear, convert | Yes | Yes | ✅ | |
 | Select frames, copy/cut/paste/move frames, labels | Yes | Yes | ✅ | |
 | Frame label types: Name / Comment / Anchor | Yes | All three (comments are never jump targets) | ✅ | |
-| Reverse Frames, Synchronize Symbols, Insert Blank Keyframe on ranges | Yes | Reverse Frames, ranges | 🟡 | P2 (Synchronize Symbols) |
+| Reverse Frames, Synchronize Symbols, Insert Blank Keyframe on ranges | Yes | All three; Synchronize Symbols turns on classic-tween Sync and advances First Frame between plain keyframes of the same graphic symbol | ✅ | |
 | Drag the end of a span to extend / shorten it | Yes | Any span (Ctrl, or any motion tween); later keyframes move | ✅ | |
 | Auto Keyframe toggle | Yes | Edits auto-key | 🟡 | P2 |
 | Copy / Paste Layers (with folders) | Yes | Copy/Cut/Paste Layers (folders, masks, parenting kept), Duplicate Layer | ✅ | (cross-document with multiple documents, 5.6) |
 | Onion skin: range markers, Advanced settings, colours, outline mode | Yes | Draggable/anchored markers, Onion 2/5/All, outlines; Shift & Trace ghosts (from OpenToonz) | 🟡 | P3 (colour settings) |
 | **Edit multiple frames** | Yes | Keyframes between markers shown and moved together | ✅ | |
-| Frame view sizes (tiny…large), preview thumbnails, timeline zoom | Yes | Preview / Preview in Context thumbnails, per-layer height | 🟡 | P2 (frame widths, timeline zoom) |
-| Frame-rate change with "scale spans", time display (s / frames) | Yes | FPS only | 🟡 | P2 |
-| Loop playback range, play in a range | Yes | Whole timeline loop | 🟡 | P2 |
+| Frame view sizes (tiny…large), preview thumbnails, timeline zoom | Yes | Frames menu Tiny/Small/Normal/Medium/Large, Ctrl+wheel zoom around the pointer (remembered); Preview / Preview in Context thumbnails, per-layer height | ✅ | |
+| Frame-rate change with "scale spans", time display (s / frames) | Yes | Document Settings › Scale spans; click the frame counter (or Frames menu / right-click the frame numbers) to show seconds in the counter and the header | ✅ | |
+| Loop playback range, play in a range | Yes | Control › Loop Range from Selection (Ctrl+Alt+L): orange markers over the frame numbers, drag the ends; playback starts in and loops over the range | ✅ | |
 | Scenes (add, duplicate, reorder, Scene panel) | Yes | Yes; exports play every scene | ✅ | |
 | Sound on frames (sync: event/start/stop/stream; loop; effects) and waveform | Yes | Sync modes, repeat/loop, effects (left/right, fades), sounds inside symbols, waveform, playback, video audio | 🟡 | P3 (custom envelopes) |
 
@@ -174,7 +174,7 @@ The two engine milestones that unlock most of the rest:
 | **Button states** Up / Over / Down / Hit + preview with Control › Enable Simple Buttons | Yes | Yes (Hit area, live on stage) | ✅ | |
 | Instance name (for scripting) | Yes | Yes; frame scripts read/set `this.name.x/y/rotation/scaleX/scaleY/alpha/visible` | ✅ | |
 | Swap Symbol | Yes | Properties ▸ Symbol | ✅ | |
-| Duplicate Symbol and swap | Yes | Duplicate only | 🟡 | P2 |
+| Duplicate Symbol and swap | Yes | Properties ▸ Symbol ▸ Duplicate: copies the symbol into the same folder ("Ball copy", "Ball copy 2") and swaps the instance, one undo step | ✅ | |
 | Colour effects: Brightness, Tint, Advanced (RGBA multiply/offset), Alpha | Yes | All five, tweenable | ✅ | |
 | **Filters**: Drop Shadow, Blur, Glow, Bevel, Gradient Glow, Gradient Bevel, Adjust Color; presets; filter tweening | Yes | All seven, presets, tweening (and motion-tween tracks); SVG export of blur/shadow/glow; HTML5 renders gradient filters per pixel (exact); plus Motion Blur and ~200 EffectCraft effects (beyond Animate) | ✅ | |
 | **Blend modes** (Normal, Layer, Darken, Multiply, Lighten, Screen, Overlay, Hard Light, Add, Subtract, Difference, Invert, Alpha, Erase) | Yes | All 14 | ✅ | |
@@ -182,7 +182,7 @@ The two engine milestones that unlock most of the rest:
 | 9-slice scaling guides | Yes | — | ❌ | P2 |
 | Registration point choice on convert; transformation point vs registration | Yes | 3 × 3 registration grid in Convert to Symbol (remembered), folder choice; `selection.to_symbol registration:` | ✅ | |
 | Edit in Place / Edit Symbols across the library; Update library item | Yes | Edit in place and isolated edit | 🟡 | P3 (Update library item) |
-| Linkage (class name, export for ActionScript/runtime) | Yes | — | ❌ | P2 |
+| Linkage (class name, export for ActionScript/runtime) | Yes | Library item Properties › Export for runtime + class name; read and written in .fla | ✅ | |
 | Symbol folders in Library | Yes | Yes (see Library) | ✅ | |
 
 ## 6. Animation
@@ -202,7 +202,7 @@ The two engine milestones that unlock most of the rest:
 | Camera: tween, colour effects, attach layers, layer depth | Yes | Tweenable pan/zoom/rotate, brightness/tint/alpha/blur, VCam follow + shake (beyond Animate) | 🟡 | P2 (attach layers, depth) |
 | **Auto lip-sync** (map visemes from audio) | Yes | Properties ▸ Lip Syncing with a Mouth-shapes picker; Rhubarb Lip Sync (speech-based, external program) when installed, FFT-band heuristic otherwise; `lipsync.apply` | ✅ | |
 | **Rig mapping** (map a rig onto symbols) | Yes | — | ❌ | P3 |
-| Frame-by-frame workflow helpers (onion skin keyframes-only, Ctrl+Alt+L loop) | Yes | Onion skin Keyframes Only, Next/Previous Keyframe (Shift+. / Shift+,), Edit Multiple Frames, Shift & Trace | 🟡 | P2 (loop range) |
+| Frame-by-frame workflow helpers (onion skin keyframes-only, Ctrl+Alt+L loop) | Yes | Onion skin Keyframes Only, Next/Previous Keyframe (Shift+. / Shift+,), Edit Multiple Frames, Shift & Trace, Loop Range (Ctrl+Alt+L) | ✅ | |
 
 ## 7. Text
 
@@ -365,6 +365,21 @@ and Test Movie (our HTML5 runtime). Still open:
    drawing with art brushes in the editor, a brush library panel, and writing paint brushes
    back to .fla.
 3. **Animate `.clr` colour sets**: an undocumented binary format; no source or sample to work from.
+
+### P2 in groups of five
+Started Oct 15 2026 after the P1 gaps; each group is built, tested and checked in the app
+before the next.
+1. **Timeline** — ✅ loop range, time display, frame widths / timeline zoom, Synchronize
+   Symbols, Duplicate Symbol and swap.
+2. Symbols & motion: Copy/Paste Motion, motion presets, Cache as Bitmap / Visible flag,
+   9-slice scaling, layer effects.
+3. Drawing & rigging: hairlines and stroke scaling, Auto Keyframe toggle, 3D global/local,
+   Asset Warp mesh options, bone springiness.
+4. Commands: Code Snippets, saved Commands, History replay / save as command, Find and
+   Replace, Publish profiles.
+5. Documents & media: multiple documents, rich text runs, bitmap compression, .ai import,
+   motion objects in .fla export.
+Last: the egui-upgrade items (named workspaces / floating panels, shortcut editor) and tablet pressure.
 
 ### Phase 5: Workspace polish
 Docking/floating panels and workspaces, preferences, a shortcut editor, the History panel,

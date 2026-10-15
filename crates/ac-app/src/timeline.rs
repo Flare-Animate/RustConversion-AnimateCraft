@@ -57,6 +57,76 @@ pub struct TimelineState {
     /// Keyframe thumbnails by (layer, frame, in context, width, height); cleared on any edit.
     thumbs: std::collections::HashMap<(usize, u32, bool, u32, u32), Option<egui::TextureHandle>>,
     thumbs_key: (u64, Option<ac_core::SymbolId>, usize),
+    /// Frame cell width in pixels (Frames menu sizes, Ctrl+wheel); 0 = Normal.
+    pub cell_w: f32,
+    /// Header and counter show seconds instead of frame numbers.
+    pub seconds: bool,
+    /// Control › Loop Range: playback loops over these frames (inclusive).
+    pub loop_range: Option<(u32, u32)>,
+    /// Loop marker being dragged (true = start marker).
+    loop_drag: Option<bool>,
+}
+
+impl TimelineState {
+    /// Frame cell width in pixels.
+    pub fn cw(&self) -> f32 {
+        if self.cell_w <= 0.0 { CW } else { self.cell_w.clamp(CW_MIN, CW_MAX) }
+    }
+}
+
+/// Frame-size presets (Frames menu), as Animate's Tiny … Large.
+pub const FRAME_SIZES: [(&str, f32); 5] = [("Tiny", 5.0), ("Small", 8.0), ("Normal", 11.0), ("Medium", 16.0), ("Large", 24.0)];
+const CW_MIN: f32 = 3.0;
+const CW_MAX: f32 = 40.0;
+
+/// The frame after `frame` while playing `n` frames, and whether playback
+/// wrapped (the sound restarts); None when playback ends. A loop range keeps
+/// playback inside it once the playhead reaches its end.
+pub(crate) fn play_next(frame: u32, n: u32, looping: bool, range: Option<(u32, u32)>) -> Option<(u32, bool)> {
+    let last = n.saturating_sub(1);
+    if let Some((a, b)) = range.filter(|_| looping) {
+        let (a, b) = (a.min(last), b.min(last));
+        if frame == b || frame >= last {
+            return Some((a, true));
+        }
+        return Some((frame + 1, false));
+    }
+    if frame + 1 >= n {
+        return looping.then_some((0, true));
+    }
+    Some((frame + 1, false))
+}
+
+/// Header label spacing: (frames between labels).
+fn label_step(cw: f32, seconds: bool, fps: f32) -> u32 {
+    if seconds {
+        let fpl = fps.round().max(1.0) as u32;
+        for k in [1u32, 2, 5, 10, 15, 30, 60, 120, 300] {
+            if (fpl * k) as f32 * cw >= 34.0 {
+                return fpl * k;
+            }
+        }
+        fpl * 600
+    } else {
+        for k in [1u32, 2, 5, 10, 20, 50, 100, 200, 500] {
+            if k as f32 * cw >= 26.0 {
+                return k;
+            }
+        }
+        1000
+    }
+}
+
+/// "1:05" / "12s" / "1.5s" for the seconds display.
+pub(crate) fn fmt_time(frame: u32, fps: f32) -> String {
+    let t = frame as f32 / fps.max(0.01);
+    if t >= 60.0 {
+        format!("{}:{:04.1}", (t / 60.0).floor() as u32, t % 60.0)
+    } else if (t - t.round()).abs() < 1e-3 {
+        format!("{}s", t.round() as u32)
+    } else {
+        format!("{t:.2}s")
+    }
 }
 
 /// Timeline Frame View options (as in Animate's frame-view menu).
@@ -84,7 +154,7 @@ enum Gesture {
 const LW: f32 = 230.0; // layer column width
 const HH: f32 = 22.0; // header height
 const RH: f32 = 24.0; // row height
-const CW: f32 = 11.0; // frame cell width
+const CW: f32 = 11.0; // default frame cell width
 
 const CLASSIC: Color32 = Color32::from_rgb(0x6E, 0x5B, 0xB0);
 const SHAPE: Color32 = Color32::from_rgb(0x4E, 0x8F, 0x57);
@@ -108,6 +178,7 @@ pub fn frame_menu(app: &mut App, ui: &mut egui::Ui) {
     if app.ed.motion_span(app.ed.layer, app.ed.frame).is_some() && item(ui, "Motion Editor…", "") { app.motion.open = true; ui.close_menu(); }
     if item(ui, "Convert to Frame-by-Frame", "") { app.ed.convert_to_frame_by_frame(); ui.close_menu(); }
     if item(ui, "Reverse Frames", "") { app.ed.reverse_frames(); ui.close_menu(); }
+    if ui.button("Synchronize Symbols").on_hover_text("Graphic symbols keep playing across the keyframes in the selection (or the whole layer) instead of restarting: classic tweens get Sync, plain keyframes get their First Frame advanced").clicked() { crate::palette::sync_symbols(app); ui.close_menu(); }
     let mut keep = app.settings.retain_tween_curves;
     if ui
         .checkbox(&mut keep, "Keep Tween Curves When Splitting")
@@ -218,7 +289,7 @@ fn toolbar(app: &mut App, ui: &mut egui::Ui) {
         if ui.button(if app.playing { "⏸" } else { "▶" }).on_hover_text("Play / stop (Enter)").clicked() { app.toggle_play(); }
         if ui.button("▶|").on_hover_text("Step forward (.)").clicked() { app.step(1); }
         if ui.button("⏭").on_hover_text("Last frame").clicked() { app.step(100_000); }
-        ui.toggle_value(&mut app.loop_play, "🔁").on_hover_text("Loop playback");
+        ui.toggle_value(&mut app.loop_play, "🔁").on_hover_text("Loop playback (Ctrl+Alt+L loops the selected frames)");
         ui.separator();
         ui.toggle_value(&mut app.onion, "Onion skin").on_hover_text("Show previous (blue) and next (green) frames; drag the markers above the frames to change the range");
         ui.toggle_value(&mut app.onion_opts.outline, "Outlines").on_hover_text("Onion Skin Outlines");
@@ -239,6 +310,21 @@ fn toolbar(app: &mut App, ui: &mut egui::Ui) {
                     app.tl.frame_view = v;
                     ui.close_menu();
                 }
+            }
+            ui.separator();
+            let cw = app.tl.cw();
+            for (name, w) in FRAME_SIZES {
+                if ui.selectable_label((cw - w).abs() < 0.5, name).on_hover_text("Frame width (Ctrl+wheel over the frames zooms freely)").clicked() {
+                    app.tl.cell_w = w;
+                    app.settings.tl_cell_w = w;
+                    app.settings.save();
+                    ui.close_menu();
+                }
+            }
+            ui.separator();
+            if ui.checkbox(&mut app.tl.seconds, "Show Time in Seconds").changed() {
+                app.settings.tl_seconds = app.tl.seconds;
+                app.settings.save();
             }
         })
         .response
@@ -275,10 +361,25 @@ fn toolbar(app: &mut App, ui: &mut egui::Ui) {
         }
         ui.separator();
         let n = app.ed.frame_count();
-        ui.label(egui::RichText::new(format!("{}", app.ed.frame + 1)).monospace().color(ACCENT).size(15.0));
-        ui.label(egui::RichText::new(format!("/ {n}")).monospace());
-        ui.label(egui::RichText::new(format!("{:.2} fps", app.ed.doc.fps)).monospace().color(Color32::from_gray(160)));
-        ui.label(egui::RichText::new(format!("{:.1}s", app.ed.frame as f32 / app.ed.doc.fps)).monospace().color(Color32::from_gray(160)));
+        let fps = app.ed.doc.fps;
+        // click the counter to switch between frames and seconds
+        let (main, rest, other) = if app.tl.seconds {
+            (fmt_time(app.ed.frame, fps), format!("/ {}", fmt_time(n, fps)), format!("frame {}", app.ed.frame + 1))
+        } else {
+            (format!("{}", app.ed.frame + 1), format!("/ {n}"), format!("{:.1}s", app.ed.frame as f32 / fps))
+        };
+        let r = ui.add(egui::Label::new(egui::RichText::new(main).monospace().color(ACCENT).size(15.0)).sense(Sense::click()));
+        let r2 = ui.add(egui::Label::new(egui::RichText::new(rest).monospace()).sense(Sense::click()));
+        if r.on_hover_text("Click: show frames / seconds").clicked() || r2.clicked() {
+            app.tl.seconds = !app.tl.seconds;
+            app.settings.tl_seconds = app.tl.seconds;
+            app.settings.save();
+        }
+        ui.label(egui::RichText::new(format!("{fps:.2} fps")).monospace().color(Color32::from_gray(160)));
+        ui.label(egui::RichText::new(other).monospace().color(Color32::from_gray(160)));
+        if let Some((a, b)) = app.tl.loop_range.filter(|_| app.loop_play) {
+            ui.label(egui::RichText::new(format!("loop {}–{}", a + 1, b + 1)).monospace().color(Color32::from_rgb(0xF0, 0x9A, 0x3A))).on_hover_text("Loop range (Control › Clear Loop Range, or right-click the frame numbers)");
+        }
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             if ui.button("🗑").on_hover_text("Delete layer").clicked() { app.ed.delete_layer(); }
             if ui.button("📁").on_hover_text("New folder (puts the current layer in it)").clicked() { app.ed.wrap_layer(LayerKind::Folder, "Folder"); }
@@ -293,6 +394,7 @@ fn toolbar(app: &mut App, ui: &mut egui::Ui) {
 }
 
 fn grid(app: &mut App, ui: &mut egui::Ui) {
+    let cw = app.tl.cw();
     let avail = ui.available_size();
     let (rect, _) = ui.allocate_exact_size(avail, Sense::hover());
     let p = ui.painter_at(rect);
@@ -300,7 +402,7 @@ fn grid(app: &mut App, ui: &mut egui::Ui) {
 
     let grid_x0 = rect.left() + LW;
     let grid_w = (rect.right() - grid_x0).max(0.0);
-    let visible_cols = (grid_w / CW).ceil() as u32 + 1;
+    let visible_cols = (grid_w / cw).ceil() as u32 + 1;
     let rows_top = rect.top() + HH;
     let visible_rows = (((rect.bottom() - rows_top) / RH).floor() as usize).max(1);
     let n = app.ed.frame_count();
@@ -334,9 +436,25 @@ fn grid(app: &mut App, ui: &mut egui::Ui) {
     let grid_rect = Rect::from_min_max(pos2(grid_x0, rect.top()), rect.max);
     let layer_col = Rect::from_min_max(pos2(rect.left(), rows_top), pos2(grid_x0, rect.bottom()));
     let d = ui.input(|i| i.raw_scroll_delta);
-    if ui.rect_contains_pointer(grid_rect) && (d.x != 0.0 || d.y != 0.0) {
+    let (ctrl, zoom) = ui.input(|i| (i.modifiers.command, i.zoom_delta()));
+    let cw = if ui.rect_contains_pointer(grid_rect) && ctrl && (zoom != 1.0 || d.y != 0.0) {
+        // Ctrl+wheel: wider or narrower frames, keeping the frame under the pointer in place
+        let f = if zoom != 1.0 { zoom.clamp(1.0 / 1.15, 1.15) } else if d.y > 0.0 { 1.15 } else { 1.0 / 1.15 };
+        let new = (cw * f).clamp(CW_MIN, CW_MAX);
+        if let Some(px) = ui.input(|i| i.pointer.hover_pos()) {
+            let at = (px.x - grid_x0) / cw + app.tl.scroll;
+            app.tl.scroll = (at - (px.x - grid_x0) / new).max(0.0);
+        }
+        app.tl.cell_w = new;
+        app.settings.tl_cell_w = new;
+        new
+    } else {
+        cw
+    };
+    let visible_cols = (grid_w / cw).ceil() as u32 + 1;
+    if !ctrl && ui.rect_contains_pointer(grid_rect) && (d.x != 0.0 || d.y != 0.0) {
         let delta = if d.x.abs() > d.y.abs() { -d.x } else { -d.y };
-        app.tl.scroll = (app.tl.scroll + delta / CW).clamp(0.0, n as f32 + 200.0);
+        app.tl.scroll = (app.tl.scroll + delta / cw).clamp(0.0, n as f32 + 200.0);
     }
     if ui.rect_contains_pointer(layer_col) && d.y != 0.0 {
         let max = nr.saturating_sub(visible_rows);
@@ -346,14 +464,14 @@ fn grid(app: &mut App, ui: &mut egui::Ui) {
     let scroll = app.tl.scroll;
     let vscroll = app.tl.vscroll;
     let first = scroll.floor() as u32;
-    let x_of = |f: u32| grid_x0 + (f as f32 - scroll) * CW;
+    let x_of = |f: u32| grid_x0 + (f as f32 - scroll) * cw;
     let top_off = offs[vscroll.min(rows.len())];
     let row_y = |i: usize| rows_top + offs[i.min(rows.len())] - top_off;
     // row under a y position (clamped to the last row)
     let row_at = |y: f32| -> usize { offs.partition_point(|&o| o <= y - rows_top + top_off).saturating_sub(1).min(nr.saturating_sub(1)) };
     let rows_bottom = rows_top + offs[rows.len()] - top_off;
     let cell_at = |pos: egui::Pos2| -> (usize, u32) {
-        let f = (((pos.x - grid_x0) / CW) + scroll).floor().max(0.0) as u32;
+        let f = (((pos.x - grid_x0) / cw) + scroll).floor().max(0.0) as u32;
         let r = row_at(pos.y);
         (rows.get(r).copied().unwrap_or(0), f)
     };
@@ -366,12 +484,36 @@ fn grid(app: &mut App, ui: &mut egui::Ui) {
     for (k, label) in ["👁", "🔒", "□"].iter().enumerate() {
         p.text(pos2(rect.left() + LW - 70.0 + k as f32 * 22.0, rect.top() + HH / 2.0), Align2::CENTER_CENTER, *label, FontId::proportional(11.0), Color32::from_gray(140));
     }
+    let fps = app.ed.doc.fps;
+    let step = label_step(cw, app.tl.seconds, fps);
     for f in first..first + visible_cols {
         let x = x_of(f);
-        let tick = if (f + 1) % 5 == 0 || f == 0 { 6.0 } else { 3.0 };
-        p.line_segment([pos2(x, header.bottom() - tick), pos2(x, header.bottom())], Stroke::new(1.0_f32, Color32::from_gray(110)));
-        if f == 0 || (f + 1) % 5 == 0 {
-            p.text(pos2(x + 1.0, header.top() + 3.0), Align2::LEFT_TOP, format!("{}", f + 1), FontId::monospace(10.0), Color32::from_gray(175));
+        // frames: labels on 1, 5, 10 … (Animate's numbering); seconds: on whole-second frames
+        let labelled = if app.tl.seconds { f % step == 0 } else { f == 0 || (f + 1) % step == 0 };
+        let minor = cw >= 5.0 || labelled;
+        if minor {
+            let tick = if labelled { 6.0 } else { 3.0 };
+            p.line_segment([pos2(x, header.bottom() - tick), pos2(x, header.bottom())], Stroke::new(1.0_f32, Color32::from_gray(110)));
+        }
+        if labelled {
+            let label = if app.tl.seconds { fmt_time(f, fps) } else { format!("{}", f + 1) };
+            p.text(pos2(x + 1.0, header.top() + 3.0), Align2::LEFT_TOP, label, FontId::monospace(10.0), Color32::from_gray(175));
+        }
+    }
+    // Loop range: an orange bar along the top of the header with draggable ends.
+    let loop_on = app.loop_play && app.tl.loop_range.is_some();
+    let (la, lb) = app.tl.loop_range.unwrap_or((0, 0));
+    let (lx0, lx1) = (x_of(la), x_of(lb + 1));
+    if loop_on {
+        let col = Color32::from_rgb(0xF0, 0x9A, 0x3A);
+        let bar = Rect::from_min_max(pos2(lx0.max(grid_x0), header.top()), pos2(lx1.min(rect.right()), header.top() + 4.0));
+        if bar.width() > 0.0 {
+            p.rect_filled(bar, 0.0, col);
+        }
+        for x in [lx0, lx1] {
+            if x >= grid_x0 - 1.0 && x <= rect.right() {
+                p.line_segment([pos2(x, header.top()), pos2(x, header.bottom())], Stroke::new(1.5_f32, col));
+            }
         }
     }
     // Button symbols: the first four frames are the Up / Over / Down / Hit states.
@@ -380,7 +522,7 @@ fn grid(app: &mut App, ui: &mut egui::Ui) {
         for (f, name) in ["Up", "Over", "Down", "Hit"].iter().enumerate() {
             let f = f as u32;
             if f >= first && f < first + visible_cols {
-                let r = Rect::from_min_size(pos2(x_of(f), header.top()), vec2(CW, HH - 6.0));
+                let r = Rect::from_min_size(pos2(x_of(f), header.top()), vec2(cw, HH - 6.0));
                 p.rect_filled(r, 0.0, Color32::from_gray(0x33));
                 p.text(pos2(x_of(f) + 1.0, header.top() + 3.0), Align2::LEFT_TOP, &name[..1], FontId::proportional(10.0), Color32::from_rgb(0xFF, 0xC8, 0x60));
             }
@@ -402,8 +544,21 @@ fn grid(app: &mut App, ui: &mut egui::Ui) {
         }
     }
     let hresp = ui.interact(header, ui.id().with("tl-header"), Sense::click_and_drag());
-    if hresp.drag_started() && show_markers {
-        if let Some(o) = ui.input(|i| i.pointer.press_origin()) {
+    let origin = ui.input(|i| i.pointer.press_origin());
+    if hresp.drag_started() && loop_on {
+        if let Some(o) = origin {
+            // the loop ends take precedence in the top half of the header
+            if o.y < header.center().y || !show_markers {
+                if (o.x - lx0).abs() < 5.0 {
+                    app.tl.loop_drag = Some(true);
+                } else if (o.x - lx1).abs() < 5.0 {
+                    app.tl.loop_drag = Some(false);
+                }
+            }
+        }
+    }
+    if hresp.drag_started() && show_markers && app.tl.loop_drag.is_none() {
+        if let Some(o) = origin {
             if (o.x - mx0).abs() < 5.0 {
                 app.tl.marker_drag = Some(true);
             } else if (o.x - mx1).abs() < 5.0 {
@@ -413,9 +568,28 @@ fn grid(app: &mut App, ui: &mut egui::Ui) {
     }
     if hresp.drag_stopped() {
         app.tl.marker_drag = None;
+        app.tl.loop_drag = None;
     }
-    if let (Some(start), Some(pos)) = (app.tl.marker_drag, hresp.interact_pointer_pos()) {
-        let edge = ((pos.x - grid_x0) / CW + first as f32).round().max(0.0) as u32;
+    hresp.context_menu(|ui| {
+        if ui.add(egui::Button::new("Loop Range from Selection").shortcut_text("Ctrl+Alt+L")).clicked() {
+            app.set_loop_range();
+            ui.close_menu();
+        }
+        if ui.add_enabled(app.tl.loop_range.is_some(), egui::Button::new("Clear Loop Range")).clicked() {
+            app.tl.loop_range = None;
+            ui.close_menu();
+        }
+        ui.separator();
+        if ui.checkbox(&mut app.tl.seconds, "Show Time in Seconds").changed() {
+            app.settings.tl_seconds = app.tl.seconds;
+            app.settings.save();
+        }
+    });
+    if let (Some(start), Some(pos), Some((a, b))) = (app.tl.loop_drag, hresp.interact_pointer_pos(), app.tl.loop_range) {
+        let edge = ((pos.x - grid_x0) / cw + scroll).round().max(0.0) as u32;
+        app.tl.loop_range = Some(if start { (edge.min(b), b) } else { (a, edge.saturating_sub(1).max(a)) });
+    } else if let (Some(start), Some(pos)) = (app.tl.marker_drag, hresp.interact_pointer_pos()) {
+        let edge = ((pos.x - grid_x0) / cw + first as f32).round().max(0.0) as u32;
         let cur = app.ed.frame;
         let o = &mut app.onion_opts;
         match (&mut o.anchor, start) {
@@ -695,7 +869,7 @@ fn grid(app: &mut App, ui: &mut egui::Ui) {
         }
         for f in first..first + visible_cols {
             let x = x_of(f);
-            let cell = Rect::from_min_size(pos2(x, y), vec2(CW, rh));
+            let cell = Rect::from_min_size(pos2(x, y), vec2(cw, rh));
             let in_span = f < layer.end;
             let fill = if in_span {
                 if (f + 1) % 5 == 0 { Color32::from_gray(0x52) } else { Color32::from_gray(0x47) }
@@ -705,7 +879,7 @@ fn grid(app: &mut App, ui: &mut egui::Ui) {
                 Color32::from_gray(0x2A)
             };
             rp.rect_filled(cell, 0.0, fill);
-            rp.line_segment([pos2(x + CW, y), pos2(x + CW, y + rh)], Stroke::new(1.0_f32, Color32::from_gray(0x24)));
+            rp.line_segment([pos2(x + cw, y), pos2(x + cw, y + rh)], Stroke::new(1.0_f32, Color32::from_gray(0x24)));
         }
         for (&start, kf) in &layer.keyframes {
             let end = layer.span_end(start);
@@ -719,11 +893,11 @@ fn grid(app: &mut App, ui: &mut egui::Ui) {
                     let ym = y + rh / 2.0;
                     let stroke = Stroke::new(1.0_f32, Color32::from_gray(20));
                     if has_next {
-                        rp.line_segment([pos2(x0 + CW, ym), pos2(x1 - 3.0, ym)], stroke);
+                        rp.line_segment([pos2(x0 + cw, ym), pos2(x1 - 3.0, ym)], stroke);
                         rp.line_segment([pos2(x1 - 6.0, ym - 3.0), pos2(x1 - 2.0, ym)], stroke);
                         rp.line_segment([pos2(x1 - 6.0, ym + 3.0), pos2(x1 - 2.0, ym)], stroke);
                     } else {
-                        let mut x = x0 + CW;
+                        let mut x = x0 + cw;
                         while x < x1 - 4.0 {
                             rp.line_segment([pos2(x, ym), pos2((x + 3.0).min(x1), ym)], stroke);
                             x += 6.0;
@@ -734,7 +908,7 @@ fn grid(app: &mut App, ui: &mut egui::Ui) {
                     rp.rect_filled(span, 0.0, MOTION);
                     if let Some(m) = &kf.motion {
                         for k in m.key_frames().into_iter().filter(|&k| k > 0 && start + k < end) {
-                            let c = pos2(x_of(start + k) + CW / 2.0, y + rh - 7.0);
+                            let c = pos2(x_of(start + k) + cw / 2.0, y + rh - 7.0);
                             let d = 3.2;
                             rp.add(egui::Shape::convex_polygon(vec![c + vec2(0.0, -d), c + vec2(d, 0.0), c + vec2(0.0, d), c + vec2(-d, 0.0)], Color32::from_gray(20), Stroke::NONE));
                         }
@@ -742,7 +916,7 @@ fn grid(app: &mut App, ui: &mut egui::Ui) {
                 }
                 Tween::None => {
                     if end > start + 1 {
-                        let r = Rect::from_center_size(pos2(x1 - CW / 2.0, y + rh - 7.0), vec2(5.0, 7.0));
+                        let r = Rect::from_center_size(pos2(x1 - cw / 2.0, y + rh - 7.0), vec2(5.0, 7.0));
                         rp.rect_stroke(r, 0.0, Stroke::new(1.0_f32, Color32::from_gray(30)));
                     }
                 }
@@ -769,7 +943,7 @@ fn grid(app: &mut App, ui: &mut egui::Ui) {
                     }
                 }
             }
-            let c = pos2(x0 + CW / 2.0, y + rh - 7.0);
+            let c = pos2(x0 + cw / 2.0, y + rh - 7.0);
             if kf.elements.is_empty() {
                 rp.circle_stroke(c, 3.0, Stroke::new(1.2_f32, Color32::from_gray(20)));
             } else {
@@ -798,7 +972,7 @@ fn grid(app: &mut App, ui: &mut egui::Ui) {
                 rp.rect_filled(r, 0.0, ACCENT.gamma_multiply(0.45));
                 rp.rect_stroke(r, 0.0, Stroke::new(1.0_f32, ACCENT));
                 if move_delta != 0 {
-                    let g = r.translate(vec2(move_delta as f32 * CW, 0.0));
+                    let g = r.translate(vec2(move_delta as f32 * cw, 0.0));
                     rp.rect_stroke(g, 0.0, Stroke::new(2.0_f32, Color32::WHITE));
                 }
             }
@@ -831,11 +1005,11 @@ fn grid(app: &mut App, ui: &mut egui::Ui) {
 
     // Playhead
     let x = x_of(app.ed.frame);
-    if x >= grid_x0 - CW && x <= rect.right() {
+    if x >= grid_x0 - cw && x <= rect.right() {
         let gp = ui.painter_at(grid_rect);
         let bottom = rows_bottom.max(rows_top + RH).min(rect.bottom());
-        gp.line_segment([pos2(x + CW / 2.0, rect.top()), pos2(x + CW / 2.0, bottom)], Stroke::new(1.5_f32, PLAYHEAD));
-        let tag = Rect::from_center_size(pos2(x + CW / 2.0, rect.top() + HH / 2.0), vec2(26.0, HH - 4.0));
+        gp.line_segment([pos2(x + cw / 2.0, rect.top()), pos2(x + cw / 2.0, bottom)], Stroke::new(1.5_f32, PLAYHEAD));
+        let tag = Rect::from_center_size(pos2(x + cw / 2.0, rect.top() + HH / 2.0), vec2(26.0, HH - 4.0));
         gp.rect_filled(tag, 3.0, PLAYHEAD);
         gp.text(tag.center(), Align2::CENTER_CENTER, format!("{}", app.ed.frame + 1), FontId::monospace(10.5), Color32::WHITE);
     }
@@ -927,4 +1101,36 @@ fn keyframe_thumb(app: &App, li: usize, frame: u32, in_context: bool, w: u32, h:
     let mut pix = tiny_skia::Pixmap::new(w.max(1), h.max(1))?;
     ac_render::draw_items(&mut pix.as_mut(), &items, &ac_render::RenderOpts { view, ..Default::default() });
     Some(egui::ColorImage::from_rgba_premultiplied([w as usize, h as usize], pix.data()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn playback_loops_inside_the_range() {
+        // whole timeline
+        assert_eq!(play_next(3, 10, true, None), Some((4, false)));
+        assert_eq!(play_next(9, 10, true, None), Some((0, true)));
+        assert_eq!(play_next(9, 10, false, None), None);
+        // range 2..=5: 5 wraps to 2; before the range plays into it
+        assert_eq!(play_next(5, 10, true, Some((2, 5))), Some((2, true)));
+        assert_eq!(play_next(0, 10, true, Some((2, 5))), Some((1, false)));
+        assert_eq!(play_next(4, 10, true, Some((2, 5))), Some((5, false)));
+        // range ignored without looping; clamped to the timeline
+        assert_eq!(play_next(5, 10, false, Some((2, 5))), Some((6, false)));
+        assert_eq!(play_next(9, 10, true, Some((2, 50))), Some((2, true)));
+    }
+
+    #[test]
+    fn header_labels_and_time_format() {
+        assert_eq!(label_step(11.0, false, 24.0), 5);
+        assert_eq!(label_step(5.0, false, 24.0), 10);
+        assert_eq!(label_step(24.0, false, 24.0), 2);
+        assert_eq!(label_step(11.0, true, 24.0), 24);
+        assert_eq!(label_step(1.0, true, 24.0), 48);
+        assert_eq!(fmt_time(48, 24.0), "2s");
+        assert_eq!(fmt_time(30, 24.0), "1.25s");
+        assert_eq!(fmt_time(24 * 75, 24.0), "1:15.0");
+    }
 }

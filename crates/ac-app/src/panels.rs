@@ -692,7 +692,7 @@ fn object_properties(app: &mut App, ui: &mut egui::Ui) {
                     ui.label("Symbol");
                     let cur = app.ed.doc.symbol(id).map(|s| s.name.clone()).unwrap_or_default();
                     let mut pick = None;
-                    egui::ComboBox::from_id_salt("swap-symbol").width(ui.available_width().min(220.0)).selected_text(ellipsize(&cur, 30)).show_ui(ui, |ui| {
+                    egui::ComboBox::from_id_salt("swap-symbol").width((ui.available_width() - 80.0).clamp(60.0, 220.0)).selected_text(ellipsize(&cur, 30)).show_ui(ui, |ui| {
                         for sym in &app.ed.doc.library {
                             if Some(sym.id) == app.ed.editing || sym.name == ac_core::editor::GROUP_EDIT_NAME {
                                 continue; // a symbol can't contain itself
@@ -704,6 +704,11 @@ fn object_properties(app: &mut App, ui: &mut egui::Ui) {
                     }).response.on_hover_text("Swap Symbol: keep this instance's transform and effects, show another symbol");
                     if let Some(new_id) = pick {
                         app.ed.swap_symbol(new_id);
+                    }
+                    if ui.button("Duplicate").on_hover_text("Duplicate Symbol and swap: copy this symbol (same library folder) and show the copy here, so you can change it without changing the other instances").clicked() {
+                        if let Some(nid) = app.ed.duplicate_and_swap("") {
+                            app.status = format!("Swapped to {}", app.ed.doc.symbol(nid).map(|s| s.name.as_str()).unwrap_or(""));
+                        }
                     }
                 });
                 ui.horizontal(|ui| {

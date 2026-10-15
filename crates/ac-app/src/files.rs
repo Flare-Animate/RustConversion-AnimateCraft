@@ -164,6 +164,15 @@ pub(crate) struct Settings {
     /// Edit › Preferences.
     #[serde(default)]
     pub prefs: Prefs,
+    /// Timeline frame cell width (Frames menu sizes, Ctrl+wheel) and time display.
+    #[serde(default = "cell_w")]
+    pub tl_cell_w: f32,
+    #[serde(default)]
+    pub tl_seconds: bool,
+}
+
+fn cell_w() -> f32 {
+    11.0
 }
 
 /// Edit › Preferences (prefs.rs).
@@ -203,7 +212,7 @@ fn yes() -> bool {
 
 impl Default for Settings {
     fn default() -> Self {
-        Settings { recent: vec![], last_dir: None, library_left: false, filter_presets: vec![], retain_tween_curves: false, show_startup: true, layout: None, swatches: None, swatches_open: false, options_bar: false, symbol_reg: [1, 1], doc_units: 0, prefs: Prefs::default() }
+        Settings { recent: vec![], last_dir: None, library_left: false, filter_presets: vec![], retain_tween_curves: false, show_startup: true, layout: None, swatches: None, swatches_open: false, options_bar: false, symbol_reg: [1, 1], doc_units: 0, prefs: Prefs::default(), tl_cell_w: 11.0, tl_seconds: false }
     }
 }
 
