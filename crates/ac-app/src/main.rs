@@ -8,11 +8,15 @@ mod dock;
 mod files;
 mod import;
 mod motion_ui;
+mod navigator;
+mod options_bar;
+mod palette;
 mod panels;
 mod publish;
 mod rulers;
 mod scripting;
 mod startup;
+mod swatches;
 mod stage;
 mod timeline;
 mod toolbar;
@@ -95,6 +99,9 @@ pub struct App {
     pub(crate) dock_drag: Option<dock::Module>,
     /// Escape cancelled a dock drag; ignored until the mouse button is released.
     pub(crate) dock_cancelled: bool,
+    pub(crate) swatch_ui: swatches::State,
+    pub(crate) nav: navigator::Nav,
+    pub(crate) palette: palette::Palette,
     pub(crate) status: String,
     pub(crate) file_path: Option<String>,
     pub(crate) settings: files::Settings,
@@ -284,7 +291,11 @@ impl App {
             layout: dock::Layout::default(),
             dock_drag: None,
             dock_cancelled: false,
+            swatch_ui: swatches::State::default(),
+            nav: navigator::Nav::default(),
+            palette: palette::Palette::default(),
         };
+        app.swatch_ui.open = app.settings.swatches_open;
         app.layout = app.settings.layout.unwrap_or(dock::Layout { library: if app.settings.library_left { dock::LibraryDock::Left } else { dock::LibraryDock::WithProperties }, ..Default::default() });
         // `flare file.acx.json` opens that document
         let arg = std::env::args().nth(1).filter(|a| !a.starts_with('-'));
@@ -318,6 +329,17 @@ impl App {
     pub(crate) fn save_layout(&mut self) {
         self.settings.layout = Some(self.layout);
         self.settings.library_left = self.layout.library == dock::LibraryDock::Left;
+        self.settings.save();
+    }
+
+    pub(crate) fn toggle_swatches(&mut self) {
+        self.swatch_ui.open = !self.swatch_ui.open;
+        self.settings.swatches_open = self.swatch_ui.open;
+        self.settings.save();
+    }
+
+    pub(crate) fn toggle_options_bar(&mut self) {
+        self.settings.options_bar = !self.settings.options_bar;
         self.settings.save();
     }
 
@@ -523,6 +545,7 @@ impl App {
         if k(cmd | Modifiers::ALT, Key::B) { self.simple_buttons = !self.simple_buttons; self.status = format!("Simple buttons {}", if self.simple_buttons { "on" } else { "off" }); }
         if k(cmd, Key::B) { self.ed.break_apart(); }
         if k(cmd, Key::T) { self.transform_open = !self.transform_open; }
+        if k(cmd, Key::F9) { self.toggle_swatches(); }
         if k(cmd, Key::K) { self.align_open = !self.align_open; }
         if k(cmd | sh | Modifiers::ALT, Key::R) { self.view.rulers = !self.view.rulers; }
         if k(cmd | sh, Key::W) { self.view.clip = !self.view.clip; }
@@ -876,6 +899,11 @@ impl App {
                 ui.menu_button("Window", |ui| {
                     if ui.add(egui::Button::new("Actions").shortcut_text("F9")).clicked() { self.scripting.actions_open = true; ui.close_menu(); }
                     if ui.add(egui::SelectableLabel::new(self.lib.open, "Library  (Ctrl+L)")).clicked() { self.lib.open = !self.lib.open; ui.close_menu(); }
+                    if ui.add(egui::SelectableLabel::new(self.swatch_ui.open, "Swatches  (Ctrl+F9)")).on_hover_text("Colour chips beside the tools").clicked() { self.toggle_swatches(); ui.close_menu(); }
+                    if ui.add(egui::SelectableLabel::new(self.nav.open, "Navigator")).clicked() { self.nav.open = !self.nav.open; ui.close_menu(); }
+                    if ui.add(egui::SelectableLabel::new(self.settings.options_bar, "Tool Options Bar")).clicked() { self.toggle_options_bar(); ui.close_menu(); }
+                    if ui.add(egui::Button::new("Command Search…").shortcut_text("Ctrl+Shift+P")).clicked() { self.palette.open = true; ui.close_menu(); }
+                    ui.separator();
                     if ui.add(egui::SelectableLabel::new(self.transform_open, "Transform  (Ctrl+T)")).clicked() { self.transform_open = !self.transform_open; ui.close_menu(); }
                     if ui.add(egui::SelectableLabel::new(self.align_open, "Align  (Ctrl+K)")).clicked() { self.align_open = !self.align_open; ui.close_menu(); }
                     if ui.add(egui::SelectableLabel::new(self.info_open, "Info  (Ctrl+I)")).clicked() { self.info_open = !self.info_open; ui.close_menu(); }
@@ -1293,7 +1321,10 @@ impl eframe::App for App {
             self.title_shown = title;
         }
         dock::escape(self, ctx);
-        self.shortcuts(ctx);
+        palette::shortcut(self, ctx);
+        if !self.palette.open {
+            self.shortcuts(ctx);
+        }
         if ctx.memory(|m| m.focused().is_none()) {
             scripting::shortcuts(self, ctx);
         }
@@ -1342,13 +1373,17 @@ impl eframe::App for App {
         self.audio_tick();
         self.menu_bar(ctx);
         self.status_bar(ctx);
+        options_bar::bar(self, ctx);
         timeline::panel(self, ctx);
         toolbar::panel(self, ctx);
+        swatches::panel(self, ctx);
         panels::library_column(self, ctx);
         panels::right_panel(self, ctx);
         stage::stage(self, ctx);
         panels::library_drag_ghost(self, ctx);
         dock::drop_targets(self, ctx);
+        navigator::window(self, ctx);
+        palette::window(self, ctx);
         self.dialogs(ctx);
         startup::window(self, ctx);
         publish::window(self, ctx);

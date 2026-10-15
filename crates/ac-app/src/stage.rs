@@ -239,12 +239,26 @@ impl App {
         Matrix::translate(self.pan.x, self.pan.y).concat(&Matrix::rotate(self.view_rot)).concat(&Matrix::scale(self.zoom, self.zoom))
     }
     fn view_content(&self) -> Matrix {
+        self.view_base().concat(&self.content_matrix())
+    }
+    /// Content (the timeline being edited) → stage coordinates.
+    pub(crate) fn content_matrix(&self) -> Matrix {
         let o = self.content_offset();
-        let v = self.view_base().concat(&Matrix::translate(o.x, o.y));
+        let v = Matrix::translate(o.x, o.y);
         match self.in_place() {
             Some(m) => v.concat(&m),
             None => v,
         }
+    }
+    /// Screen point → stage coordinates (Navigator).
+    pub(crate) fn screen_to_stage(&self, rect: Rect, s: Pos2) -> Pt {
+        let v = s - rect.min;
+        self.view_base().invert().map(|m| m.apply(pt(v.x, v.y))).unwrap_or(pt(v.x, v.y))
+    }
+    /// Scroll so a stage point sits in the middle of the stage area.
+    pub(crate) fn center_on(&mut self, rect: Rect, p: Pt) {
+        let q = self.view_base().apply(p);
+        self.pan += rect.center() - (rect.min + vec2(q.x, q.y));
     }
     pub(crate) fn to_screen(&self, rect: Rect, p: Pt) -> Pos2 {
         let q = self.view_content().apply(p);

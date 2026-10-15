@@ -47,12 +47,12 @@ The two engine milestones that unlock most of the rest:
 |---|---|---|---|---|
 | Stage, pasteboard, zoom, pan | Yes | Yes | ✅ | |
 | Stage rotation (Rotation tool) | Yes | Yes | ✅ | |
-| Clip content outside stage | View › Pasteboard toggle | Always shows pasteboard | ❌ | P2 |
+| Clip content outside stage | View › Pasteboard toggle | View › Clip Content Outside Stage (Ctrl+Shift+W), edit-bar toggle | ✅ | |
 | Rulers | View › Rulers (Ctrl+Alt+Shift+R) | Yes (with cursor markers) | ✅ | |
 | Guides (drag from rulers, lock, snap, Edit Guides dialog) | Yes | Drag from rulers, move, drop to remove, lock, snap, clear, Edit Guides (colour, snap accuracy) | ✅ | |
 | Grid (show, snap, spacing, colour) | Yes | Yes (Edit Grid) | ✅ | |
 | Snapping: objects, pixels, align (smart guides), guides, grid | Yes | Objects, stage, guides, grid, pixels (View › Snapping) | 🟡 | P3 (smart-guide preferences) |
-| Panel docking, floating panels, tabs, collapse to icons | Yes | Fixed layout (Library can dock left) | 🟡 | P1 |
+| Panel docking, floating panels, tabs, collapse to icons | Yes | Docks move by their grips (Tools, Properties, Library, Timeline); no floating panels or tab groups | 🟡 | P1 (see Gaps to close) |
 | Workspaces (Essentials, Animator, Designer, Developer…, save/reset) | Yes | — | 🟡 movable docks (Tools/Properties L·R, Timeline top·bottom, Library column), saved, Reset Layout; no named/saved workspaces or floating panels yet | P2 |
 | UI themes (dark / light / colour) | Yes | Dark only | ❌ | P3 |
 | Properties panel (context-sensitive, Tool/Object/Frame/Doc tabs) | Yes | Yes | ✅ | |
@@ -62,7 +62,7 @@ The two engine milestones that unlock most of the rest:
 | Info panel (x/y, w/h, RGBA under cursor) | Yes (Ctrl+I) | Yes | ✅ | |
 | Transform panel | Yes (Ctrl+T) | Yes | ✅ | |
 | Color panel (solid / linear / radial / bitmap fills, HSB/RGB/hex, alpha, overflow modes) | Yes | Gradient stops in Properties only | 🟡 | P1 |
-| Swatches panel (palette, save/load .clr/.aco/.act, Web 216) | Yes | — | ❌ | P1 |
+| Swatches panel (palette, save/load .clr/.aco/.act, Web 216) | Yes | Column beside the tools (Ctrl+F9): click = fill, Shift+click = stroke, applied to the selection; add/replace/delete, sort; import .aco/.ase (PhotoCraft readers), .gpl, .act; save .ase/.aco/.gpl; kept in settings | 🟡 | P2 (.clr, per-document swatches, gradient swatches) |
 | History panel (steps, replay, copy steps as JSFL) | Yes | Undo stack exists; no panel | ❌ | P1 |
 | Motion Editor | Yes | Per-property graphs, key drag/retime, smooth/corner, per-property eases; OpenToonz keyframe types and expressions | ✅ | |
 | Output, Actions, Code Snippets, Compiler Errors panels | Yes | Output + Actions | 🟡 | P2 |
@@ -78,6 +78,9 @@ The two engine milestones that unlock most of the rest:
 | Multiple open documents (tabs) | Yes | One document | ❌ | P2 |
 | Document settings dialog (units, anchor, scale content, frame rate, platform) | Yes | W/H/FPS/colour in Properties | 🟡 | P1 |
 | Templates and sample files | Yes | Demo scene | 🟡 | P3 |
+| Navigator (overview of the stage, click to scroll) | No (Animate has none) | Window › Navigator: frame thumbnail, visible area outlined, click/drag to scroll, zoom slider | ✅ | |
+| Command search | No | Ctrl+Shift+P: menu commands and tools by name | ✅ | |
+| Tool options bar | No (Properties only) | Window › Tool Options Bar: the tool's main settings, colours, drawing mode | ✅ | |
 
 ## 2. Drawing model and shape engine
 
@@ -344,6 +347,22 @@ D (Phase 1) edit in place (symbols, groups), Gradient Glow/Bevel + filter preset
 PNG/JPEG/GIF, font weights/italic, Edit Guides, Snap to Pixels.
 Then the last three: saving while a group is open in place, the Width tool on merge-shape lines,
 exact Gradient Glow/Bevel in HTML5; plus the Free camera (VCam) mode.
+
+### Gaps to close (next, after the Flare Studio workspace items)
+Recorded Oct 15 2026 to be fixed next:
+1. **Floating panels and tab groups**: any panel (Properties, Library, Swatches, Navigator,
+   Transform, Align, Info…) can float, dock into any side, or join another panel as a tab;
+   panels collapse to icons; named workspaces saved and switched. Needs the egui upgrade
+   (0.29 → current, with `egui_dock` or our own dock tree) first; today's grips and drop
+   targets (`dock.rs`) become that tree's drag source.
+2. **.fla gradient focal points**: radial gradients with `focalPointRatio` are drawn centred.
+   Needs focal radial gradients in the renderer (tiny-skia two-point conical) and in every
+   export (HTML5 `createRadialGradient` with two circles, SVG `fx/fy`, Lottie highlight).
+3. **.fla PaintBrushStroke**: Animate's paint brushes (art/pattern brushes on strokes) import
+   as plain lines. Needs brush definitions read from the file and drawn along the stroke
+   (our Ragged/Stipple/Hatched stroke styles are the start).
+4. **Swatches**: Animate's own `.clr` colour sets, swatches stored per document (written to
+   and read from .fla `swatchLists`), gradient swatches.
 
 ### Phase 5: Workspace polish
 Docking/floating panels and workspaces, preferences, a shortcut editor, the History panel,

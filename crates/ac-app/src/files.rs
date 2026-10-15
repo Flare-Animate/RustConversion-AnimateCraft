@@ -28,6 +28,8 @@ pub(crate) enum FileAction {
     ExportAnimatedSvg,
     ExportLottie,
     ExportXdts,
+    ImportSwatches,
+    ExportSwatches,
 }
 
 impl FileAction {
@@ -52,11 +54,14 @@ impl FileAction {
             FileAction::ExportAnimatedSvg => "Export animated SVG",
             FileAction::ExportLottie => "Export Lottie JSON",
             FileAction::ExportXdts => "Export Timing Sheet (XDTS)",
+            FileAction::ImportSwatches => "Swatches from a palette (.aco, .ase, .gpl, .act)",
+            FileAction::ExportSwatches => "Save swatches (.ase, .aco or .gpl)",
         }
     }
     fn default_name(self, doc_name: &str) -> String {
         match self {
-            FileAction::Open | FileAction::ImportImage | FileAction::ImportSvg | FileAction::ImportSequence | FileAction::ImportSound | FileAction::ImportPsd | FileAction::ImportXdts => String::new(),
+            FileAction::Open | FileAction::ImportImage | FileAction::ImportSvg | FileAction::ImportSequence | FileAction::ImportSound | FileAction::ImportPsd | FileAction::ImportXdts | FileAction::ImportSwatches => String::new(),
+            FileAction::ExportSwatches => "Swatches.ase".into(),
             FileAction::Save => format!("{doc_name}.acx"),
             FileAction::ExportGif => format!("{doc_name}.gif"),
             FileAction::ExportPng => format!("{doc_name}.png"),
@@ -90,10 +95,12 @@ impl FileAction {
             FileAction::ImportImage | FileAction::ImportSequence => ("Images", ac_core::codecs::EXTENSIONS),
             FileAction::ImportXdts => ("XDTS timing sheet", &["xdts"]),
             FileAction::ImportPsd => ("Photoshop files", &["psd"]),
+            FileAction::ImportSwatches => ("Palettes", &["aco", "ase", "gpl", "act"]),
+            FileAction::ExportSwatches => ("Palettes", &["ase", "aco", "gpl"]),
         }
     }
     fn picks_existing(self) -> bool {
-        matches!(self, FileAction::Open | FileAction::ImportImage | FileAction::ImportSvg | FileAction::ImportSequence | FileAction::ImportSound | FileAction::ImportPsd | FileAction::ImportXdts)
+        matches!(self, FileAction::Open | FileAction::ImportImage | FileAction::ImportSvg | FileAction::ImportSequence | FileAction::ImportSound | FileAction::ImportPsd | FileAction::ImportXdts | FileAction::ImportSwatches)
     }
 }
 
@@ -140,6 +147,14 @@ pub(crate) struct Settings {
     /// Dock layout (Workspace menu / panel grips); None = standard.
     #[serde(default)]
     pub layout: Option<crate::dock::Layout>,
+    /// Swatches (None = the standard set) and whether the column is shown.
+    #[serde(default)]
+    pub swatches: Option<Vec<crate::swatches::Swatch>>,
+    #[serde(default)]
+    pub swatches_open: bool,
+    /// Window › Tool Options Bar.
+    #[serde(default)]
+    pub options_bar: bool,
 }
 
 fn yes() -> bool {
@@ -148,7 +163,7 @@ fn yes() -> bool {
 
 impl Default for Settings {
     fn default() -> Self {
-        Settings { recent: vec![], last_dir: None, library_left: false, filter_presets: vec![], retain_tween_curves: false, show_startup: true, layout: None }
+        Settings { recent: vec![], last_dir: None, library_left: false, filter_presets: vec![], retain_tween_curves: false, show_startup: true, layout: None, swatches: None, swatches_open: false, options_bar: false }
     }
 }
 

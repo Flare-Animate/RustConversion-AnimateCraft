@@ -164,6 +164,8 @@ pub(crate) fn run_file_action(app: &mut App, action: FileAction, path: &str) -> 
         FileAction::ImportSvg => crate::import::import_svg(app, path),
         FileAction::ImportSequence => crate::import::import_sequence(app, path),
         FileAction::ImportPsd => crate::import::import_psd(app, path),
+        FileAction::ImportSwatches => crate::swatches::import(app, path),
+        FileAction::ExportSwatches => crate::swatches::export(app, path),
         FileAction::ImportXdts => ac_core::xdts::import_file(&mut app.ed, std::path::Path::new(path)).map(|r| r.summary()),
         _ => Err("unsupported".into()),
     }

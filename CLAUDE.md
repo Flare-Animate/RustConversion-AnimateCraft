@@ -45,7 +45,8 @@ Status: ✅ in the demo · 🟡 partial · ⬜ planned
 - ✅ Library: drag to stage, rename, duplicate, change type, delete (removes instances)
 - ✅ Rulers, guides (Edit Guides), grid + snapping (incl. Snap to Pixels), Align panel, Info panel; native file dialogs, recent files, autosave + crash recovery
 - ✅ Motion Editor (per-property graphs, key drag/retime, smooth/corner points, per-property eases)
-- ⬜ Docking/workspaces, Color & Swatches, History, preferences
+- 🟡 Movable docks (grips, Workspace menu, Reset Layout), Swatches column (Ctrl+F9; .aco/.ase via PhotoCraft, .gpl, .act), Navigator, command search (Ctrl+Shift+P), Tool Options bar, Clip to stage
+- ⬜ Floating panels / tab groups / named workspaces (needs the egui upgrade), Color panel, History, preferences
 
 **Drawing**
 - ✅ Object Drawing model (each shape its own object)
