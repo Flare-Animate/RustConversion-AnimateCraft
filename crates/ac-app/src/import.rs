@@ -216,13 +216,16 @@ fn paint(p: &usvg::Paint, opacity: f32) -> (Option<Color>, Option<Gradient>) {
             let (a, b) = (pt(g.x1(), g.y1()), pt(g.x2(), g.y2()));
             let len = a.dist(b).max(1e-3);
             let m = Matrix::translate((a.x + b.x) / 2.0, (a.y + b.y) / 2.0).concat(&Matrix::rotate((b.y - a.y).atan2(b.x - a.x))).concat(&Matrix::scale(len / 2.0, len / 2.0));
-            (st.first().map(|s| s.1), Some(Gradient { kind: GradientKind::Linear, stops: st, matrix: tf(g.transform()).concat(&m), spread: match g.spread_method() { usvg::SpreadMethod::Reflect => ac_core::Spread::Reflect, usvg::SpreadMethod::Repeat => ac_core::Spread::Repeat, _ => ac_core::Spread::Pad } }))
+            (st.first().map(|s| s.1), Some(Gradient { kind: GradientKind::Linear, stops: st, matrix: tf(g.transform()).concat(&m), spread: match g.spread_method() { usvg::SpreadMethod::Reflect => ac_core::Spread::Reflect, usvg::SpreadMethod::Repeat => ac_core::Spread::Repeat, _ => ac_core::Spread::Pad }, focal: 0.0 }))
         }
         usvg::Paint::RadialGradient(g) => {
             let st = stops(g.stops());
             let r = g.r().get();
-            let m = Matrix::translate(g.cx(), g.cy()).concat(&Matrix::scale(r, r));
-            (st.first().map(|s| s.1), Some(Gradient { kind: GradientKind::Radial, stops: st, matrix: tf(g.transform()).concat(&m), spread: match g.spread_method() { usvg::SpreadMethod::Reflect => ac_core::Spread::Reflect, usvg::SpreadMethod::Repeat => ac_core::Spread::Repeat, _ => ac_core::Spread::Pad } }))
+            // the focal point (fx, fy) becomes Animate's focal ratio along a rotated x axis
+            let (dx, dy) = ((g.fx() - g.cx()) / r.max(1e-6), (g.fy() - g.cy()) / r.max(1e-6));
+            let focal = (dx * dx + dy * dy).sqrt().min(0.99);
+            let m = Matrix::translate(g.cx(), g.cy()).concat(&Matrix::rotate(if focal > 1e-4 { dy.atan2(dx) } else { 0.0 })).concat(&Matrix::scale(r, r));
+            (st.first().map(|s| s.1), Some(Gradient { kind: GradientKind::Radial, stops: st, matrix: tf(g.transform()).concat(&m), spread: match g.spread_method() { usvg::SpreadMethod::Reflect => ac_core::Spread::Reflect, usvg::SpreadMethod::Repeat => ac_core::Spread::Repeat, _ => ac_core::Spread::Pad }, focal }))
         }
         usvg::Paint::Pattern(_) => (Some(Color::rgb(128, 128, 128)), None),
     }

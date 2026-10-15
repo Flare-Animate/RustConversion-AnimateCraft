@@ -143,6 +143,21 @@ impl Editor {
     pub fn redo_label(&self) -> Option<&str> {
         self.redo.last().map(|s| s.label.as_str())
     }
+    /// History panel: the steps done (oldest first) and the steps that can be
+    /// redone (next first).
+    pub fn history(&self) -> (Vec<&str>, Vec<&str>) {
+        (self.undo.iter().map(|s| s.label.as_str()).collect(), self.redo.iter().rev().map(|s| s.label.as_str()).collect())
+    }
+    /// Undo or redo until `done` steps are done (History panel click).
+    pub fn go_to_step(&mut self, done: usize) {
+        while self.undo.len() > done && self.undo().is_some() {}
+        while self.undo.len() < done && self.redo().is_some() {}
+    }
+    /// History › Clear History: forget every step (the document stays as it is).
+    pub fn clear_history(&mut self) {
+        self.undo.clear();
+        self.redo.clear();
+    }
 
     fn fix_indices(&mut self) {
         if self.scene >= self.doc.scene_count() {
@@ -2111,6 +2126,12 @@ impl Editor {
         self.doc.vanishing_point = vanishing;
     }
 
+    /// Replace the document's swatches (None = use the app's set); one undo step.
+    pub fn set_swatches(&mut self, label: &str, swatches: Option<Vec<Swatch>>) {
+        self.checkpoint(label);
+        self.doc.swatches = swatches;
+    }
+
     /// Paint bucket on an element: sets fill (shapes) or tint (instances).
     pub fn paint_bucket(&mut self, sel: Selection, color: Color) {
         self.selection = vec![sel];
@@ -2790,6 +2811,95 @@ impl Editor {
 
     /// Modify ▸ Shape ▸ Smooth / Straighten / Optimize on drawing objects and
     /// the floating merge selection.
+    /// Modify › Shape › Convert Lines to Fills / Expand Fill / Soften Fill
+    /// Edges on the selection (merge-shape selections and drawing objects).
+    /// `kind`: "lines_to_fills", "expand" (d > 0 grows, < 0 insets), "soften".
+    pub fn shape_fill_op(&mut self, kind: &str, d: f32, steps: u32, inset: bool) {
+        use crate::merge::{offset_polygons, path_polylines, stroke_outline, subtract_polygons};
+        if self.selection.is_empty() {
+            return;
+        }
+        let label = match kind {
+            "lines_to_fills" => "Convert Lines to Fills",
+            "expand" => "Expand Fill",
+            _ => "Soften Fill Edges",
+        };
+        let k = kind.to_string();
+        let polys_path = |polys: &[Vec<Pt>]| {
+            let mut segs = vec![];
+            for p in polys.iter().filter(|p| p.len() >= 3) {
+                segs.push(crate::geom::Seg::M(p[0]));
+                segs.extend(p[1..].iter().map(|q| crate::geom::Seg::L(*q)));
+                segs.push(crate::geom::Seg::Z);
+            }
+            Path { segs }
+        };
+        self.modify_selected(label, move |e| match &mut e.kind {
+            ElementKind::Canvas(c) => {
+                if let Some(f) = c.float.as_mut() {
+                    match k.as_str() {
+                        "lines_to_fills" => {
+                            f.lines_to_fills();
+                        }
+                        "expand" => f.expand_fills(d),
+                        _ => f.soften_fills(d, steps, inset),
+                    }
+                }
+            }
+            ElementKind::Shape(sh) => match k.as_str() {
+                "lines_to_fills" => {
+                    let Some(st) = sh.stroke.take() else { return };
+                    let mut outline = vec![];
+                    for (pts, closed) in path_polylines(&sh.path) {
+                        outline.extend(stroke_outline(&pts, closed || sh.fill.is_some(), st.width));
+                    }
+                    let line = Shape::new(polys_path(&outline), Some(st.color), None);
+                    if sh.fill.is_none() && sh.gradient.is_none() && sh.bitmap_fill.is_none() {
+                        *sh = line;
+                    } else {
+                        let fill = sh.clone();
+                        e.kind = ElementKind::Group(vec![Element::shape("", fill), Element::shape("", line)]);
+                    }
+                }
+                _ if sh.fill.is_none() && sh.gradient.is_none() => {}
+                "expand" => {
+                    let grown = offset_polygons(&crate::merge::path_polygons(&sh.path), d);
+                    if !grown.is_empty() {
+                        sh.path = polys_path(&grown);
+                    }
+                }
+                _ => {
+                    let base = crate::merge::path_polygons(&sh.path);
+                    let mut parts = vec![];
+                    let mut inner = if inset { offset_polygons(&base, -d) } else { base.clone() };
+                    let mut core = sh.clone();
+                    core.path = polys_path(&inner);
+                    parts.push(Element::shape("", core));
+                    for i in 1..=steps.clamp(1, 50) {
+                        let reach = if inset { -d + d * i as f32 / steps as f32 } else { d * i as f32 / steps as f32 };
+                        let outer = offset_polygons(&base, reach);
+                        let ring = subtract_polygons(&outer, &inner);
+                        let keep = 1.0 - i as f32 / (steps + 1) as f32;
+                        let fade = |c: Color| Color { a: (c.a as f32 * keep).round() as u8, ..c };
+                        if !ring.is_empty() {
+                            let mut r = Shape::new(polys_path(&ring), sh.fill.map(fade), None);
+                            r.gradient = sh.gradient.clone().map(|mut g| {
+                                for s in &mut g.stops {
+                                    s.1 = fade(s.1);
+                                }
+                                g
+                            });
+                            parts.push(Element::shape("", r));
+                        }
+                        inner = outer;
+                    }
+                    e.kind = ElementKind::Group(parts);
+                }
+            },
+            _ => {}
+        });
+    }
+
     pub fn shape_cleanup(&mut self, kind: &str) {
         let label = match kind {
             "smooth" => "Smooth",

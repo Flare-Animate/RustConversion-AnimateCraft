@@ -54,8 +54,8 @@ impl FileAction {
             FileAction::ExportAnimatedSvg => "Export animated SVG",
             FileAction::ExportLottie => "Export Lottie JSON",
             FileAction::ExportXdts => "Export Timing Sheet (XDTS)",
-            FileAction::ImportSwatches => "Swatches from a palette (.aco, .ase, .gpl, .act)",
-            FileAction::ExportSwatches => "Save swatches (.ase, .aco or .gpl)",
+            FileAction::ImportSwatches => "Swatches from a palette (.aco, .ase, .gpl, .act) or gradients (.grd)",
+            FileAction::ExportSwatches => "Save swatches (colours: .ase, .aco, .gpl; gradients: .grd)",
         }
     }
     fn default_name(self, doc_name: &str) -> String {
@@ -95,8 +95,8 @@ impl FileAction {
             FileAction::ImportImage | FileAction::ImportSequence => ("Images", ac_core::codecs::EXTENSIONS),
             FileAction::ImportXdts => ("XDTS timing sheet", &["xdts"]),
             FileAction::ImportPsd => ("Photoshop files", &["psd"]),
-            FileAction::ImportSwatches => ("Palettes", &["aco", "ase", "gpl", "act"]),
-            FileAction::ExportSwatches => ("Palettes", &["ase", "aco", "gpl"]),
+            FileAction::ImportSwatches => ("Palettes and gradients", &["aco", "ase", "gpl", "act", "grd"]),
+            FileAction::ExportSwatches => ("Palettes (.ase/.aco/.gpl) or gradients (.grd)", &["ase", "aco", "gpl", "grd"]),
         }
     }
     fn picks_existing(self) -> bool {
@@ -149,7 +149,7 @@ pub(crate) struct Settings {
     pub layout: Option<crate::dock::Layout>,
     /// Swatches (None = the standard set) and whether the column is shown.
     #[serde(default)]
-    pub swatches: Option<Vec<crate::swatches::Swatch>>,
+    pub swatches: Option<Vec<ac_core::Swatch>>,
     #[serde(default)]
     pub swatches_open: bool,
     /// Window › Tool Options Bar.

@@ -288,6 +288,14 @@ pub struct Gradient {
     /// Color panel ▸ Flow: what happens past the ends.
     #[serde(default, skip_serializing_if = "Spread::is_pad")]
     pub spread: Spread,
+    /// Radial gradients: the focal point along the gradient's x axis, −1…1 of
+    /// the radius (Animate's focal point; 0 = centred).
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub focal: f32,
+}
+
+fn is_zero(v: &f32) -> bool {
+    *v == 0.0
 }
 
 /// Gradient overflow (Animate's Extend / Reflect / Repeat).
@@ -326,7 +334,7 @@ impl Gradient {
                 Matrix::scale(r, r)
             }
         };
-        Gradient { kind, stops, matrix: Matrix::translate(c.x, c.y).concat(&s), spread: Spread::Pad }
+        Gradient { kind, stops, matrix: Matrix::translate(c.x, c.y).concat(&s), spread: Spread::Pad, focal: 0.0 }
     }
     pub fn lerp(&self, o: &Gradient, t: f32) -> Gradient {
         if self.kind != o.kind || self.stops.len() != o.stops.len() {
@@ -337,7 +345,29 @@ impl Gradient {
             stops: self.stops.iter().zip(&o.stops).map(|(a, b)| (a.0 + (b.0 - a.0) * t, a.1.lerp(b.1, t))).collect(),
             matrix: self.matrix.interpolate(&o.matrix, t, 0),
             spread: self.spread,
+            focal: self.focal + (o.focal - self.focal) * t,
         }
+    }
+}
+
+/// A colour swatch, or a gradient one (its matrix is not used: the gradient
+/// is fitted to whatever it fills).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Swatch {
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub name: String,
+    pub color: Color,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gradient: Option<Gradient>,
+}
+
+impl Swatch {
+    pub fn solid(name: impl Into<String>, color: Color) -> Swatch {
+        Swatch { name: name.into(), color, gradient: None }
+    }
+    pub fn gradient(name: impl Into<String>, kind: GradientKind, stops: Vec<(f32, Color)>) -> Swatch {
+        let color = stops.first().map(|s| s.1).unwrap_or(Color::rgb(0, 0, 0));
+        Swatch { name: name.into(), color, gradient: Some(Gradient { kind, stops, matrix: Matrix::IDENTITY, spread: Spread::Pad, focal: 0.0 }) }
     }
 }
 
@@ -998,6 +1028,10 @@ pub struct Document {
     /// move around the scene; output still renders through it).
     #[serde(default, skip_serializing_if = "CameraMode::is_stage")]
     pub camera_mode: CameraMode,
+    /// The document's swatches (Animate keeps them in the .fla); None = the
+    /// app's own set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub swatches: Option<Vec<Swatch>>,
     /// Drawing assistants and symmetry (OpenToonz): guides and replicators
     /// that shape freehand strokes, in stage coordinates.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -1040,6 +1074,7 @@ impl Default for Document {
             sounds: vec![],
             camera_mode: CameraMode::Stage,
             assistants: vec![],
+            swatches: None,
         }
     }
 }

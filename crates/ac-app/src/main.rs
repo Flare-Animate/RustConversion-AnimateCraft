@@ -6,6 +6,7 @@
 
 mod dock;
 mod files;
+mod history;
 mod import;
 mod motion_ui;
 mod navigator;
@@ -102,6 +103,10 @@ pub struct App {
     pub(crate) swatch_ui: swatches::State,
     pub(crate) nav: navigator::Nav,
     pub(crate) palette: palette::Palette,
+    /// Window › History (Ctrl+F10).
+    pub(crate) history_open: bool,
+    /// Modify › Shape › Expand Fill / Soften Fill Edges dialog.
+    pub(crate) shape_dlg: Option<windows::ShapeDlg>,
     pub(crate) status: String,
     pub(crate) file_path: Option<String>,
     pub(crate) settings: files::Settings,
@@ -294,6 +299,8 @@ impl App {
             swatch_ui: swatches::State::default(),
             nav: navigator::Nav::default(),
             palette: palette::Palette::default(),
+            history_open: false,
+            shape_dlg: None,
         };
         app.swatch_ui.open = app.settings.swatches_open;
         app.layout = app.settings.layout.unwrap_or(dock::Layout { library: if app.settings.library_left { dock::LibraryDock::Left } else { dock::LibraryDock::WithProperties }, ..Default::default() });
@@ -546,6 +553,7 @@ impl App {
         if k(cmd, Key::B) { self.ed.break_apart(); }
         if k(cmd, Key::T) { self.transform_open = !self.transform_open; }
         if k(cmd, Key::F9) { self.toggle_swatches(); }
+        if k(cmd, Key::F10) { self.history_open = !self.history_open; }
         if k(cmd, Key::K) { self.align_open = !self.align_open; }
         if k(cmd | sh | Modifiers::ALT, Key::R) { self.view.rulers = !self.view.rulers; }
         if k(cmd | sh, Key::W) { self.view.clip = !self.view.clip; }
@@ -579,6 +587,7 @@ impl App {
         if k(none, Key::F7) { self.ed.insert_blank_keyframe(); }
         if k(cmd, Key::F8) { self.open_symbol_dialog(false); }
         if k(none, Key::F8) { self.open_symbol_dialog(true); }
+        if k(cmd, Key::Enter) { publish::test_movie(self); }
         let busy = self.pen.is_some() || !self.poly_lasso.is_empty() || self.text_edit.is_some();
         if !busy && k(none, Key::Enter) { self.toggle_play(); }
         if k(none, Key::Period) { self.step(1); }
@@ -671,6 +680,10 @@ impl App {
             if ui.add_enabled(has_sel, egui::Button::new("Smooth")).clicked() { self.ed.shape_cleanup("smooth"); ui.close_menu(); }
             if ui.add_enabled(has_sel, egui::Button::new("Straighten")).clicked() { self.ed.shape_cleanup("straighten"); ui.close_menu(); }
             if ui.add_enabled(has_sel, egui::Button::new("Optimize")).clicked() { self.ed.shape_cleanup("optimize"); ui.close_menu(); }
+            ui.separator();
+            if ui.add_enabled(has_sel, egui::Button::new("Convert Lines to Fills")).on_hover_text("Each selected line becomes a filled outline").clicked() { self.ed.shape_fill_op("lines_to_fills", 0.0, 0, false); ui.close_menu(); }
+            if ui.add_enabled(has_sel, egui::Button::new("Expand Fill…")).clicked() { self.shape_dlg = Some(windows::ShapeDlg { soften: false, dist: 4.0, steps: 4, inset: false }); ui.close_menu(); }
+            if ui.add_enabled(has_sel, egui::Button::new("Soften Fill Edges…")).clicked() { self.shape_dlg = Some(windows::ShapeDlg { soften: true, dist: 4.0, steps: 4, inset: false }); ui.close_menu(); }
             ui.separator();
             let ok = self.ed.shape_tween_keys().is_some();
             if ui.add_enabled(ok, egui::Button::new("Add Shape Hint").shortcut_text("Ctrl+Shift+H")).clicked() { self.add_shape_hint(); ui.close_menu(); }
@@ -872,6 +885,8 @@ impl App {
                 });
                 ui.menu_button("Control", |ui| {
                     if ui.add(egui::Button::new(if self.playing { "Stop" } else { "Play" }).shortcut_text("Enter")).clicked() { self.toggle_play(); ui.close_menu(); }
+                    if ui.add(egui::Button::new("Test Movie").shortcut_text("Ctrl+Enter")).on_hover_text("Plays the movie in your browser (HTML5 publish), with scripts, buttons and sounds").clicked() { publish::test_movie(self); ui.close_menu(); }
+                    ui.separator();
                     if ui.button("Rewind").clicked() { self.step(-100_000); ui.close_menu(); }
                     if ui.button("Go to End").clicked() { self.step(100_000); ui.close_menu(); }
                     if ui.add(egui::Button::new("Step Forward One Frame").shortcut_text(".")).clicked() { self.step(1); ui.close_menu(); }
@@ -900,6 +915,7 @@ impl App {
                     if ui.add(egui::Button::new("Actions").shortcut_text("F9")).clicked() { self.scripting.actions_open = true; ui.close_menu(); }
                     if ui.add(egui::SelectableLabel::new(self.lib.open, "Library  (Ctrl+L)")).clicked() { self.lib.open = !self.lib.open; ui.close_menu(); }
                     if ui.add(egui::SelectableLabel::new(self.swatch_ui.open, "Swatches  (Ctrl+F9)")).on_hover_text("Colour chips beside the tools").clicked() { self.toggle_swatches(); ui.close_menu(); }
+                    if ui.add(egui::SelectableLabel::new(self.history_open, "History  (Ctrl+F10)")).clicked() { self.history_open = !self.history_open; ui.close_menu(); }
                     if ui.add(egui::SelectableLabel::new(self.nav.open, "Navigator")).clicked() { self.nav.open = !self.nav.open; ui.close_menu(); }
                     if ui.add(egui::SelectableLabel::new(self.settings.options_bar, "Tool Options Bar")).clicked() { self.toggle_options_bar(); ui.close_menu(); }
                     if ui.add(egui::Button::new("Command Search…").shortcut_text("Ctrl+Shift+P")).clicked() { self.palette.open = true; ui.close_menu(); }
@@ -1383,6 +1399,8 @@ impl eframe::App for App {
         panels::library_drag_ghost(self, ctx);
         dock::drop_targets(self, ctx);
         navigator::window(self, ctx);
+        history::window(self, ctx);
+        windows::shape_window(self, ctx);
         palette::window(self, ctx);
         self.dialogs(ctx);
         startup::window(self, ctx);

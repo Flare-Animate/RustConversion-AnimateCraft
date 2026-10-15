@@ -732,6 +732,11 @@ fn gradient_editor(app: &mut App, ui: &mut egui::Ui, g: &Gradient) {
             ui.selectable_value(&mut spread, s, s.name()).on_hover_text("What the gradient does past its ends");
         }
     });
+    if g.kind == GradientKind::Radial {
+        let mut focal = g.focal;
+        let r = ui.add(egui::Slider::new(&mut focal, -1.0..=1.0).text("Focal point").max_decimals(2)).on_hover_text("Moves the bright centre of the radial gradient along its axis (rotate it with the Gradient Transform tool)");
+        apply(app, &r, "Gradient Focal Point", move |e| if let ElementKind::Shape(sh) = &mut e.kind { if let Some(g) = &mut sh.gradient { g.focal = focal } });
+    }
     if spread != g.spread {
         app.ed.modify_selected("Gradient Flow", move |e| if let ElementKind::Shape(sh) = &mut e.kind { if let Some(g) = &mut sh.gradient { g.spread = spread } });
     }

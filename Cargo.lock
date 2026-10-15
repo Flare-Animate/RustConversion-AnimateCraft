@@ -130,6 +130,8 @@ dependencies = [
  "flate2",
  "image",
  "roxmltree",
+ "serde_json",
+ "usvg",
  "zip",
 ]
 

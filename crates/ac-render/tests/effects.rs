@@ -213,6 +213,29 @@ fn gradient_flow_extends_reflects_and_repeats() {
 }
 
 #[test]
+fn radial_focal_point_moves_the_centre() {
+    // white centre → black edge over a 200 px circle; focal 0.7 moves the white towards +x
+    let mk = |focal: f32| {
+        let mut sh = Shape::new(Path::rect(0.0, 0.0, 200.0, 200.0), None, None);
+        sh.gradient = Some(Gradient { focal, ..Gradient::fit(GradientKind::Radial, vec![(0.0, Color::rgb(255, 255, 255)), (1.0, Color::rgb(0, 0, 0))], pt(30.0, 30.0), pt(170.0, 170.0)) });
+        doc_with(vec![layer("g", vec![Element::shape("", sh)])])
+    };
+    let centred = mk(0.0);
+    let (l, r) = (px(&centred, 0, 60, 100)[0], px(&centred, 0, 140, 100)[0]);
+    assert!((l as i32 - r as i32).abs() < 4, "symmetric {l} {r}");
+    let f = mk(0.7);
+    let (l, r) = (px(&f, 0, 60, 100)[0], px(&f, 0, 140, 100)[0]);
+    assert!(r > l + 40, "brighter towards the focal point: left {l} right {r}");
+    // every export carries it
+    let svg = ac_render::export_svg(&f, 0);
+    assert!(svg.contains("fx=\"0.7000\""), "svg");
+    let lottie = ac_render::formats::lottie(&f, &Default::default()).0;
+    assert!(lottie.contains("\"h\":{\"a\":0,\"k\":70"), "lottie");
+    let files = ac_render::html5::publish(&f, &Default::default());
+    assert!(files.iter().any(|(_, b)| String::from_utf8_lossy(b).contains("\"fx\":0.7")), "html5");
+}
+
+#[test]
 fn artistic_strokes_render_as_geometry() {
     let ink = |dash: Dash| {
         let mut sh = Shape::new(Path { segs: vec![Seg::M(pt(20.0, 100.0)), Seg::L(pt(180.0, 100.0))] }, None, Some(Stroke { color: Color::rgb(0, 0, 0), width: 6.0 }));

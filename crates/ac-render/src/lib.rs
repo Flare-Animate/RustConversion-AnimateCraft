@@ -125,7 +125,7 @@ fn draw_item(pix: &mut sk::PixmapMut, it: &DrawItem, opts: &RenderOpts, masks: &
         };
         let shader = match g.kind {
             ac_core::GradientKind::Linear => sk::LinearGradient::new(sk::Point::from_xy(-1.0, 0.0), sk::Point::from_xy(1.0, 0.0), stops, spread, gts),
-            ac_core::GradientKind::Radial => sk::RadialGradient::new(sk::Point::from_xy(0.0, 0.0), sk::Point::from_xy(0.0, 0.0), 1.0, stops, spread, gts),
+            ac_core::GradientKind::Radial => sk::RadialGradient::new(sk::Point::from_xy(g.focal.clamp(-0.99, 0.99), 0.0), sk::Point::from_xy(0.0, 0.0), 1.0, stops, spread, gts),
         };
         match shader {
             Some(sh) => {
@@ -666,7 +666,7 @@ impl SvgWriter<'_> {
                 (Some(g), _) => {
                     let gid = self.id("g");
                     let tag = if g.kind == ac_core::GradientKind::Linear { "linearGradient" } else { "radialGradient" };
-                    let geo = if g.kind == ac_core::GradientKind::Linear { "x1=\"-1\" y1=\"0\" x2=\"1\" y2=\"0\"" } else { "cx=\"0\" cy=\"0\" r=\"1\"" };
+                    let geo = if g.kind == ac_core::GradientKind::Linear { "x1=\"-1\" y1=\"0\" x2=\"1\" y2=\"0\"".to_string() } else if g.focal != 0.0 { format!("cx=\"0\" cy=\"0\" r=\"1\" fx=\"{:.4}\" fy=\"0\"", g.focal.clamp(-0.99, 0.99)) } else { "cx=\"0\" cy=\"0\" r=\"1\"".to_string() };
                     let spread = match g.spread {
                         ac_core::Spread::Pad => "",
                         ac_core::Spread::Reflect => " spreadMethod=\"reflect\"",

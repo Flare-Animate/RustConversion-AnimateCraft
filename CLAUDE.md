@@ -45,8 +45,8 @@ Status: ✅ in the demo · 🟡 partial · ⬜ planned
 - ✅ Library: drag to stage, rename, duplicate, change type, delete (removes instances)
 - ✅ Rulers, guides (Edit Guides), grid + snapping (incl. Snap to Pixels), Align panel, Info panel; native file dialogs, recent files, autosave + crash recovery
 - ✅ Motion Editor (per-property graphs, key drag/retime, smooth/corner points, per-property eases)
-- 🟡 Movable docks (grips, Workspace menu, Reset Layout), Swatches column (Ctrl+F9; .aco/.ase via PhotoCraft, .gpl, .act), Navigator, command search (Ctrl+Shift+P), Tool Options bar, Clip to stage
-- ⬜ Floating panels / tab groups / named workspaces (needs the egui upgrade), Color panel, History, preferences
+- 🟡 Movable docks (grips, Workspace menu, Reset Layout), Swatches column (Ctrl+F9; colours + gradients, per-document from .fla; .aco/.ase/.grd via PhotoCraft, .gpl, .act), Navigator, command search (Ctrl+Shift+P), Tool Options bar, Clip to stage, History panel (Ctrl+F10), Test Movie (Ctrl+Enter, in the browser)
+- ⬜ Floating panels / tab groups / named workspaces (needs the egui upgrade), Color panel, preferences
 
 **Drawing**
 - ✅ Object Drawing model (each shape its own object)
@@ -77,6 +77,7 @@ Status: ✅ in the demo · 🟡 partial · ⬜ planned
   (Union/Intersect/Punch/Crop); Smooth/Straighten/Optimize; Rectangle/Oval
   Primitives; dashed/dotted strokes with caps/joins; bitmap fills; shape bones
   (Bone tool inside a shape) + Bind tool
+- ✅ Convert Lines to Fills, Expand Fill, Soften Fill Edges; gradient focal points
 - ✅ Magic Wand, brush shapes, Ragged/Stipple/Hatched strokes, gradient flow
   (Extend/Reflect/Repeat), Ctrl-drag to add a corner, Width point delete + profile
   copy/paste, Break Apart on text and bitmaps, bitmap fills on merge shapes
@@ -146,7 +147,8 @@ Status: ✅ in the demo · 🟡 partial · ⬜ planned
 
 **Interchange**
 - ✅ `.fla` (CS5+, zipped XFL) and XFL folders: read + write (`ac-xfl`), round-trip tested on a
-  hand-written fixture; unsupported parts are reported, never silently dropped
+  hand-written fixture; unsupported parts are reported, never silently dropped; art brushes
+  (PaintBrushDefinitions.xml) drawn, document swatches read/written
 - 🟡 needs a corpus of real .fla files; motion-object tweens import static
 - ✅ PSD import (one bitmap layer per Photoshop layer), XDTS timing-sheet export and import
 - ⬜ legacy binary FLA (pre-CS5 compound file) read-only, AI import

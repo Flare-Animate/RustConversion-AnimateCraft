@@ -115,3 +115,36 @@ fn real_fla_corpus_opens() {
     }
     eprintln!("{n} files");
 }
+
+/// Focal gradients, document swatches (solid + gradient) and art-brush
+/// strokes survive a write and read back.
+#[test]
+fn focal_gradients_swatches_and_art_brushes() {
+    use ac_core::*;
+    let mut d = Document::default();
+    let mut sh = Shape::new(Path::rect(0.0, 0.0, 100.0, 100.0), None, None);
+    sh.gradient = Some(Gradient { focal: 0.6, ..Gradient::fit(GradientKind::Radial, vec![(0.0, Color::rgb(255, 255, 255)), (1.0, Color::rgb(0, 0, 0))], pt(0.0, 0.0), pt(100.0, 100.0)) });
+    d.scene.layers[0].keyframes.get_mut(&0).unwrap().elements.push(Element::shape("", sh));
+    d.swatches = Some(vec![Swatch::solid("", Color::rgb(0x12, 0x34, 0x56)), Swatch::gradient("", GradientKind::Linear, vec![(0.0, Color::rgb(255, 0, 0)), (1.0, Color::rgb(0, 0, 255))])]);
+    let (mut pkg, _) = ac_xfl::write_package(&d);
+    // add an art brush and a shape drawn with it (as Animate writes them)
+    pkg.insert("PaintBrushDefinitions.xml".into(), br#"<paintbrushdefinitions xmlns="http://ns.adobe.com/xfl/2008/"><paintbrushdefinition index="1" brushParam='{"FlashPaintBrushType":"ArtBrush","artDirection":"0","flipArt":"false","name":"Bar","svgData":"&lt;svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 100 20\" width=\"100\" height=\"20\"&gt;&lt;path d=\"M0,0 L100,0 L100,20 L0,20 Z\"/&gt;&lt;/svg&gt;"}'/></paintbrushdefinitions>"#.to_vec());
+    let dom = String::from_utf8(pkg["DOMDocument.xml"].clone()).unwrap();
+    let brush_shape = r##"<DOMShape isDrawingObject="true"><strokes><StrokeStyle index="1"><PaintBrushStroke weight="10" paintBrushDefinition="1"><fill><SolidColor color="#00FF00"/></fill></PaintBrushStroke></StrokeStyle></strokes><edges><Edge strokeStyle="1" edges="!0 0|4000 0"/></edges></DOMShape>"##;
+    let dom = dom.replacen("<elements>", &format!("<elements>{brush_shape}"), 1);
+    assert!(dom.contains("focalPointRatio=\"0.6\""), "focal written");
+    assert!(dom.contains("<SolidSwatchItem color=\"#123456\"/>") && dom.contains("<LinearGradientSwatchItem>"), "swatches written");
+    pkg.insert("DOMDocument.xml".into(), dom.into_bytes());
+    let im = ac_xfl::read_package(&pkg).unwrap();
+    let els: Vec<&Element> = im.doc.scene.layers[0].keyframes[&0].elements.iter().collect();
+    let g = els.iter().find_map(|e| match &e.kind { ElementKind::Shape(s) => s.gradient.clone(), _ => None }).unwrap();
+    assert!((g.focal - 0.6).abs() < 1e-4);
+    let art = els.iter().find_map(|e| match &e.kind { ElementKind::Shape(s) if s.fill == Some(Color::rgb(0, 255, 0)) => Some(s.clone()), _ => None }).expect("art brush stroke became a green fill");
+    let (lo, hi) = art.path.bounds().unwrap();
+    assert!((hi.x - lo.x - 200.0).abs() < 0.5 && (hi.y - lo.y - 10.0).abs() < 0.5, "{lo:?} {hi:?}");
+    assert!(!im.warnings.iter().any(|w| w.contains("solid line") || w.contains("focal")), "{:?}", im.warnings);
+    let sw = im.doc.swatches.unwrap();
+    assert_eq!(sw.len(), 2);
+    assert_eq!(sw[0].color, Color::rgb(0x12, 0x34, 0x56));
+    assert_eq!(sw[1].gradient.as_ref().unwrap().stops.len(), 2);
+}

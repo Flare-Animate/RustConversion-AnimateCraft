@@ -129,6 +129,42 @@ pub fn path_polylines(path: &Path) -> Vec<(Vec<Pt>, bool)> {
     path.flatten(16).into_iter().filter(|(c, _)| c.len() >= 2).collect()
 }
 
+/// The outline of a line `width` wide (round joins and caps), as polygons.
+pub fn stroke_outline(pts: &[Pt], closed: bool, width: f32) -> Vec<Vec<Pt>> {
+    use i_overlay::mesh::float::stroke::offset::StrokeOffset;
+    use i_overlay::mesh::float::style::{LineCap, LineJoin, StrokeStyle};
+    if pts.len() < 2 || width <= 0.0 {
+        return vec![];
+    }
+    let line: Vec<P> = pts.iter().map(|a| p(*a)).collect();
+    let style = StrokeStyle::new(width as f64).line_join(LineJoin::Round(0.2)).start_cap(LineCap::Round(0.2)).end_cap(LineCap::Round(0.2));
+    let shapes: Vec<Shp> = line.stroke(style, closed);
+    let empty: Vec<Shp> = vec![];
+    shapes.overlay(&empty, OverlayRule::Subject, FillRule::NonZero).iter().flat_map(contours_of).collect()
+}
+
+/// Polygons (even-odd) grown by `d` (shrunk when negative), round corners.
+pub fn offset_polygons(polys: &[Vec<Pt>], d: f32) -> Vec<Vec<Pt>> {
+    use i_overlay::mesh::float::outline::offset::OutlineOffset;
+    use i_overlay::mesh::float::style::{LineJoin, OutlineStyle};
+    if d == 0.0 {
+        return polys.to_vec();
+    }
+    let st = OutlineStyle::new(d as f64).line_join(LineJoin::Round(0.2));
+    let mut out = vec![];
+    for s in normalize(polys) {
+        for g in s.outline(&st) {
+            out.extend(contours_of(&g));
+        }
+    }
+    out
+}
+
+/// `a` minus `b` (both even-odd polygon sets).
+pub fn subtract_polygons(a: &[Vec<Pt>], b: &[Vec<Pt>]) -> Vec<Vec<Pt>> {
+    diff_shapes(&normalize(a), &normalize(b)).iter().flat_map(contours_of).collect()
+}
+
 /// Even-odd normalise loose polygons into disjoint shapes.
 fn normalize(polys: &[Vec<Pt>]) -> Vec<Shp> {
     let subj: Vec<Contour> = polys.iter().map(|c| c.iter().map(|x| p(*x)).collect()).collect();
@@ -935,6 +971,72 @@ impl MergeShape {
             }
         }
         false
+    }
+
+    /// Modify › Shape › Convert Lines to Fills: every line becomes a fill of
+    /// its outline in the line's colour (variable widths use their average).
+    pub fn lines_to_fills(&mut self) -> usize {
+        let strokes = std::mem::take(&mut self.strokes);
+        let n = strokes.len();
+        for s in strokes {
+            let w = match &s.width {
+                Some(prof) if !prof.is_empty() => s.stroke.width * prof.iter().map(|x| x.1).sum::<f32>() / prof.len() as f32,
+                _ => s.stroke.width,
+            };
+            let polys = stroke_outline(&s.pts, s.closed, w);
+            self.add_fill(&polys, Some(s.stroke.color), None, false);
+        }
+        n
+    }
+
+    /// Modify › Shape › Expand Fill: every fill grows by `d` (shrinks when
+    /// negative); later fills stay on top.
+    pub fn expand_fills(&mut self, d: f32) {
+        let old = std::mem::take(&mut self.fills);
+        for r in old {
+            let polys = offset_polygons(&r.contours, d);
+            if !polys.is_empty() {
+                self.add_region(&polys, &r, false);
+            }
+        }
+    }
+
+    /// Modify › Shape › Soften Fill Edges: `steps` rings over `d` around (or,
+    /// inset, inside) each fill, fading out (colour and gradient fills; bitmap
+    /// fills are left as they are).
+    pub fn soften_fills(&mut self, d: f32, steps: u32, inset: bool) {
+        let steps = steps.clamp(1, 50);
+        let old = std::mem::take(&mut self.fills);
+        for r in old {
+            if r.bitmap.is_some() || (r.fill.is_none() && r.gradient.is_none()) {
+                self.add_region(&r.contours.clone(), &r, false);
+                continue;
+            }
+            // inset: the solid core shrinks and the rings fill back out to the edge
+            let core = if inset { offset_polygons(&r.contours, -d) } else { r.contours.clone() };
+            if !core.is_empty() {
+                self.add_region(&core, &r, false);
+            }
+            let mut inner = core;
+            for k in 1..=steps {
+                let reach = if inset { -d + d * k as f32 / steps as f32 } else { d * k as f32 / steps as f32 };
+                let outer = offset_polygons(&r.contours, reach);
+                let ring = subtract_polygons(&outer, &inner);
+                let keep = 1.0 - k as f32 / (steps + 1) as f32;
+                let fade = |c: Color| Color { a: (c.a as f32 * keep).round() as u8, ..c };
+                if !ring.is_empty() {
+                    let mut faded = r.clone();
+                    faded.fill = r.fill.map(fade);
+                    if let Some(g) = &mut faded.gradient {
+                        for s in &mut g.stops {
+                            s.1 = fade(s.1);
+                        }
+                    }
+                    self.add_region(&ring, &faded, false);
+                }
+                inner = outer;
+            }
+        }
     }
 
     /// Simplify: drop points that deviate less than `tol` (Modify ▸ Shape ▸ Optimize).

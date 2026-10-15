@@ -10,6 +10,7 @@
 //! files this program writes itself (clean-room; no third-party samples, no
 //! disassembly or debugging of other programs). See CONTRIBUTING.md.
 
+pub mod brush;
 pub mod dat;
 pub mod edges;
 mod read;

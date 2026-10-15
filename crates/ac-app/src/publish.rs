@@ -348,3 +348,37 @@ pub fn window(app: &mut App, ctx: &egui::Context) {
         app.publish.open = false;
     }
 }
+
+/// Control › Test Movie (Ctrl+Enter): publish the movie as one HTML page in a
+/// temporary folder and open it in the default browser, where it plays with
+/// its scripts, buttons and sounds (our HTML5 runtime). Animate opens its own
+/// player window; the published page is the closest thing we have.
+pub fn test_movie(app: &mut App) {
+    let doc = app.ed.saved_doc();
+    let dir = std::env::temp_dir().join("flare-test-movie");
+    let name: String = app.doc_name().chars().map(|c| if c.is_alphanumeric() || c == '-' || c == '_' { c } else { '_' }).collect();
+    let page = dir.join(format!("{}.html", if name.is_empty() { "movie".into() } else { name }));
+    let ho = ac_render::html5::Html5Opts { loop_play: app.loop_play, range: None, single_file: true };
+    let launch = crate::files::native_dialogs();
+    spawn(app, "Test Movie".into(), move |_| {
+        std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+        let out = ac_render::html5::publish_to(&doc, &ho, &page)?;
+        if launch {
+            open_in_browser(&out)?;
+            Ok(format!("Test Movie: playing in your browser ({})", out.display()))
+        } else {
+            Ok(format!("Test Movie: published {}", out.display()))
+        }
+    });
+}
+
+fn open_in_browser(p: &std::path::Path) -> Result<(), String> {
+    let r = if cfg!(target_os = "windows") {
+        std::process::Command::new("cmd").args(["/C", "start", ""]).arg(p).spawn()
+    } else if cfg!(target_os = "macos") {
+        std::process::Command::new("open").arg(p).spawn()
+    } else {
+        std::process::Command::new("xdg-open").arg(p).spawn()
+    };
+    r.map(|_| ()).map_err(|e| format!("couldn't open a browser: {e}"))
+}

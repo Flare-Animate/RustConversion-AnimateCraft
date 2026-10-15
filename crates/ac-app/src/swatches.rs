@@ -1,55 +1,94 @@
 //! Swatches: a column of colour chips beside the Tools panel (Window ›
-//! Swatches, Ctrl+F9). Click a chip for the fill colour, Shift+click for the
-//! stroke; with something selected the colour is applied to it too.
-//! Right-click a chip to replace, use or delete it.
+//! Swatches, Ctrl+F9). Click a chip for the fill, Shift+click for the
+//! stroke; with something selected it is applied to it too. Gradient chips
+//! set a gradient fill. Right-click a chip to replace, use or delete it.
 //!
-//! Palettes import from Photoshop `.aco` and Adobe Swatch Exchange `.ase`
-//! (readers and writers from PhotoCraft's `photocraft-psd`, MIT OR Apache-2.0,
-//! used as a git dependency), GIMP `.gpl` and colour tables `.act` (our own
-//! readers), and export as `.ase`, `.aco` or `.gpl`. The swatches are kept in
-//! the settings, so they are the same in every document.
+//! A document can carry its own swatches (Animate keeps them in the .fla,
+//! and .fla import reads them); otherwise the app's set (in the settings) is
+//! shown. Palettes import from Photoshop `.aco`, Adobe Swatch Exchange `.ase`
+//! and Photoshop gradients `.grd` (readers and writers from PhotoCraft's
+//! `photocraft-psd`, MIT OR Apache-2.0, used as a git dependency), GIMP `.gpl`
+//! and colour tables `.act` (our own readers), and save as `.ase`, `.aco`,
+//! `.gpl` (colours) or `.grd` (gradients).
 
-use crate::App;
-use ac_core::{ElementKind, Stroke};
-use eframe::egui::{self, vec2, Color32, RichText, Sense};
-use serde::{Deserialize, Serialize};
+use crate::{c32, from32, App};
+use ac_core::{Color, ElementKind, Gradient, GradientKind, Stroke, Swatch};
+use eframe::egui::{self, pos2, vec2, Color32, RichText, Sense};
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub(crate) struct Swatch {
-    #[serde(default)]
-    pub name: String,
-    pub rgba: [u8; 4],
+fn rgba(r: u8, g: u8, b: u8, a: u8) -> Color {
+    Color { a, ..Color::rgb(r, g, b) }
 }
 
-impl Swatch {
-    fn new(name: impl Into<String>, c: Color32) -> Swatch {
-        Swatch { name: name.into(), rgba: c.to_srgba_unmultiplied() }
-    }
-    pub fn color(&self) -> Color32 {
-        let [r, g, b, a] = self.rgba;
-        Color32::from_rgba_unmultiplied(r, g, b, a)
-    }
-    fn label(&self) -> String {
-        let [r, g, b, a] = self.rgba;
-        let hex = if a == 255 { format!("#{r:02X}{g:02X}{b:02X}") } else { format!("#{r:02X}{g:02X}{b:02X} · {:.0}%", a as f32 / 2.55) };
-        if self.name.is_empty() { hex } else { format!("{}  {hex}", self.name) }
-    }
+fn label(s: &Swatch) -> String {
+    let c = s.color;
+    let hex = if c.a == 255 { format!("#{:02X}{:02X}{:02X}", c.r, c.g, c.b) } else { format!("#{:02X}{:02X}{:02X} · {:.0}%", c.r, c.g, c.b, c.a as f32 / 2.55) };
+    let what = match &s.gradient {
+        Some(g) => format!("{} gradient, {} colours", if g.kind == GradientKind::Linear { "Linear" } else { "Radial" }, g.stops.len()),
+        None => hex,
+    };
+    if s.name.is_empty() { what } else { format!("{}  {what}", s.name) }
 }
 
-/// The standard set: a grey ramp, then twelve hues at full, light and dark.
+/// The standard set: a grey ramp, then twelve hues at full, light and dark,
+/// and a few gradients.
 pub(crate) fn defaults() -> Vec<Swatch> {
     let mut v = Vec::new();
     for i in 0..12u32 {
         let g = (i * 255 / 11) as u8;
-        v.push(Swatch::new("", Color32::from_gray(g)));
+        v.push(Swatch::solid("", Color::rgb(g, g, g)));
     }
     for (s, b) in [(1.0, 1.0), (0.45, 1.0), (1.0, 0.55)] {
         for h in 0..12 {
             let [r, g, bl] = hsb(h as f32 * 30.0, s, b);
-            v.push(Swatch::new("", Color32::from_rgb(r, g, bl)));
+            v.push(Swatch::solid("", Color::rgb(r, g, bl)));
         }
     }
+    let (k, w) = (Color::rgb(0, 0, 0), Color::rgb(255, 255, 255));
+    v.push(Swatch::gradient("Black to white", GradientKind::Linear, vec![(0.0, k), (1.0, w)]));
+    v.push(Swatch::gradient("White to black", GradientKind::Radial, vec![(0.0, w), (1.0, k)]));
+    v.push(Swatch::gradient("Sunset", GradientKind::Linear, vec![(0.0, Color::rgb(0x2B, 0x1B, 0x6B)), (0.5, Color::rgb(0xE0, 0x4A, 0x5F)), (1.0, Color::rgb(0xFF, 0xC8, 0x57))]));
+    v.push(Swatch::gradient("Sky", GradientKind::Linear, vec![(0.0, Color::rgb(0x1E, 0x6B, 0xD6)), (1.0, Color::rgb(0xC9, 0xE8, 0xFF))]));
+    v.push(Swatch::gradient("Glow", GradientKind::Radial, vec![(0.0, Color::rgb(0xFF, 0xF4, 0xB0)), (1.0, rgba(0xFF, 0xA0, 0x20, 0))]));
+    v.push(Swatch::gradient("Spectrum", GradientKind::Linear, (0..=6).map(|i| { let [r, g, b] = hsb(i as f32 * 60.0, 1.0, 1.0); (i as f32 / 6.0, Color::rgb(r, g, b)) }).collect()));
     v
+}
+
+/// A Photoshop gradient as a gradient swatch: colour stops, with the
+/// opacity stops sampled at each colour stop.
+fn grd_swatch(g: &photocraft_psd::grd::GrdGradient) -> Swatch {
+    use photocraft_psd::grd::GrdColor;
+    let opacity_at = |t: f32| -> f32 {
+        let o = &g.opacity;
+        match o.len() {
+            0 => 1.0,
+            _ if t <= o[0].0 => o[0].1,
+            _ if t >= o[o.len() - 1].0 => o[o.len() - 1].1,
+            _ => {
+                let i = o.windows(2).position(|w| t >= w[0].0 && t <= w[1].0).unwrap_or(0);
+                let (a, b) = (o[i], o[i + 1]);
+                let u = if b.0 > a.0 { (t - a.0) / (b.0 - a.0) } else { 0.0 };
+                a.1 + (b.1 - a.1) * u
+            }
+        }
+    };
+    let stops = g
+        .stops
+        .iter()
+        .map(|s| {
+            let [r, gg, b] = match s.color {
+                GrdColor::Rgb([r, g, b]) => [to8(r), to8(g), to8(b)],
+                GrdColor::Hsb([h, s, b]) => hsb(h, s, b),
+                GrdColor::Cmyk([c, m, y, k]) => cmyk(c, m, y, k),
+                GrdColor::Lab([l, a, b]) => lab(l, a, b),
+                GrdColor::Gray(k) => [to8(1.0 - k); 3],
+                GrdColor::Foreground => [0, 0, 0],
+                GrdColor::Background => [255, 255, 255],
+            };
+            let t = s.location.clamp(0.0, 1.0);
+            (t, rgba(r, gg, b, to8(opacity_at(t))))
+        })
+        .collect();
+    Swatch::gradient(g.name.clone(), GradientKind::Linear, stops)
 }
 
 fn hsb(h: f32, s: f32, b: f32) -> [u8; 3] {
@@ -103,7 +142,7 @@ pub(crate) fn read(path: &std::path::Path) -> Result<Vec<Swatch>, String> {
 
 pub(crate) fn parse(ext: &str, data: &[u8]) -> Result<Vec<Swatch>, String> {
     use photocraft_psd::{aco, ase};
-    let rgb = |n: &str, [r, g, b]: [u8; 3]| Swatch::new(n, Color32::from_rgb(r, g, b));
+    let rgb = |n: &str, [r, g, b]: [u8; 3]| Swatch::solid(n, Color::rgb(r, g, b));
     match ext {
         "aco" => {
             let f = aco::parse(data).map_err(|e| format!(".aco: {e}"))?;
@@ -173,47 +212,61 @@ pub(crate) fn parse(ext: &str, data: &[u8]) -> Result<Vec<Swatch>, String> {
             let n = if data.len() >= 770 { u16::from_be_bytes([data[768], data[769]]).clamp(1, 256) as usize } else { 256 };
             Ok(data[..n * 3].chunks(3).map(|c| rgb("", [c[0], c[1], c[2]])).collect())
         }
-        _ => Err(format!("unknown palette type .{ext} (use .aco, .ase, .gpl or .act)")),
+        "grd" => {
+            // Photoshop gradients → gradient swatches (PhotoCraft's reader)
+            let gs = photocraft_psd::grd::parse(data).map_err(|e| format!(".grd: {e}"))?;
+            Ok(gs.iter().filter(|g| !g.noise && !g.stops.is_empty()).map(grd_swatch).collect())
+        }
+        _ => Err(format!("unknown palette type .{ext} (use .aco, .ase, .gpl, .act or .grd)")),
     }
 }
 
-/// Write a palette by extension (.ase, .aco or .gpl).
-pub(crate) fn write(path: &std::path::Path, v: &[Swatch]) -> Result<(), String> {
-    use photocraft_psd::{aco, ase};
+
+/// Write a palette by extension: colours as .ase, .aco or .gpl; gradients as .grd.
+pub(crate) fn write(path: &std::path::Path, v: &[Swatch]) -> Result<usize, String> {
+    use photocraft_psd::{aco, ase, grd};
     let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
-    let bytes = match ext.as_str() {
+    let solid: Vec<&Swatch> = v.iter().filter(|s| s.gradient.is_none()).collect();
+    let (bytes, n) = match ext.as_str() {
         "ase" => {
-            let entries = v
-                .iter()
-                .map(|s| {
-                    let [r, g, b, _] = s.rgba;
-                    ase::AseEntry::Swatch(ase::AseSwatch { name: s.label(), color: ase::AseColor::Rgb([r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0]), kind: ase::AseKind::Process })
-                })
-                .collect();
-            ase::write(&ase::AseFile { entries }).map_err(|e| e.to_string())?
+            let entries = solid.iter().map(|s| ase::AseEntry::Swatch(ase::AseSwatch { name: label(s), color: ase::AseColor::Rgb([s.color.r as f32 / 255.0, s.color.g as f32 / 255.0, s.color.b as f32 / 255.0]), kind: ase::AseKind::Process })).collect();
+            (ase::write(&ase::AseFile { entries }).map_err(|e| e.to_string())?, solid.len())
         }
         "aco" => {
-            let sw: Vec<aco::AcoSwatch> = v
-                .iter()
-                .map(|s| {
-                    let [r, g, b, _] = s.rgba;
-                    aco::AcoSwatch { name: s.label(), color: aco::AcoColor::Rgb([r as u16 * 257, g as u16 * 257, b as u16 * 257]) }
-                })
-                .collect();
-            aco::write(&sw).map_err(|e| e.to_string())?
+            let sw: Vec<aco::AcoSwatch> = solid.iter().map(|s| aco::AcoSwatch { name: label(s), color: aco::AcoColor::Rgb([s.color.r as u16 * 257, s.color.g as u16 * 257, s.color.b as u16 * 257]) }).collect();
+            (aco::write(&sw).map_err(|e| e.to_string())?, solid.len())
         }
         "gpl" => {
             let name = path.file_stem().and_then(|s| s.to_str()).unwrap_or("Flare");
             let mut t = format!("GIMP Palette\nName: {name}\nColumns: 12\n#\n");
-            for s in v {
-                let [r, g, b, _] = s.rgba;
-                t.push_str(&format!("{r:3} {g:3} {b:3}\t{}\n", if s.name.is_empty() { format!("#{r:02X}{g:02X}{b:02X}") } else { s.name.clone() }));
+            for s in &solid {
+                let c = s.color;
+                t.push_str(&format!("{:3} {:3} {:3}\t{}\n", c.r, c.g, c.b, if s.name.is_empty() { format!("#{:02X}{:02X}{:02X}", c.r, c.g, c.b) } else { s.name.clone() }));
             }
-            t.into_bytes()
+            (t.into_bytes(), solid.len())
         }
-        _ => return Err(format!("can't write .{ext} (use .ase, .aco or .gpl)")),
+        "grd" => {
+            let gs: Vec<grd::GrdGradient> = v
+                .iter()
+                .filter_map(|s| s.gradient.as_ref().map(|g| (s, g)))
+                .enumerate()
+                .map(|(i, (s, g))| grd::GrdGradient {
+                    name: if s.name.is_empty() { format!("Gradient {}", i + 1) } else { s.name.clone() },
+                    noise: false,
+                    stops: g.stops.iter().map(|(t, c)| grd::GrdStop { location: *t, midpoint: 0.5, color: grd::GrdColor::Rgb([c.r as f32 / 255.0, c.g as f32 / 255.0, c.b as f32 / 255.0]) }).collect(),
+                    opacity: g.stops.iter().map(|(t, c)| (*t, c.a as f32 / 255.0, 0.5)).collect(),
+                })
+                .collect();
+            let n = gs.len();
+            (grd::write(&gs), n)
+        }
+        _ => return Err(format!("can't write .{ext} (use .ase, .aco, .gpl, or .grd for gradients)")),
     };
-    std::fs::write(path, bytes).map_err(|e| e.to_string())
+    if n == 0 {
+        return Err(if ext == "grd" { "no gradient swatches to save".into() } else { "no colour swatches to save (gradients go in .grd)".into() });
+    }
+    std::fs::write(path, bytes).map_err(|e| e.to_string())?;
+    Ok(n)
 }
 
 #[derive(Default)]
@@ -223,13 +276,62 @@ pub(crate) struct State {
     pub replace: bool,
 }
 
-fn save(app: &mut App) {
-    app.settings.save();
+/// The swatches shown: the document's own, else the app's.
+pub(crate) fn current(app: &App) -> Vec<Swatch> {
+    app.ed.doc.swatches.clone().or_else(|| app.settings.swatches.clone()).unwrap_or_else(defaults)
+}
+
+/// Store an edited list where it came from (the document: one undo step).
+fn store(app: &mut App, label: &str, list: Vec<Swatch>) {
+    if app.ed.doc.swatches.is_some() {
+        app.ed.set_swatches(label, Some(list));
+    } else {
+        app.settings.swatches = Some(list);
+        app.settings.save();
+    }
+}
+
+/// Use a swatch as the fill (or stroke) and apply it to the selection.
+pub(crate) fn use_swatch(app: &mut App, s: &Swatch, stroke: bool) {
+    match (&s.gradient, stroke) {
+        (Some(g), false) => use_gradient(app, g),
+        _ => use_color(app, c32(s.color), stroke),
+    }
+}
+
+fn use_gradient(app: &mut App, g: &Gradient) {
+    let stops = g.stops.clone();
+    app.fill = c32(stops[0].1);
+    app.fill_on = true;
+    app.topts.fill2 = c32(stops[stops.len() - 1].1);
+    app.topts.fill_gradient = Some(g.kind);
+    app.topts.grad_stops = Some(stops.clone());
+    if app.ed.selection.is_empty() {
+        return;
+    }
+    let (kind, focal, spread) = (g.kind, g.focal, g.spread);
+    let fit = move |lo, hi| Gradient { focal, spread, ..Gradient::fit(kind, stops.clone(), lo, hi) };
+    let has_canvas = app.ed.selection.iter().any(|s| app.ed.element_at(*s).is_some_and(|e| matches!(e.kind, ElementKind::Canvas(_))));
+    if has_canvas {
+        if let Some((lo, hi)) = app.ed.selection_bounds() {
+            app.ed.merge_set_paint(None, Some(Some(fit(lo, hi))), None);
+        }
+    }
+    if app.ed.selection.iter().any(|s| app.ed.element_at(*s).is_some_and(|e| matches!(e.kind, ElementKind::Shape(_)))) {
+        app.ed.modify_selected("Fill Gradient", move |e| {
+            if let ElementKind::Shape(sh) = &mut e.kind {
+                if let Some((lo, hi)) = sh.path.bounds() {
+                    sh.gradient = Some(fit(lo, hi));
+                    sh.fill = sh.gradient.as_ref().map(|g| g.stops[0].1);
+                }
+            }
+        });
+    }
 }
 
 /// Use a colour as the fill (or stroke) and apply it to the selection.
 pub(crate) fn use_color(app: &mut App, c: Color32, stroke: bool) {
-    let col = crate::from32(c);
+    let col = from32(c);
     if stroke {
         app.stroke = c;
         app.stroke_on = true;
@@ -265,6 +367,48 @@ pub(crate) fn use_color(app: &mut App, c: Color32, stroke: bool) {
     }
 }
 
+/// Paint a chip: the colour (on a checkerboard when see-through) or the gradient.
+fn chip(ui: &egui::Ui, r: egui::Rect, s: &Swatch) {
+    let p = ui.painter();
+    p.rect_filled(r, 0.0, Color32::from_gray(205));
+    let q = r.size() / 2.0;
+    p.rect_filled(egui::Rect::from_min_size(r.min, q), 0.0, Color32::WHITE);
+    p.rect_filled(egui::Rect::from_min_size(r.min + q, q), 0.0, Color32::WHITE);
+    match &s.gradient {
+        None => {
+            p.rect_filled(r, 0.0, c32(s.color));
+        }
+        Some(g) => {
+            let sample = |t: f32| -> Color32 {
+                let st = &g.stops;
+                if t <= st[0].0 {
+                    return c32(st[0].1);
+                }
+                for w in st.windows(2) {
+                    if t <= w[1].0 {
+                        let u = if w[1].0 > w[0].0 { (t - w[0].0) / (w[1].0 - w[0].0) } else { 0.0 };
+                        return c32(w[0].1.lerp(w[1].1, u));
+                    }
+                }
+                c32(st[st.len() - 1].1)
+            };
+            let n = 12;
+            if g.kind == GradientKind::Radial {
+                for i in (0..n).rev() {
+                    let t = (i as f32 + 0.5) / n as f32;
+                    p.circle_filled(r.center(), r.width() * 0.5 * (i + 1) as f32 / n as f32 * 1.15, sample(t));
+                }
+            } else {
+                let w = r.width() / n as f32;
+                for i in 0..n {
+                    let t = (i as f32 + 0.5) / n as f32;
+                    p.rect_filled(egui::Rect::from_min_size(pos2(r.left() + i as f32 * w, r.top()), vec2(w + 0.5, r.height())), 0.0, sample(t));
+                }
+            }
+        }
+    }
+}
+
 /// The swatch column beside the tools.
 pub(crate) fn panel(app: &mut App, ctx: &egui::Context) {
     if !app.swatch_ui.open {
@@ -275,14 +419,16 @@ pub(crate) fn panel(app: &mut App, ctx: &egui::Context) {
             ui.label(RichText::new("Swatches").strong());
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui.small_button("×").on_hover_text("Close (Ctrl+F9)").clicked() {
-                    app.swatch_ui.open = false;
+                    app.toggle_swatches();
                 }
                 ui.menu_button("…", |ui| menu(app, ui)).response.on_hover_text("Swatch options");
             });
         });
-        ui.label(RichText::new("Click: fill · Shift+click: stroke").small().color(Color32::from_gray(140)));
+        let doc_own = app.ed.doc.swatches.is_some();
+        ui.label(RichText::new(if doc_own { "This document's swatches" } else { "Click: fill · Shift+click: stroke" }).small().color(if doc_own { Color32::from_rgb(0x6C, 0xB4, 0xFF) } else { Color32::from_gray(140) }))
+            .on_hover_text(if doc_own { "Saved with the document (… › Use App Swatches to switch back)" } else { "Click: fill · Shift+click: stroke · right-click: more" });
         ui.add_space(2.0);
-        let list = app.settings.swatches.clone().unwrap_or_else(defaults);
+        let list = current(app);
         let mut action: Option<(usize, u8)> = None; // 0 fill, 1 stroke, 2 replace, 3 delete
         egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
             let cell = 18.0;
@@ -293,24 +439,19 @@ pub(crate) fn panel(app: &mut App, ctx: &egui::Context) {
                     for (j, s) in row.1.iter().enumerate() {
                         let i = row.0 * cols + j;
                         let (r, resp) = ui.allocate_exact_size(vec2(cell, cell), Sense::click());
-                        let c = s.color();
-                        if c.a() < 255 {
-                            ui.painter().rect_filled(r, 0.0, Color32::from_gray(200));
-                            ui.painter().rect_filled(egui::Rect::from_min_size(r.min, r.size() / 2.0), 0.0, Color32::from_gray(255));
-                            ui.painter().rect_filled(egui::Rect::from_min_size(r.center(), r.size() / 2.0), 0.0, Color32::from_gray(255));
-                        }
-                        ui.painter().rect_filled(r, 0.0, c);
-                        let current = c == app.fill || c == app.stroke;
+                        chip(ui, r, s);
+                        let c = c32(s.color);
+                        let current = s.gradient.is_none() && (c == app.fill || c == app.stroke);
                         let edge = if resp.hovered() { Color32::WHITE } else if current { Color32::from_rgb(0x3D, 0x8E, 0xF0) } else { Color32::from_gray(70) };
                         ui.painter().rect_stroke(r, 0.0, egui::Stroke::new(1.0_f32, edge));
-                        let resp = resp.on_hover_text(s.label());
+                        let resp = resp.on_hover_text(label(s));
                         if resp.clicked() {
                             action = Some((i, if ui.input(|inp| inp.modifiers.shift) { 1 } else { 0 }));
                         }
                         resp.context_menu(|ui| {
-                            ui.label(RichText::new(s.label()).small());
+                            ui.label(RichText::new(label(s)).small());
                             if ui.button("Use as Fill").clicked() { action = Some((i, 0)); ui.close_menu(); }
-                            if ui.button("Use as Stroke").clicked() { action = Some((i, 1)); ui.close_menu(); }
+                            if s.gradient.is_none() && ui.button("Use as Stroke").clicked() { action = Some((i, 1)); ui.close_menu(); }
                             if ui.button("Replace with Current Fill").clicked() { action = Some((i, 2)); ui.close_menu(); }
                             if ui.button("Delete Swatch").clicked() { action = Some((i, 3)); ui.close_menu(); }
                         });
@@ -318,43 +459,53 @@ pub(crate) fn panel(app: &mut App, ctx: &egui::Context) {
                 });
             }
             ui.add_space(4.0);
-            if ui.button("+ Add fill colour").on_hover_text("Add the current fill colour").clicked() {
-                add(app, app.fill);
+            if ui.button("+ Add fill").on_hover_text("Add the current fill (colour or gradient)").clicked() {
+                add_fill(app);
             }
         });
         if let Some((i, op)) = action {
             let mut list = list;
             match op {
-                0 | 1 => use_color(app, list[i].color(), op == 1),
+                0 | 1 => use_swatch(app, &list[i].clone(), op == 1),
                 2 => {
-                    list[i] = Swatch::new("", app.fill);
-                    app.settings.swatches = Some(list);
-                    save(app);
+                    list[i] = current_fill(app);
+                    store(app, "Replace Swatch", list);
                 }
                 _ => {
                     list.remove(i);
-                    app.settings.swatches = Some(list);
-                    save(app);
+                    store(app, "Delete Swatch", list);
                 }
             }
         }
     });
 }
 
-fn add(app: &mut App, c: Color32) {
-    let mut list = app.settings.swatches.clone().unwrap_or_else(defaults);
-    if list.iter().all(|s| s.rgba != c.to_srgba_unmultiplied()) {
-        list.push(Swatch::new("", c));
-        app.settings.swatches = Some(list);
-        save(app);
+/// The current fill as a swatch (a gradient when the fill type is one).
+fn current_fill(app: &App) -> Swatch {
+    match app.topts.fill_gradient {
+        Some(k) => Swatch::gradient("", k, app.fill_stops()),
+        None => Swatch::solid("", from32(app.fill)),
+    }
+}
+
+fn add_fill(app: &mut App) {
+    let s = current_fill(app);
+    add(app, s);
+}
+
+fn add(app: &mut App, s: Swatch) {
+    let mut list = current(app);
+    if !list.contains(&s) {
+        list.push(s);
+        store(app, "Add Swatch", list);
     }
 }
 
 fn menu(app: &mut App, ui: &mut egui::Ui) {
-    if ui.button("Add Fill Colour").clicked() { add(app, app.fill); ui.close_menu(); }
-    if ui.button("Add Stroke Colour").clicked() { add(app, app.stroke); ui.close_menu(); }
+    if ui.button("Add Fill").on_hover_text("The current fill colour or gradient").clicked() { add_fill(app); ui.close_menu(); }
+    if ui.button("Add Stroke Colour").clicked() { let s = Swatch::solid("", from32(app.stroke)); add(app, s); ui.close_menu(); }
     ui.separator();
-    if ui.button("Add Colours from File…").on_hover_text(".aco, .ase, .gpl, .act").clicked() {
+    if ui.button("Add Colours from File…").on_hover_text(".aco, .ase, .gpl, .act; gradients from .grd").clicked() {
         app.swatch_ui.replace = false;
         app.file(crate::files::FileAction::ImportSwatches);
         ui.close_menu();
@@ -364,33 +515,50 @@ fn menu(app: &mut App, ui: &mut egui::Ui) {
         app.file(crate::files::FileAction::ImportSwatches);
         ui.close_menu();
     }
-    if ui.button("Save Colours…").on_hover_text(".ase, .aco or .gpl").clicked() {
+    if ui.button("Save Colours…").on_hover_text("Colours as .ase, .aco or .gpl; gradients as .grd").clicked() {
         app.file(crate::files::FileAction::ExportSwatches);
         ui.close_menu();
     }
     ui.separator();
+    if app.ed.doc.swatches.is_some() {
+        if ui.button("Save as App Default").on_hover_text("New documents and documents without their own swatches use these").clicked() {
+            app.settings.swatches = app.ed.doc.swatches.clone();
+            app.settings.save();
+            app.status = "Swatches saved as the app default".into();
+            ui.close_menu();
+        }
+        if ui.button("Use App Swatches").on_hover_text("This document stops keeping its own swatches").clicked() {
+            app.ed.set_swatches("Use App Swatches", None);
+            ui.close_menu();
+        }
+    } else if ui.button("Keep with This Document").on_hover_text("Save a copy of these swatches in the document (as Animate does)").clicked() {
+        let list = current(app);
+        app.ed.set_swatches("Document Swatches", Some(list));
+        ui.close_menu();
+    }
+    ui.separator();
     if ui.button("Sort by Colour").clicked() {
-        let mut list = app.settings.swatches.clone().unwrap_or_else(defaults);
+        let mut list = current(app);
         list.sort_by(|a, b| sort_key(a).partial_cmp(&sort_key(b)).unwrap_or(std::cmp::Ordering::Equal));
-        app.settings.swatches = Some(list);
-        save(app);
+        store(app, "Sort Swatches", list);
         ui.close_menu();
     }
     if ui.button("Reset to Standard").clicked() {
-        app.settings.swatches = None;
-        save(app);
+        store(app, "Reset Swatches", defaults());
         ui.close_menu();
     }
     if ui.button("Clear All").clicked() {
-        app.settings.swatches = Some(Vec::new());
-        save(app);
+        store(app, "Clear Swatches", Vec::new());
         ui.close_menu();
     }
 }
 
-/// Greys first (dark to light), then by hue, then lightness.
+/// Greys first (dark to light), then by hue, then lightness; gradients last.
 fn sort_key(s: &Swatch) -> (u8, f32, f32) {
-    let [r, g, b, _] = s.rgba.map(|v| v as f32 / 255.0);
+    if s.gradient.is_some() {
+        return (2, 0.0, 0.0);
+    }
+    let [r, g, b] = [s.color.r, s.color.g, s.color.b].map(|v| v as f32 / 255.0);
     let (mx, mn) = (r.max(g).max(b), r.min(g).min(b));
     let d = mx - mn;
     if d < 0.04 {
@@ -400,40 +568,53 @@ fn sort_key(s: &Swatch) -> (u8, f32, f32) {
     (1, h, mx)
 }
 
-/// File › Import swatches result (FileAction::ImportSwatches).
+/// Swatches › Add / Replace Colours from File (FileAction::ImportSwatches).
 pub(crate) fn import(app: &mut App, path: &str) -> Result<String, String> {
     let new = read(std::path::Path::new(path))?;
     let n = new.len();
-    let mut list = if app.swatch_ui.replace { Vec::new() } else { app.settings.swatches.clone().unwrap_or_else(defaults) };
+    let mut list = if app.swatch_ui.replace { Vec::new() } else { current(app) };
     list.extend(new);
-    app.settings.swatches = Some(list);
+    store(app, "Import Swatches", list);
     app.swatch_ui.open = true;
-    save(app);
     Ok(format!("{} {n} swatch{} from {}", if app.swatch_ui.replace { "Loaded" } else { "Added" }, if n == 1 { "" } else { "es" }, path))
 }
 
 pub(crate) fn export(app: &mut App, path: &str) -> Result<String, String> {
-    let list = app.settings.swatches.clone().unwrap_or_else(defaults);
-    write(std::path::Path::new(path), &list)?;
-    Ok(format!("Saved {} swatches to {path}", list.len()))
+    let n = write(std::path::Path::new(path), &current(app))?;
+    Ok(format!("Saved {n} swatches to {path}"))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    fn colors(v: &[Swatch]) -> Vec<[u8; 4]> {
+        v.iter().map(|s| [s.color.r, s.color.g, s.color.b, s.color.a]).collect()
+    }
+
     #[test]
     fn round_trips_every_writable_format() {
-        let v = vec![Swatch::new("Sky", Color32::from_rgb(0x40, 0x90, 0xE0)), Swatch::new("", Color32::from_rgb(255, 0, 0)), Swatch::new("", Color32::from_gray(17))];
+        let v = vec![Swatch::solid("Sky", Color::rgb(0x40, 0x90, 0xE0)), Swatch::solid("", Color::rgb(255, 0, 0)), Swatch::solid("", Color::rgb(17, 17, 17))];
         let dir = std::env::temp_dir().join(format!("flare-swatches-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         for ext in ["ase", "aco", "gpl"] {
             let p = dir.join(format!("t.{ext}"));
-            write(&p, &v).unwrap();
+            assert_eq!(write(&p, &v).unwrap(), 3);
             let back = read(&p).unwrap();
-            assert_eq!(back.iter().map(|s| s.rgba).collect::<Vec<_>>(), v.iter().map(|s| s.rgba).collect::<Vec<_>>(), "{ext}");
+            assert_eq!(colors(&back), colors(&v), "{ext}");
             assert!(back[0].name.contains("Sky"), "{ext}: {:?}", back[0].name);
         }
+        // gradients go to .grd (PhotoCraft's writer and reader) and come back
+        let g = vec![Swatch::gradient("Fade", GradientKind::Linear, vec![(0.0, Color::rgb(255, 0, 0)), (0.5, Color::rgb(0, 255, 0)), (1.0, rgba(0, 0, 255, 0))])];
+        let p = dir.join("t.grd");
+        assert_eq!(write(&p, &g).unwrap(), 1);
+        let back = read(&p).unwrap();
+        let bg = back[0].gradient.as_ref().unwrap();
+        assert_eq!(back[0].name, "Fade");
+        assert_eq!(bg.stops.len(), 3);
+        assert_eq!(bg.stops[1].1, Color::rgb(0, 255, 0));
+        assert_eq!(bg.stops[2].1.a, 0);
+        assert!(write(&dir.join("t.ase"), &g).is_err(), "no colours to save");
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -442,7 +623,7 @@ mod tests {
         let gpl = "GIMP Palette\nName: Test\nColumns: 4\n# comment\n255   0   0\tRed\n  0 128 255 Deep Sky\n";
         let v = parse("gpl", gpl.as_bytes()).unwrap();
         assert_eq!(v.len(), 2);
-        assert_eq!(v[1].rgba, [0, 128, 255, 255]);
+        assert_eq!(v[1].color, Color::rgb(0, 128, 255));
         assert_eq!(v[1].name, "Deep Sky");
         assert!(parse("gpl", b"not a palette").is_err());
         let mut act = vec![0u8; 772];
@@ -450,7 +631,7 @@ mod tests {
         act[768..770].copy_from_slice(&2u16.to_be_bytes());
         let v = parse("act", &act).unwrap();
         assert_eq!(v.len(), 2);
-        assert_eq!(v[1].rgba, [10, 20, 30, 255]);
+        assert_eq!(v[1].color, Color::rgb(10, 20, 30));
         assert!(parse("act", &[0; 10]).is_err());
     }
 
@@ -462,23 +643,24 @@ mod tests {
         assert!(red[0] > 245 && red[1] < 20 && red[2] < 20, "{red:?}");
         assert_eq!(cmyk(0.0, 1.0, 1.0, 0.0), [255, 0, 0]);
         assert_eq!(hsb(120.0, 1.0, 1.0), [0, 255, 0]);
-        // an .aco with CMYK and Lab entries
         use photocraft_psd::aco::{write as w, AcoColor, AcoSwatch};
         let bytes = w(&[AcoSwatch { name: "C".into(), color: AcoColor::Cmyk([65535, 0, 0, 0]) }, AcoSwatch { name: "L".into(), color: AcoColor::Lab { l: 10000, a: 0, b: 0 } }]).unwrap();
         let v = parse("aco", &bytes).unwrap();
-        assert_eq!(v[0].rgba, [0, 255, 255, 255]);
-        assert_eq!(v[1].rgba, [255, 255, 255, 255]);
+        assert_eq!(v[0].color, Color::rgb(0, 255, 255));
+        assert_eq!(v[1].color, Color::rgb(255, 255, 255));
     }
 
     #[test]
     fn defaults_and_sorting() {
         let d = defaults();
-        assert_eq!(d.len(), 48);
-        assert_eq!(d[0].rgba, [0, 0, 0, 255]);
-        assert_eq!(d[11].rgba, [255, 255, 255, 255]);
+        assert_eq!(d.iter().filter(|s| s.gradient.is_none()).count(), 48);
+        assert!(d.iter().filter(|s| s.gradient.is_some()).count() >= 4);
+        assert_eq!(d[0].color, Color::rgb(0, 0, 0));
+        assert_eq!(d[11].color, Color::rgb(255, 255, 255));
         let mut s = d.clone();
         s.reverse();
         s.sort_by(|a, b| sort_key(a).partial_cmp(&sort_key(b)).unwrap());
-        assert_eq!(s[0].rgba, [0, 0, 0, 255]);
+        assert_eq!(s[0].color, Color::rgb(0, 0, 0));
+        assert!(s.last().unwrap().gradient.is_some());
     }
 }

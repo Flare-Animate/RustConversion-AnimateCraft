@@ -69,8 +69,8 @@ contributors, MIT OR Apache-2.0. Update with `cargo update -p effectcraft-effect
 
 ### PhotoCraft (github.com/storytold/photocraft)
 `photocraft-psd` is a git dependency of `ac-app`: its `.aco` (Photoshop swatches)
-and `.ase` (Adobe Swatch Exchange) readers and writers back the Swatches panel's
-import and save. Copyright (c) 2026 ArtCraft Team and the PhotoCraft
+and `.ase` (Adobe Swatch Exchange) readers and writers, and its `.grd`
+(Photoshop gradients) reader and writer, back the Swatches panel's import and save. Copyright (c) 2026 ArtCraft Team and the PhotoCraft
 contributors, MIT OR Apache-2.0. Update with `cargo update -p photocraft-psd`.
 
 ### hokusai (github.com/reearth/hokusai)

@@ -250,3 +250,58 @@ pub fn scene_window(app: &mut App, ctx: &egui::Context) {
     });
     app.scene_open = open;
 }
+
+/// Modify › Shape › Expand Fill… / Soften Fill Edges… settings.
+#[derive(Clone, Copy)]
+pub(crate) struct ShapeDlg {
+    pub soften: bool,
+    pub dist: f32,
+    pub steps: u32,
+    pub inset: bool,
+}
+
+pub fn shape_window(app: &mut App, ctx: &egui::Context) {
+    let Some(mut d) = app.shape_dlg else { return };
+    let mut open = true;
+    let mut ok = false;
+    let mut cancel = false;
+    egui::Window::new(if d.soften { "Soften Fill Edges" } else { "Expand Fill" }).open(&mut open).resizable(false).collapsible(false).show(ctx, |ui| {
+        egui::Grid::new("shape-dlg").num_columns(2).spacing([10.0, 6.0]).show(ui, |ui| {
+            ui.label("Distance");
+            ui.add(egui::DragValue::new(&mut d.dist).range(0.1..=200.0).speed(0.2).suffix(" px"));
+            ui.end_row();
+            if d.soften {
+                ui.label("Number of steps");
+                ui.add(egui::DragValue::new(&mut d.steps).range(1..=50));
+                ui.end_row();
+            }
+            ui.label("Direction");
+            ui.horizontal(|ui| {
+                ui.radio_value(&mut d.inset, false, "Expand");
+                ui.radio_value(&mut d.inset, true, "Inset");
+            });
+            ui.end_row();
+        });
+        ui.add_space(4.0);
+        ui.horizontal(|ui| {
+            if ui.button("OK").clicked() {
+                ok = true;
+            }
+            if ui.button("Cancel").clicked() {
+                cancel = true;
+            }
+        });
+    });
+    open &= !cancel;
+    app.shape_dlg = Some(d);
+    if ok {
+        if d.soften {
+            app.ed.shape_fill_op("soften", d.dist, d.steps, d.inset);
+        } else {
+            app.ed.shape_fill_op("expand", if d.inset { -d.dist } else { d.dist }, 0, false);
+        }
+        app.shape_dlg = None;
+    } else if !open {
+        app.shape_dlg = None;
+    }
+}

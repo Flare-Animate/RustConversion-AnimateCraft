@@ -20,7 +20,7 @@ files.
 | Area | Coverage | Biggest gaps |
 |---|---|---|
 | Workspace and panels | ~65% | docking/workspaces, Color & Swatches, History, preferences |
-| Drawing model | ~88% | Convert Lines to Fills / Expand / Soften, stroke-style parameters |
+| Drawing model | ~92% | stroke-style parameters, hairlines and stroke scaling |
 | Tools | ~96% | pressure/tilt, Art/Pattern brushes |
 | Timeline | ~92% | frame view sizes, sound envelopes, Synchronize Symbols command |
 | Symbols | ~82% | 9-slice, Visible / Cache as bitmap |
@@ -62,8 +62,8 @@ The two engine milestones that unlock most of the rest:
 | Info panel (x/y, w/h, RGBA under cursor) | Yes (Ctrl+I) | Yes | ✅ | |
 | Transform panel | Yes (Ctrl+T) | Yes | ✅ | |
 | Color panel (solid / linear / radial / bitmap fills, HSB/RGB/hex, alpha, overflow modes) | Yes | Gradient stops in Properties only | 🟡 | P1 |
-| Swatches panel (palette, save/load .clr/.aco/.act, Web 216) | Yes | Column beside the tools (Ctrl+F9): click = fill, Shift+click = stroke, applied to the selection; add/replace/delete, sort; import .aco/.ase (PhotoCraft readers), .gpl, .act; save .ase/.aco/.gpl; kept in settings | 🟡 | P2 (.clr, per-document swatches, gradient swatches) |
-| History panel (steps, replay, copy steps as JSFL) | Yes | Undo stack exists; no panel | ❌ | P1 |
+| Swatches panel (palette, save/load .clr/.aco/.act, Web 216) | Yes | Column beside the tools (Ctrl+F9): colours and gradients; click = fill, Shift+click = stroke, applied to the selection; per-document swatches read from and written to .fla (`swatchLists`, `extendedSwatchLists`) or kept in the app; import .aco/.ase/.grd (PhotoCraft readers), .gpl, .act; save .ase/.aco/.gpl/.grd | 🟡 | P3 (.clr colour sets) |
+| History panel (steps, replay, copy steps as JSFL) | Yes | Window › History (Ctrl+F10): every step, click to go back or forward, Clear History | 🟡 | P2 (replay steps, copy steps as script) |
 | Motion Editor | Yes | Per-property graphs, key drag/retime, smooth/corner, per-property eases; OpenToonz keyframe types and expressions | ✅ | |
 | Output, Actions, Code Snippets, Compiler Errors panels | Yes | Output + Actions | 🟡 | P2 |
 | Scene panel (multiple scenes) | Yes | Scene panel (Shift+F2), header switcher | ✅ | |
@@ -96,12 +96,12 @@ The two engine milestones that unlock most of the rest:
 | Break Apart: text → letters → shapes; bitmap → bitmap fill | Yes | Instances, groups, drawing objects, text (letters, then shapes), bitmaps (merge shape with a bitmap fill) | ✅ | |
 | Union / Intersect / Punch / Crop (Modify › Combine Objects) | Yes | Yes | ✅ | |
 | Smooth / Straighten / Optimize Curves | Yes | Yes | ✅ | |
-| Convert Lines to Fills, Expand Fill, Soften Fill Edges | Yes | — | ❌ | P2 |
+| Convert Lines to Fills, Expand Fill, Soften Fill Edges | Yes | Modify › Shape, on merge-shape selections and drawing objects (i_overlay outlines/offsets; soften fades colour and gradient fills in steps) | ✅ | |
 | Rectangle / Oval **Primitives** (live corner radii, start/end angle, inner radius) | Yes | Yes (per-corner and inverted radii, close path) | ✅ | |
 | Stroke styles: solid, dashed, dotted, ragged, stipple, hatched; cap/join/miter; scale mode; hinting | Yes | Solid / dashed / dotted / ragged / stipple / hatched, cap, join | 🟡 | P3 (style parameters, scale mode, hinting) |
 | Variable-width profiles (presets, save width profile) | Yes | Width tool on drawing objects and merge-shape lines, delete width points, copy/paste profiles | 🟡 | P3 (named presets) |
-| Art / Pattern brushes (from Illustrator-style brush library), brush library panel | Yes | No Illustrator brush library; 13 generated OpenToonz stroke styles (Rope, Chain, Plait, Herringbone…) with parameters; 25 MyPaint raster brushes | 🟡 | P2 (pattern brushes from artwork) |
-| Gradient fills (linear, radial, up to 15 stops, overflow: extend / reflect / repeat, linear RGB) | Yes | Linear/radial, any stops, extend / reflect / repeat | 🟡 | P3 (linear RGB) |
+| Art / Pattern brushes (from Illustrator-style brush library), brush library panel | Yes | Art brushes in .fla files (PaintBrushDefinitions.xml) are drawn: their SVG artwork stretched along the stroke; 13 generated OpenToonz stroke styles; 25 MyPaint raster brushes | 🟡 | P2 (pattern brushes, drawing with art brushes, brush library panel, writing them back to .fla) |
+| Gradient fills (linear, radial, up to 15 stops, overflow: extend / reflect / repeat, focal point, linear RGB) | Yes | Linear/radial, any stops, extend / reflect / repeat, focal point (Properties slider; .fla, SVG, HTML5, Lottie) | 🟡 | P3 (linear RGB) |
 | Bitmap fills (and Lock Fill) | Yes | Drawing objects and merge shapes; Gradient Transform edits them; Lock Fill for gradients | ✅ | |
 | Alpha per fill / stroke colour | Yes | Yes (colour alpha) | ✅ | |
 | Pressure / tilt (tablet) | Yes | — | ❌ | P2 |
@@ -258,7 +258,7 @@ The two engine milestones that unlock most of the rest:
 | SWF / Flash Player, AIR desktop/mobile | Yes | — | ❌ | P3 (SWF via Ruffle crates maybe) |
 | Publish to YouTube / social presets (post-2020) | Yes | — | ❌ | P3 |
 | Lottie | No (third-party plug-in) | Shape layers per distinct frame (beziers, fills, strokes/dashes, gradients), embedded bitmaps; verified in lottie-web; no masks/filters | ✅ | (keyframed transforms instead of per-frame layers) |
-| Test Movie (Ctrl+Enter) in a player window, Test Scene | Yes | Play on stage | 🟡 | P1 |
+| Test Movie (Ctrl+Enter) in a player window, Test Scene | Yes | Control › Test Movie (Ctrl+Enter): publishes one HTML page and opens it in the browser (scripts, buttons, sounds) | 🟡 | P3 (own player window, Test Scene) |
 
 ## 11. Files and interchange
 
@@ -348,21 +348,23 @@ PNG/JPEG/GIF, font weights/italic, Edit Guides, Snap to Pixels.
 Then the last three: saving while a group is open in place, the Width tool on merge-shape lines,
 exact Gradient Glow/Bevel in HTML5; plus the Free camera (VCam) mode.
 
-### Gaps to close (next, after the Flare Studio workspace items)
-Recorded Oct 15 2026 to be fixed next:
-1. **Floating panels and tab groups**: any panel (Properties, Library, Swatches, Navigator,
-   Transform, Align, Info…) can float, dock into any side, or join another panel as a tab;
-   panels collapse to icons; named workspaces saved and switched. Needs the egui upgrade
-   (0.29 → current, with `egui_dock` or our own dock tree) first; today's grips and drop
-   targets (`dock.rs`) become that tree's drag source.
-2. **.fla gradient focal points**: radial gradients with `focalPointRatio` are drawn centred.
-   Needs focal radial gradients in the renderer (tiny-skia two-point conical) and in every
-   export (HTML5 `createRadialGradient` with two circles, SVG `fx/fy`, Lottie highlight).
-3. **.fla PaintBrushStroke**: Animate's paint brushes (art/pattern brushes on strokes) import
-   as plain lines. Needs brush definitions read from the file and drawn along the stroke
-   (our Ragged/Stipple/Hatched stroke styles are the start).
-4. **Swatches**: Animate's own `.clr` colour sets, swatches stored per document (written to
-   and read from .fla `swatchLists`), gradient swatches.
+### Gaps to close
+Recorded Oct 15 2026. Closed the same day with the referenced sources: **.fla gradient
+focal points** (tiny-skia two-point conical gradients; SVG `fx`, HTML5 two-circle gradients,
+Lottie highlight; read and written in .fla), **.fla art brushes** (the file's own
+`PaintBrushDefinitions.xml` SVG artwork laid along the stroke), **per-document and gradient
+swatches** (.fla `swatchLists`/`extendedSwatchLists`; Photoshop `.grd` through PhotoCraft),
+plus the History panel, Convert Lines to Fills / Expand Fill / Soften Fill Edges (i_overlay)
+and Test Movie (our HTML5 runtime). Still open:
+1. **Floating panels and tab groups**: any panel can float, dock into any side, or join another
+   panel as a tab; panels collapse to icons; named workspaces saved and switched. Needs the
+   egui upgrade (0.29 → 0.36) first; PhotoCraft's `panel_docking.rs` (egui 0.36, MIT/Apache)
+   is the reference once upgraded, and our grips and drop targets (`dock.rs`) become that
+   tree's drag source.
+2. **Pattern brushes** (.fla `PatternBrush` definitions, drawn as a solid line with a note),
+   drawing with art brushes in the editor, a brush library panel, and writing paint brushes
+   back to .fla.
+3. **Animate `.clr` colour sets**: an undocumented binary format; no source or sample to work from.
 
 ### Phase 5: Workspace polish
 Docking/floating panels and workspaces, preferences, a shortcut editor, the History panel,

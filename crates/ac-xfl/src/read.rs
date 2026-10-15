@@ -22,6 +22,22 @@ struct Reader<'a> {
     bitmaps: HashMap<String, BitmapId>,
     sounds: HashMap<String, ac_core::sound::SoundId>,
     doc: Document,
+    /// Art brushes from PaintBrushDefinitions.xml, by index.
+    brushes: HashMap<u32, crate::brush::ArtBrush>,
+    /// Art-brush strokes of raw shapes, waiting to go above the frame's canvas.
+    extra: Vec<Element>,
+}
+
+/// A brush stroke's artwork as a filled shape.
+fn art_shape(b: &crate::brush::ArtBrush, line: &[Pt], stroke: Stroke) -> Option<Shape> {
+    let polys = crate::brush::along(b, line, stroke.width);
+    let mut segs = vec![];
+    for p in polys.iter().filter(|p| p.len() >= 3) {
+        segs.push(ac_core::Seg::M(p[0]));
+        segs.extend(p[1..].iter().map(|q| ac_core::Seg::L(*q)));
+        segs.push(ac_core::Seg::Z);
+    }
+    (!segs.is_empty()).then(|| Shape::new(ac_core::Path { segs }, Some(stroke.color), None))
 }
 
 fn kids<'a, 'i>(n: Node<'a, 'i>, name: &'static str) -> impl Iterator<Item = Node<'a, 'i>> {
@@ -79,9 +95,6 @@ impl Reader<'_> {
             k @ ("LinearGradient" | "RadialGradient") => {
                 let m = matrix_of(g).concat(&Matrix::scale(GRAD, GRAD));
                 let stops = kids(g, "GradientEntry").map(|e| (f(e, "ratio", 0.0).clamp(0.0, 1.0), color(e, "color", "alpha", Color::rgb(0, 0, 0)))).collect();
-                if g.attribute("focalPointRatio").is_some_and(|v| v != "0") {
-                    self.warn.push("gradient focal point not supported: drawn centred".into());
-                }
                 Fill::Gradient(Gradient {
                     kind: if k == "LinearGradient" { GradientKind::Linear } else { GradientKind::Radial },
                     stops,
@@ -91,6 +104,7 @@ impl Reader<'_> {
                         Some("repeat") => Spread::Repeat,
                         _ => Spread::Pad,
                     },
+                    focal: f(g, "focalPointRatio", 0.0).clamp(-1.0, 1.0),
                 })
             }
             "BitmapFill" => {
@@ -114,9 +128,10 @@ impl Reader<'_> {
         })
     }
 
-    fn stroke_of(&mut self, n: Node) -> (Stroke, StrokeStyle) {
+    fn stroke_of(&mut self, n: Node) -> (Stroke, StrokeStyle, Option<u32>) {
         let s = elems(n).next();
-        let Some(s) = s else { return (Stroke { color: Color::rgb(0, 0, 0), width: 1.0 }, StrokeStyle::default()) };
+        let Some(s) = s else { return (Stroke { color: Color::rgb(0, 0, 0), width: 1.0 }, StrokeStyle::default(), None) };
+        let mut brush = None;
         let col = child(s, "fill").and_then(|fl| self.fill_of(fl)).map(|fl| match fl {
             Fill::Solid(c) => c,
             Fill::Gradient(g) => g.stops.first().map(|s| s.1).unwrap_or(Color::rgb(0, 0, 0)),
@@ -149,15 +164,23 @@ impl Reader<'_> {
             "RaggedStroke" => st.dash = Dash::Ragged,
             "StippleStroke" => st.dash = Dash::Stipple,
             "HatchedStroke" => st.dash = Dash::Hatched,
+            "PaintBrushStroke" => {
+                let i = f(s, "paintBrushDefinition", 0.0) as u32;
+                if self.brushes.contains_key(&i) {
+                    brush = Some(i);
+                } else {
+                    self.warn.push(format!("paint brush {i} not found: drawn as a solid line"));
+                }
+            }
             other => self.warn.push(format!("{other} drawn as a solid line")),
         }
         let width = if s.attribute("solidStyle") == Some("hairline") { 1.0 } else { f(s, "weight", 1.0) };
-        (Stroke { color: col.unwrap_or(Color::rgb(0, 0, 0)), width }, st)
+        (Stroke { color: col.unwrap_or(Color::rgb(0, 0, 0)), width }, st, brush)
     }
 
     /// The fill and stroke tables plus the edge records of a DOMShape-like node.
     #[allow(clippy::type_complexity)]
-    fn shape_parts(&mut self, n: Node) -> (HashMap<u32, Fill>, HashMap<u32, (Stroke, StrokeStyle)>, Vec<(u32, u32, u32, Vec<Piece>)>) {
+    fn shape_parts(&mut self, n: Node) -> (HashMap<u32, Fill>, HashMap<u32, (Stroke, StrokeStyle, Option<u32>)>, Vec<(u32, u32, u32, Vec<Piece>)>) {
         let mut fills = HashMap::new();
         if let Some(fs) = child(n, "fills") {
             for s in kids(fs, "FillStyle") {
@@ -239,10 +262,19 @@ impl Reader<'_> {
         // at their crossings, so they go in as they are
         for k in sk {
             let pcs: Vec<Piece> = recs.iter().filter(|r| r.2 == k).flat_map(|r| r.3.iter().copied()).collect();
-            let (stroke, _) = strokes[&k];
+            let (stroke, _, brush) = strokes[&k];
             for (c, closed) in edges::chain(&pcs) {
-                let pts = edges::chain_points(&c, closed);
+                let mut pts = edges::chain_points(&c, closed);
                 if pts.len() < 2 {
+                    continue;
+                }
+                if let Some(b) = brush.and_then(|i| self.brushes.get(&i)) {
+                    if closed {
+                        pts.push(pts[0]);
+                    }
+                    if let Some(sh) = art_shape(b, &pts, stroke) {
+                        self.extra.push(el("", Matrix::IDENTITY, ElementKind::Shape(sh)));
+                    }
                     continue;
                 }
                 canvas.strokes.push(StrokeEdge::new(pts, closed, stroke));
@@ -260,10 +292,10 @@ impl Reader<'_> {
         let mut sk: Vec<_> = strokes.keys().copied().collect();
         sk.sort();
         // the common case: one fill outlined by one stroke → one Shape
-        if fk.len() == 1 && sk.len() == 1 && recs.iter().all(|r| (r.2 == sk[0]) == (r.0 == fk[0] || r.1 == fk[0])) {
+        if fk.len() == 1 && sk.len() == 1 && strokes[&sk[0]].2.is_none() && recs.iter().all(|r| (r.2 == sk[0]) == (r.0 == fk[0] || r.1 == fk[0])) {
             let pcs = Self::fill_pieces(&recs, fk[0]);
             let mut sh = self.fill_shape(&fills[&fk[0]], &edges::chain(&pcs));
-            let (s, st) = strokes[&sk[0]];
+            let (s, st, _) = strokes[&sk[0]];
             sh.stroke = Some(s);
             sh.stroke_style = st;
             shapes.push(sh);
@@ -279,7 +311,17 @@ impl Reader<'_> {
                 if pcs.is_empty() {
                     continue;
                 }
-                let (s, st) = strokes[k];
+                let (s, st, brush) = strokes[k];
+                if let Some(b) = brush.and_then(|i| self.brushes.get(&i)) {
+                    for (c, closed) in edges::chain(&pcs) {
+                        let mut pts = edges::chain_points(&c, closed);
+                        if closed && !pts.is_empty() {
+                            pts.push(pts[0]);
+                        }
+                        shapes.extend(art_shape(b, &pts, s));
+                    }
+                    continue;
+                }
                 let mut sh = Shape::new(edges::chains_path(&edges::chain(&pcs)), None, Some(s));
                 sh.stroke_style = st;
                 shapes.push(sh);
@@ -322,7 +364,10 @@ impl Reader<'_> {
             }
         }
         if let Some(s) = child(n, "stroke") {
-            let (s, st) = self.stroke_of(s);
+            let (s, st, brush) = self.stroke_of(s);
+            if brush.is_some() {
+                self.warn.push("paint brush on a rectangle/oval primitive drawn as a solid line".into());
+            }
             sh.stroke = Some(s);
             sh.stroke_style = st;
         }
@@ -449,6 +494,7 @@ impl Reader<'_> {
     /// The elements of a frame (or group members), bottom first.
     fn elements(&mut self, parent: Node, out: &mut Vec<Element>) {
         let mut canvas = MergeShape::default();
+        let mark = self.extra.len();
         for n in elems(parent) {
             match n.tag_name().name() {
                 "DOMShape" if !flag(n, "isDrawingObject") => self.raw_shape(n, &mut canvas),
@@ -498,6 +544,11 @@ impl Reader<'_> {
                 }
                 other => self.warn.push(format!("{other} not supported, skipped")),
             }
+        }
+        // art-brush lines of the raw shape sit just above it
+        let extra: Vec<Element> = self.extra.drain(mark..).collect();
+        for (k, e) in extra.into_iter().enumerate() {
+            out.insert(k, e);
         }
         if !canvas.is_empty() {
             out.insert(0, el("", Matrix::IDENTITY, ElementKind::Canvas(canvas)));
@@ -720,8 +771,52 @@ impl Reader<'_> {
     }
 }
 
+impl Reader<'_> {
+    /// The document's swatches: solid ones in `swatchLists`, gradient ones in
+    /// `extendedSwatchLists` (only the first list of each, as Animate shows).
+    fn swatches(&mut self, root: Node) {
+        let mut v = vec![];
+        let items = |tag: &'static str| child(root, tag).and_then(|l| kids(l, "swatchList").next()).and_then(|l| child(l, "swatches"));
+        if let Some(s) = items("swatchLists") {
+            for it in kids(s, "SolidSwatchItem") {
+                v.push(Swatch::solid("", color(it, "color", "alpha", Color::rgb(0, 0, 0))));
+            }
+        }
+        if let Some(s) = items("extendedSwatchLists") {
+            for it in elems(s) {
+                let kind = match it.tag_name().name() {
+                    "LinearGradientSwatchItem" => GradientKind::Linear,
+                    "RadialGradientSwatchItem" => GradientKind::Radial,
+                    "swatchListInfo" => continue,
+                    other => {
+                        self.warn.push(format!("swatch {other} skipped"));
+                        continue;
+                    }
+                };
+                let stops: Vec<(f32, Color)> = kids(it, "GradientEntry").map(|e| (f(e, "ratio", 0.0).clamp(0.0, 1.0), color(e, "color", "alpha", Color::rgb(0, 0, 0)))).collect();
+                if stops.is_empty() {
+                    continue;
+                }
+                let mut sw = Swatch::gradient("", kind, stops);
+                if let Some(g) = &mut sw.gradient {
+                    g.focal = f(it, "focalPointRatio", 0.0).clamp(-1.0, 1.0);
+                    g.spread = match it.attribute("spreadMethod") {
+                        Some("reflect") => Spread::Reflect,
+                        Some("repeat") => Spread::Repeat,
+                        _ => Spread::Pad,
+                    };
+                }
+                v.push(sw);
+            }
+        }
+        if !v.is_empty() {
+            self.doc.swatches = Some(v);
+        }
+    }
+}
+
 pub(crate) fn read(pkg: &Package) -> Result<crate::Imported, String> {
-    let mut r = Reader { pkg, warn: vec![], symbols: HashMap::new(), bitmaps: HashMap::new(), sounds: HashMap::new(), doc: Document::default() };
+    let mut r = Reader { pkg, warn: vec![], symbols: HashMap::new(), bitmaps: HashMap::new(), sounds: HashMap::new(), doc: Document::default(), brushes: HashMap::new(), extra: vec![] };
     let text = r.xml("DOMDocument.xml")?;
     let xml = roxmltree::Document::parse(&text).map_err(|e| format!("DOMDocument.xml: {e}"))?;
     let root = xml.root_element();
@@ -733,6 +828,13 @@ pub(crate) fn read(pkg: &Package) -> Result<crate::Imported, String> {
     r.doc.fps = f(root, "frameRate", 24.0);
     r.doc.background = color(root, "backgroundColor", "", Color::rgb(255, 255, 255));
     r.media(root);
+    let brush_file = child(root, "brushdefinitions").and_then(|b| kids(b, "Include").next()).and_then(|i| i.attribute("href")).unwrap_or("PaintBrushDefinitions.xml").to_string();
+    if let Ok(t) = r.xml(&brush_file) {
+        let (b, notes) = crate::brush::parse_definitions(&t);
+        r.brushes = b;
+        r.warn.extend(notes);
+    }
+    r.swatches(root);
 
     // symbols: names → ids first (instances can point at any of them)
     let mut sym_xml: Vec<(String, String)> = vec![];

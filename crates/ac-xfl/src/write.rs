@@ -94,7 +94,8 @@ impl W<'_> {
                     Spread::Reflect => r#" spreadMethod="reflect""#,
                     Spread::Repeat => r#" spreadMethod="repeat""#,
                 };
-                let mut s = format!("{ind}<{tag}{spread}>\n{}", matrix_xml(&m, &format!("{ind}  ")));
+                let focal = if g.kind == GradientKind::Radial && g.focal != 0.0 { format!(" focalPointRatio=\"{}\"", n(g.focal)) } else { String::new() };
+                let mut s = format!("{ind}<{tag}{spread}{focal}>\n{}", matrix_xml(&m, &format!("{ind}  ")));
                 for (r, c) in &g.stops {
                     let _ = writeln!(s, "{ind}  <GradientEntry color=\"{}\"{} ratio=\"{}\"/>", c.to_hex(), alpha_attr(*c, "alpha"), n(*r));
                 }
@@ -820,9 +821,51 @@ pub(crate) fn write(doc: &Document) -> (Package, Vec<String>) {
     if !includes.is_empty() {
         let _ = write!(x, "  <symbols>\n{includes}  </symbols>\n");
     }
-    let _ = write!(x, "  <timelines>\n{timelines}  </timelines>\n</DOMDocument>\n");
+    let _ = write!(x, "  <timelines>\n{timelines}  </timelines>\n");
+    if let Some(list) = &doc.swatches {
+        x.push_str(&swatch_lists(list));
+    }
+    x.push_str("</DOMDocument>\n");
     pkg.insert("DOMDocument.xml".into(), x.into_bytes());
     pkg.insert("PublishSettings.xml".into(), b"<flash_profiles>\n  <flash_profile version=\"1.0\" name=\"Default\" current=\"true\"/>\n</flash_profiles>\n".to_vec());
     let warn = crate::read::dedup(w.warn);
     (pkg, warn)
+}
+
+/// The document's swatches as `swatchLists` (solid) and `extendedSwatchLists`
+/// (gradients), one list each named "Default Swatches" as Animate writes them.
+fn swatch_lists(list: &[ac_core::Swatch]) -> String {
+    let head = "    <swatchList>\n      <swatchListInfo name=\"Default Swatches\"/>\n      <swatches>\n        <swatchListInfo name=\"Default Swatches\"/>\n";
+    let tail = "      </swatches>\n    </swatchList>\n";
+    let mut solid = String::new();
+    let mut grads = String::new();
+    for s in list {
+        match &s.gradient {
+            None => {
+                let _ = writeln!(solid, "        <SolidSwatchItem color=\"{}\"{}/>", s.color.to_hex(), alpha_attr(s.color, "alpha"));
+            }
+            Some(g) => {
+                let tag = if g.kind == GradientKind::Linear { "LinearGradientSwatchItem" } else { "RadialGradientSwatchItem" };
+                let spread = match g.spread {
+                    Spread::Pad => "",
+                    Spread::Reflect => r#" spreadMethod="reflect""#,
+                    Spread::Repeat => r#" spreadMethod="repeat""#,
+                };
+                let focal = if g.focal != 0.0 { format!(" focalPointRatio=\"{}\"", n(g.focal)) } else { String::new() };
+                let _ = writeln!(grads, "        <{tag}{spread}{focal}>");
+                for (r, c) in &g.stops {
+                    let _ = writeln!(grads, "          <GradientEntry color=\"{}\"{} ratio=\"{}\"/>", c.to_hex(), alpha_attr(*c, "alpha"), n(*r));
+                }
+                let _ = writeln!(grads, "        </{tag}>");
+            }
+        }
+    }
+    let mut x = String::new();
+    if !solid.is_empty() {
+        let _ = write!(x, "  <swatchLists>\n{head}{solid}{tail}  </swatchLists>\n");
+    }
+    if !grads.is_empty() {
+        let _ = write!(x, "  <extendedSwatchLists>\n{head}{grads}{tail}  </extendedSwatchLists>\n");
+    }
+    x
 }

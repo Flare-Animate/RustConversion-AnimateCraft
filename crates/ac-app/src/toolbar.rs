@@ -204,6 +204,8 @@ pub struct ToolOpts {
     /// Fill type for new shapes: None = solid, Some(kind) = gradient from fill → fill2.
     pub fill_gradient: Option<ac_core::GradientKind>,
     pub fill2: Color32,
+    /// All the stops of a gradient swatch (used while its ends still match fill → fill2).
+    pub grad_stops: Option<Vec<(f32, ac_core::Color)>>,
     pub text_size: f32,
     pub text_font: FontFace,
     pub text_bold: bool,
@@ -264,6 +266,7 @@ impl Default for ToolOpts {
             show_bones: true,
             fill_gradient: None,
             fill2: Color32::WHITE,
+            grad_stops: None,
             text_size: 28.0,
             text_font: FontFace::Sans,
             text_bold: false,

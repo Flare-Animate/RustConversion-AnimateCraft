@@ -288,7 +288,10 @@ impl Tables {
                     (v, extent)
                 }
             };
-            let ext = if extent != 1.0 { format!(",\"x\":{}", n(extent)) } else { String::new() };
+            let mut ext = if extent != 1.0 { format!(",\"x\":{}", n(extent)) } else { String::new() };
+            if g.kind == GradientKind::Radial && g.focal != 0.0 {
+                let _ = write!(ext, ",\"fx\":{}", n(g.focal.clamp(-0.99, 0.99)));
+            }
             let _ = write!(s, ",\"g\":{{\"k\":{},\"m\":{},\"s\":[{}]{ext}}}", if g.kind == GradientKind::Linear { 0 } else { 1 }, nm(&g.matrix), stops.join(","));
         } else if let Some(f) = it.fill {
             let _ = write!(s, ",\"f\":{}", rgba(f, a, it.tint, it.cx));

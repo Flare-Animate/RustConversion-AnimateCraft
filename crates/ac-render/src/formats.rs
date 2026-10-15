@@ -347,8 +347,10 @@ fn lottie_item(it: &DrawItem, warn: &mut Vec<&'static str>) -> Option<String> {
                 alphas.extend([f3(*t), f3(o / 100.0)]);
             }
             k.extend(alphas);
+            // radial focal point: Lottie's highlight length (% of the radius) along s → e
+            let hl = if g.kind == GradientKind::Radial && g.focal != 0.0 { format!(",\"h\":{{\"a\":0,\"k\":{}}},\"a\":{{\"a\":0,\"k\":0}}", f3(g.focal.clamp(-0.99, 0.99) * 100.0)) } else { String::new() };
             parts.push(format!(
-                "{{\"ty\":\"gf\",\"t\":{},\"s\":{{\"a\":0,\"k\":[{},{}]}},\"e\":{{\"a\":0,\"k\":[{},{}]}},\"g\":{{\"p\":{},\"k\":{{\"a\":0,\"k\":[{}]}}}},\"o\":{{\"a\":0,\"k\":100}},\"r\":2}}",
+                "{{\"ty\":\"gf\",\"t\":{},\"s\":{{\"a\":0,\"k\":[{},{}]}},\"e\":{{\"a\":0,\"k\":[{},{}]}},\"g\":{{\"p\":{},\"k\":{{\"a\":0,\"k\":[{}]}}}},\"o\":{{\"a\":0,\"k\":100}},\"r\":2{hl}}}",
                 if g.kind == GradientKind::Linear { 1 } else { 2 },
                 f3(s.x),
                 f3(s.y),

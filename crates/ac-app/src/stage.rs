@@ -305,6 +305,15 @@ impl App {
     fn cur_stroke(&self) -> Option<Stroke> {
         self.stroke_on.then(|| Stroke { color: from32(self.stroke), width: self.stroke_w })
     }
+    /// The current gradient's stops: a gradient swatch's own when its ends are
+    /// still the fill and second colour, else fill → second colour.
+    pub(crate) fn fill_stops(&self) -> Vec<(f32, Color)> {
+        let (a, b) = (from32(self.fill), from32(self.topts.fill2));
+        match &self.topts.grad_stops {
+            Some(s) if s.len() >= 2 && s[0].1 == a && s[s.len() - 1].1 == b => s.clone(),
+            _ => vec![(0.0, a), (1.0, b)],
+        }
+    }
     /// A new shape with the current fill type (solid, or a gradient from fill → second colour).
     pub(crate) fn make_shape(&self, path: Path, fill: Option<Color>, stroke: Option<Stroke>) -> Shape {
         let mut s = Shape::new(path, fill, stroke);
@@ -312,7 +321,9 @@ impl App {
             // Lock Fill: one gradient across the stage
             let b = if self.topts.lock_fill { Some((pt(0.0, 0.0), pt(self.ed.doc.width, self.ed.doc.height))) } else { s.path.bounds() };
             if let Some((lo, hi)) = b {
-                s.gradient = Some(Gradient::fit(k, vec![(0.0, f), (1.0, from32(self.topts.fill2))], lo, hi));
+                let mut stops = self.fill_stops();
+                stops[0].1 = f;
+                s.gradient = Some(Gradient::fit(k, stops, lo, hi));
             }
         }
         s
@@ -1229,7 +1240,7 @@ fn press(app: &mut App, rect: Rect, tool: Tool, origin: Pos2, p0: Pt, shift: boo
                 let shape = matches!(app.ed.element_at(s).map(|e| e.kind), Some(ElementKind::Shape(_)));
                 match (app.topts.fill_gradient, shape) {
                     (Some(kind), true) => {
-                        let stops = vec![(0.0, from32(app.fill)), (1.0, from32(app.topts.fill2))];
+                        let stops = app.fill_stops();
                         app.ed.selection = vec![s];
                         app.ed.modify_selected("Paint Bucket", move |e| {
                             if let ElementKind::Shape(sh) = &mut e.kind {
